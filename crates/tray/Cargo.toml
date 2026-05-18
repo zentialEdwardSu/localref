@@ -1,0 +1,15 @@
+[package]
+name = "tray"
+version = "0.1.0"
+edition = "2024"
+autobins = false
+
+[features]
+default = []
+native = ["dep:iced", "dep:tray-icon", "ui/desktop"]
+
+[dependencies]
+iced = { workspace = true, optional = true }
+localref-config = { path = "../config" }
+tray-icon = { workspace = true, optional = true }
+ui = { path = "../ui" }

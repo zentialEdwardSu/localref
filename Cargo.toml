@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = [
+	"crates/bib",
+	"crates/app",
+	"crates/core",
+	"crates/csc",
+	"crates/config",
+	"crates/error",
+	"crates/model",
+	"crates/platformfs",
+	"crates/rest",
+	"crates/rules",
+	"crates/scan",
+	"crates/storage",
+	"crates/types",
+	"crates/ui",
+	"crates/tray",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+http = "1"
+redb = "3"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+toml = "0.9"
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+iced = { version = "0.13", features = ["tokio"] }
+tao = "0.30"
+tray-icon = "0.21"
+
+[workspace.lints.clippy]
+correctness = "deny"
+single_call_fn = "deny"
+complexity = "deny"
+pedantic = { level = "warn", priority = -1 }

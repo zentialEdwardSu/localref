@@ -1,0 +1,13 @@
+[package]
+name = "scan"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+error = { path = "../error" }
+serde = { workspace = true }
+types = { path = "../types" }
+
+[dev-dependencies]
+platformfs = { path = "../platformfs" }
+tempfile = { workspace = true }

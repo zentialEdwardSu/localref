@@ -1,0 +1,19 @@
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+error = { path = "../error" }
+model = { path = "../model" }
+platformfs = { path = "../platformfs" }
+rules = { path = "../rules" }
+scan = { path = "../scan" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+storage = { path = "../storage" }
+toml = { workspace = true }
+types = { path = "../types" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
