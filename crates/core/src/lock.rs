@@ -9,7 +9,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 
-use error::{LocalrefError, Result};
+use crate::error::{LocalrefError, Result};
 
 /// Manager for lock files under `.localref/locks`.
 #[derive(Clone, Debug)]

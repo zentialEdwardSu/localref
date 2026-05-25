@@ -66,7 +66,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use types::{ConnectorAttachment, ConnectorItem};
+pub mod rest;
+
+use localref_core::types::{ConnectorAttachment, ConnectorItem};
 
 /// The connector API version advertised by current Zotero Connectors.
 ///
@@ -97,7 +99,8 @@ pub const LOCALREF_CONNECTOR_VERSION: &str = "Localref-0.1.0";
 /// Localref behavior: the manual dynamic-test binary uses the same address so
 /// an unmodified Zotero Connector can discover Localref when Zotero Desktop is
 /// not already occupying the port.
-pub const DEFAULT_CONNECTOR_ADDR: &str = localref_config::DEFAULT_CSC_ADDR;
+pub const DEFAULT_CONNECTOR_ADDR: &str =
+    localref_core::config::DEFAULT_CSC_ADDR;
 
 /// A request accepted from Zotero Connector's `saveItems` method.
 ///

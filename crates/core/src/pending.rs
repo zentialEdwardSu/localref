@@ -8,7 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use types::{CategoryPath, ConnectorImport};
+use crate::types::{CategoryPath, ConnectorImport};
 
 /// User-visible pending import session.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

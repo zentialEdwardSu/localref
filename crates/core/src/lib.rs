@@ -6,29 +6,37 @@
 //! library state.
 
 mod event_log;
+pub mod config;
+pub mod error;
 mod lock;
+pub mod model;
 mod pending;
+pub mod platformfs;
+pub mod rules;
+pub mod scan;
+pub mod storage;
+pub mod types;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use error::{LocalrefError, Result};
+use crate::error::{LocalrefError, Result};
 pub use event_log::EventLog;
 use lock::LockManager;
-use model::{
+use crate::model::{
     Creator, Event, EventKind, Metadata, MetadataDocument, MetadataFile,
     MetadataFiles, MetadataImport, MetadataState, MetadataTags,
 };
 pub use pending::{
     PendingImportConfirmation, PendingImportSession, PendingImportStore,
 };
-use platformfs::{LibraryFs, sanitize_ntfs_component};
-use rules::RuleSet;
-use scan::{AllEntryKind, CatEntryKind, scan_library};
+use crate::platformfs::{LibraryFs, sanitize_ntfs_component};
+use crate::rules::RuleSet;
+use crate::scan::{AllEntryKind, CatEntryKind, scan_library};
 use serde::{Deserialize, Serialize};
-use storage::{CategorySummary, ItemDocument, SearchHit, StorageDb};
-use types::{
+use crate::storage::{CategorySummary, ItemDocument, SearchHit, StorageDb};
+use crate::types::{
     CategoryPath, ConnectorAttachment, ConnectorImport, ImportOutcome, ItemId,
 };
 
@@ -1890,9 +1898,9 @@ fn connector_item_id(import: &ConnectorImport) -> Result<ItemId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use model::EventKind;
+    use crate::model::EventKind;
     use serde_json::json;
-    use types::{ConnectorAttachment, ConnectorImport, ConnectorItem};
+    use crate::types::{ConnectorAttachment, ConnectorImport, ConnectorItem};
 
     #[test]
     fn imports_connector_item_and_attachment_to_all() {

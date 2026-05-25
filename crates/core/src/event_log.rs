@@ -9,8 +9,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use error::{LocalrefError, Result};
-use model::{Event, EventKind};
+use crate::error::{LocalrefError, Result};
+use crate::model::{Event, EventKind};
 
 /// Append-only event log stored under `.localref/logs/events.jsonl`.
 #[derive(Clone, Debug)]

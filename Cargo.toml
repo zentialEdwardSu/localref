@@ -1,21 +1,32 @@
+[package]
+name = "localref"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[features]
+default = ["desktop", "native-tray"]
+desktop = ["csc/desktop", "dep:iced"]
+native-tray = ["desktop", "csc/native-tray", "dep:tray-icon"]
+
+[dependencies]
+clap = { workspace = true }
+csc = { path = "crates/csc" }
+iced = { workspace = true, optional = true }
+localref_core = { package = "core", path = "crates/core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tray-icon = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [workspace]
 resolver = "3"
 members = [
-	"crates/bib",
-	"crates/app",
 	"crates/core",
 	"crates/csc",
-	"crates/config",
-	"crates/error",
-	"crates/model",
-	"crates/platformfs",
-	"crates/rest",
-	"crates/rules",
-	"crates/scan",
-	"crates/storage",
-	"crates/types",
-	"crates/ui",
-	"crates/tray",
 ]
 
 [workspace.package]

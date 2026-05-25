@@ -4,20 +4,21 @@ version = "0.1.0"
 edition = "2024"
 autobins = false
 
+[features]
+default = []
+desktop = ["dep:iced"]
+native-tray = ["desktop", "dep:tray-icon"]
+
 [dependencies]
 axum = { workspace = true }
 http = { workspace = true }
-localref-config = { path = "../config" }
+iced = { workspace = true, optional = true }
 localref_core = { package = "core", path = "../core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-types = { path = "../types" }
+tray-icon = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tower = { workspace = true }
-
-[[bin]]
-name = "localref-csc-dev"
-path = "src/bin/localref-csc-dev.rs"
