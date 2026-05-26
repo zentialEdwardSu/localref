@@ -7,16 +7,22 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use iced::theme::Palette;
 use iced::widget::{
     button, checkbox, column, container, horizontal_rule, pick_list, row,
-    scrollable, text, text_input, vertical_rule,
+    scrollable, text, text_editor, text_input, vertical_rule,
 };
-use iced::{Element, Length, Subscription, Task, Theme, time, window};
-use localref_core::model::{Creator, Event, ItemDocument, Metadata};
+use iced::{
+    Background, Border, Color, Element, Length, Subscription, Task, Theme,
+    time, window,
+};
+use localref_core::model::{
+    Creator, Event, ItemDocument, ItemFilesDocument, Metadata,
+};
 
 use crate::ui::{CategorySummary, DashboardSnapshot, RestClient};
 
@@ -102,9 +108,13 @@ pub struct LocalrefDesktopApp {
     search: String,
     search_filter: Option<BTreeSet<String>>,
     selected_items: BTreeSet<String>,
+    active_item_id: Option<String>,
+    detail_tab: DetailTab,
     edit_revision: String,
     draft: MetadataDraft,
     category_input: String,
+    item_files: Option<ItemFilesDocument>,
+    hovered_file: Option<PathBuf>,
     notice: String,
     error: String,
 }
@@ -130,9 +140,13 @@ impl LocalrefDesktopApp {
             search: String::new(),
             search_filter: None,
             selected_items: BTreeSet::new(),
+            active_item_id: None,
+            detail_tab: DetailTab::Metadata,
             edit_revision: String::new(),
             draft: MetadataDraft::default(),
             category_input: String::new(),
+            item_files: None,
+            hovered_file: None,
             notice: String::new(),
             error: String::new(),
         };
@@ -149,9 +163,6 @@ impl LocalrefDesktopApp {
     pub fn title(&self, id: window::Id) -> String {
         match self.windows.get(&id) {
             Some(WindowKind::Main) => "Localref".to_string(),
-            Some(WindowKind::Categories(_)) => {
-                "Localref Categories".to_string()
-            }
             Some(WindowKind::Events) => "Localref Events".to_string(),
             None => "Localref".to_string(),
         }
@@ -170,6 +181,11 @@ impl LocalrefDesktopApp {
                 }
             }
             Message::Refresh => self.refresh(),
+            Message::RefreshFiles => {
+                if let Some(item_id) = self.current_item_id() {
+                    self.load_files(&item_id);
+                }
+            }
             Message::RunScan => self.run_scan(),
             Message::BrowserSelectionChanged(selection) => {
                 self.browser_selection = selection;
@@ -181,12 +197,22 @@ impl LocalrefDesktopApp {
                 }
             }
             Message::RunSearch => self.run_search(),
-            Message::ToggleItem(item_id, checked) => {
-                if checked {
-                    self.selected_items.insert(item_id.clone());
-                    self.load_metadata(&item_id);
-                } else {
-                    self.selected_items.remove(&item_id);
+            Message::SelectItem(item_id) => {
+                self.selected_items.clear();
+                self.selected_items.insert(item_id.clone());
+                self.active_item_id = Some(item_id.clone());
+                self.load_metadata(&item_id);
+                self.load_files(&item_id);
+            }
+            Message::ToggleItemSelection(item_id, selected) => {
+                self.toggle_item_selection(&item_id, selected);
+            }
+            Message::DetailTabChanged(tab) => {
+                self.detail_tab = tab;
+                if matches!(tab, DetailTab::Files) {
+                    if let Some(item_id) = self.current_item_id() {
+                        self.load_files(&item_id);
+                    }
                 }
             }
             Message::DraftTitle(value) => self.draft.title = value,
@@ -197,31 +223,14 @@ impl LocalrefDesktopApp {
             Message::DraftVenue(value) => self.draft.venue = value,
             Message::DraftLanguage(value) => self.draft.language = value,
             Message::DraftUri(value) => self.draft.uri = value,
-            Message::DraftAbstract(value) => self.draft.abstract_note = value,
+            Message::DraftAbstract(action) => {
+                self.draft.abstract_content.perform(action);
+                self.draft.abstract_note =
+                    self.draft.abstract_content.text().trim_end().to_string();
+            }
             Message::SaveMetadata => self.save_metadata(),
             Message::CategoryInputChanged(value) => {
                 self.category_input = value
-            }
-            Message::OpenCategoryWindow => {
-                if self.selected_items.is_empty() {
-                    self.error = "select at least one item".to_string();
-                } else {
-                    let state = CategoryWindowState {
-                        selected_item_ids: self
-                            .selected_items
-                            .iter()
-                            .cloned()
-                            .collect(),
-                    };
-                    let (_, open) =
-                        window::open(window_settings(860.0, 620.0));
-                    return open.map(move |id| {
-                        Message::WindowOpened(
-                            id,
-                            WindowKind::Categories(state.clone()),
-                        )
-                    });
-                }
             }
             Message::OpenEventsWindow => {
                 if self
@@ -242,6 +251,22 @@ impl LocalrefDesktopApp {
             Message::RemoveCategoryFromSelection(path) => {
                 self.remove_category_from_selection(&path);
             }
+            Message::OpenSelectedFolder => self.open_selected_folder(),
+            Message::OpenFile(path) => self.open_file(&path),
+            Message::DroppedFile(path) => self.add_file_to_selection(path),
+            Message::WindowEvent(event) => match event {
+                window::Event::FileHovered(path) => {
+                    self.hovered_file = Some(path);
+                }
+                window::Event::FilesHoveredLeft => {
+                    self.hovered_file = None;
+                }
+                window::Event::FileDropped(path) => {
+                    self.hovered_file = None;
+                    return self.update(Message::DroppedFile(path));
+                }
+                _ => {}
+            },
             Message::TrayOpen => {
                 if let Some((id, _)) = self
                     .windows
@@ -253,7 +278,12 @@ impl LocalrefDesktopApp {
                 return self.open_main_window();
             }
             Message::Tick => return self.drain_signals(),
-            Message::AutoRefresh => self.refresh(),
+            Message::AutoRefresh => {
+                self.refresh();
+                if let Some(item_id) = self.current_item_id() {
+                    self.load_files(&item_id);
+                }
+            }
         }
         Task::none()
     }
@@ -262,9 +292,6 @@ impl LocalrefDesktopApp {
     pub fn view(&self, id: window::Id) -> Element<'_, Message> {
         match self.windows.get(&id) {
             Some(WindowKind::Main) | None => self.main_window(),
-            Some(WindowKind::Categories(state)) => {
-                self.category_window(&state)
-            }
             Some(WindowKind::Events) => self.events_window(),
         }
     }
@@ -274,14 +301,17 @@ impl LocalrefDesktopApp {
         let close = window::close_events().map(Message::WindowClosed);
         let auto_refresh =
             time::every(Duration::from_secs(3)).map(|_| Message::AutoRefresh);
+        let window_events =
+            window::events().map(|(_, event)| Message::WindowEvent(event));
         if self.signals.is_some() {
             Subscription::batch([
                 close,
                 auto_refresh,
+                window_events,
                 time::every(Duration::from_millis(250)).map(|_| Message::Tick),
             ])
         } else {
-            Subscription::batch([close, auto_refresh])
+            Subscription::batch([close, auto_refresh, window_events])
         }
     }
 
@@ -323,11 +353,6 @@ impl LocalrefDesktopApp {
                     return self.update(Message::TrayOpen);
                 }
                 Ok(DesktopSignal::Refresh) => self.refresh(),
-                Ok(DesktopSignal::Scan) => self.run_scan(),
-                Ok(DesktopSignal::PauseWatcher) => self.pause("watcher"),
-                Ok(DesktopSignal::PauseWrites) => self.pause("writes"),
-                Ok(DesktopSignal::ResumeWatcher) => self.resume("watcher"),
-                Ok(DesktopSignal::ResumeWrites) => self.resume("writes"),
                 Ok(DesktopSignal::Quit) => return iced::exit(),
                 Err(mpsc::TryRecvError::Empty) => return Task::none(),
                 Err(mpsc::TryRecvError::Disconnected) => return Task::none(),
@@ -358,32 +383,6 @@ impl LocalrefDesktopApp {
         match client.scan() {
             Ok(_) => {
                 self.notice = "Scan completed".to_string();
-                self.refresh();
-            }
-            Err(error) => self.error = error,
-        }
-    }
-
-    fn pause(&mut self, mode: &str) {
-        let Ok(client) = self.client() else {
-            return;
-        };
-        match client.pause(mode) {
-            Ok(_) => {
-                self.notice = format!("Paused {mode}");
-                self.refresh();
-            }
-            Err(error) => self.error = error,
-        }
-    }
-
-    fn resume(&mut self, mode: &str) {
-        let Ok(client) = self.client() else {
-            return;
-        };
-        match client.resume(mode) {
-            Ok(_) => {
-                self.notice = format!("Resumed {mode}");
                 self.refresh();
             }
             Err(error) => self.error = error,
@@ -423,6 +422,55 @@ impl LocalrefDesktopApp {
                 self.error.clear();
             }
             Err(error) => self.error = error,
+        }
+    }
+
+    fn load_files(&mut self, item_id: &str) {
+        let Ok(client) = self.client() else {
+            return;
+        };
+        match client.list_item_files(item_id) {
+            Ok(files) => {
+                self.item_files = Some(files);
+                self.error.clear();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn current_item_id(&self) -> Option<String> {
+        self.active_item_id
+            .as_ref()
+            .filter(|id| self.selected_items.contains(*id))
+            .cloned()
+            .or_else(|| self.selected_items.iter().next().cloned())
+    }
+
+    /// Add or remove one browser item without treating it as a row click.
+    fn toggle_item_selection(&mut self, item_id: &str, selected: bool) {
+        if selected {
+            self.selected_items.insert(item_id.to_string());
+            if self.active_item_id.is_none() {
+                self.active_item_id = Some(item_id.to_string());
+                self.load_metadata(item_id);
+                self.load_files(item_id);
+            }
+            return;
+        }
+
+        self.selected_items.remove(item_id);
+        if self.active_item_id.as_deref() != Some(item_id) {
+            return;
+        }
+
+        self.active_item_id = self.selected_items.iter().next().cloned();
+        if let Some(active) = self.active_item_id.clone() {
+            self.load_metadata(&active);
+            self.load_files(&active);
+        } else {
+            self.edit_revision.clear();
+            self.draft = MetadataDraft::default();
+            self.item_files = None;
         }
     }
 
@@ -498,12 +546,66 @@ impl LocalrefDesktopApp {
         self.refresh();
     }
 
+    fn open_selected_folder(&mut self) {
+        let Some(item_id) = self.current_item_id() else {
+            self.error =
+                "select one item before opening its folder".to_string();
+            return;
+        };
+        let Ok(client) = self.client() else {
+            return;
+        };
+        match client.open_item_folder(&item_id) {
+            Ok(_) => {
+                self.notice = format!("Opened folder for {item_id}");
+                self.error.clear();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn open_file(&mut self, path: &str) {
+        let Some(item_id) = self.current_item_id() else {
+            self.error = "select one item before opening a file".to_string();
+            return;
+        };
+        let Ok(client) = self.client() else {
+            return;
+        };
+        match client.open_item_file(&item_id, path.to_string()) {
+            Ok(_) => {
+                self.notice = format!("Opened {path}");
+                self.error.clear();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn add_file_to_selection(&mut self, path: PathBuf) {
+        let Some(item_id) = self.current_item_id() else {
+            self.error = "select one item before dropping a file".to_string();
+            return;
+        };
+        let Ok(client) = self.client() else {
+            return;
+        };
+        match client.add_item_file(&item_id, path.display().to_string()) {
+            Ok(item) => {
+                self.notice = format!("Added file to {}", item.id);
+                self.refresh();
+                self.load_files(&item.id);
+                self.load_metadata(&item.id);
+                self.error.clear();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
     fn main_window(&self) -> Element<'_, Message> {
         let header = row![
             text(&self.endpoint).size(14),
             button("Refresh").on_press(Message::Refresh),
             button("Run Scan").on_press(Message::RunScan),
-            button("Edit Categories").on_press(Message::OpenCategoryWindow),
             button("Event Log").on_press(Message::OpenEventsWindow),
         ]
         .spacing(12)
@@ -515,49 +617,45 @@ impl LocalrefDesktopApp {
             text(&self.notice)
         };
 
-        let browser = column![
-            row![
-                pick_list(
-                    self.browser_options(),
-                    Some(self.browser_selection.clone()),
-                    Message::BrowserSelectionChanged
-                ),
-                text_input("Search", &self.search)
-                    .on_input(Message::SearchChanged)
-                    .on_submit(Message::RunSearch),
-                button("Search").on_press(Message::RunSearch),
+        let browser_content = container(
+            column![
+                row![
+                    pick_list(
+                        self.browser_options(),
+                        Some(self.browser_selection.clone()),
+                        Message::BrowserSelectionChanged
+                    ),
+                    text_input("Search", &self.search)
+                        .on_input(Message::SearchChanged)
+                        .on_submit(Message::RunSearch),
+                    button("Search").on_press(Message::RunSearch),
+                ]
+                .spacing(8),
+                text(format!(
+                    "{} items, {} categories, {} events",
+                    self.data.snapshot.item_count,
+                    self.data.snapshot.category_count,
+                    self.data.snapshot.event_count
+                ))
+                .size(13),
+                text("Auto-refresh every 3 seconds").size(12),
+                horizontal_rule(1),
+                self.browser_list(),
             ]
-            .spacing(8),
-            text(format!(
-                "{} items, {} categories, {} events",
-                self.data.snapshot.item_count,
-                self.data.snapshot.category_count,
-                self.data.snapshot.event_count
-            ))
-            .size(13),
-            horizontal_rule(1),
-            self.browser_list(),
-        ]
-        .spacing(10)
-        .width(Length::Fixed(360.0));
+            .spacing(10),
+        )
+        .height(Length::Shrink);
+        let browser = scrollable(browser_content)
+            .height(Length::Fill)
+            .width(Length::FillPortion(4));
 
-        let metadata = column![
-            text("Metadata").size(24),
-            self.metadata_form(),
-            row![
-                button("Save Metadata").on_press(Message::SaveMetadata),
-                text(format!("Revision {}", self.edit_revision)).size(12),
-            ]
-            .spacing(10)
-        ]
-        .spacing(10)
-        .width(Length::Fill);
+        let details = self.detail_panel();
 
         container(
             column![
                 header,
                 horizontal_rule(1),
-                row![browser, vertical_rule(1), metadata]
+                row![browser, vertical_rule(1), details]
                     .spacing(16)
                     .height(Length::Fill),
                 feedback,
@@ -574,10 +672,17 @@ impl LocalrefDesktopApp {
         let mut list = column![].spacing(6);
         for item in self.visible_items() {
             let id = item.id.clone();
-            let checked = self.selected_items.contains(&item.id);
+            let selected = self.selected_items.contains(&item.id);
+            let checkbox_id = item.id.clone();
             let mut summary = column![
                 text(&item.title).size(15),
-                text(format!("{}  {}", item.id, item.item_type)).size(12),
+                text(format!(
+                    "{}  {}  {}",
+                    item.id,
+                    item.item_type,
+                    attachment_summary(item)
+                ))
+                .size(12),
             ]
             .spacing(2);
             if !item.authors.is_empty() {
@@ -585,16 +690,25 @@ impl LocalrefDesktopApp {
                     summary.push(text(author_summary(&item.authors)).size(12));
             }
             let row = row![
-                checkbox("", checked).on_toggle(move |value| {
-                    Message::ToggleItem(id.clone(), value)
-                }),
-                summary
+                checkbox("", selected)
+                    .on_toggle(move |checked| Message::ToggleItemSelection(
+                        checkbox_id.clone(),
+                        checked
+                    ))
+                    .width(Length::Fixed(28.0)),
+                button(
+                    row![summary].spacing(8).align_y(iced::Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding(10)
+                .style(move |_theme, status| item_row_style(selected, status))
+                .on_press(Message::SelectItem(id))
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center);
             list = list.push(row);
         }
-        scrollable(list).height(Length::Fill).into()
+        list.into()
     }
 
     fn browser_options(&self) -> Vec<BrowserSelection> {
@@ -633,6 +747,48 @@ impl LocalrefDesktopApp {
             .collect()
     }
 
+    fn detail_panel(&self) -> Element<'_, Message> {
+        let tabs = row![
+            button("Metadata")
+                .width(Length::Fixed(120.0))
+                .on_press(Message::DetailTabChanged(DetailTab::Metadata)),
+            button("Files")
+                .width(Length::Fixed(120.0))
+                .on_press(Message::DetailTabChanged(DetailTab::Files)),
+        ]
+        .spacing(8);
+
+        let content = match self.detail_tab {
+            DetailTab::Metadata => self.metadata_tab(),
+            DetailTab::Files => self.files_tab(),
+        };
+
+        let detail_content =
+            container(column![tabs, horizontal_rule(1), content].spacing(12))
+                .height(Length::Shrink);
+        scrollable(detail_content)
+            .height(Length::Fill)
+            .width(Length::FillPortion(7))
+            .into()
+    }
+
+    fn metadata_tab(&self) -> Element<'_, Message> {
+        column![
+            text("Metadata").size(24),
+            self.metadata_form(),
+            row![
+                button("Save Metadata").on_press(Message::SaveMetadata),
+                text(format!("Revision {}", self.edit_revision)).size(12),
+            ]
+            .spacing(10),
+            horizontal_rule(1),
+            self.category_editor(),
+        ]
+        .spacing(10)
+        .width(Length::Fill)
+        .into()
+    }
+
     fn metadata_form(&self) -> Element<'_, Message> {
         column![
             text(format!("ID {}", self.draft.id)).size(13),
@@ -659,26 +815,36 @@ impl LocalrefDesktopApp {
                 text_input("URI", &self.draft.uri).on_input(Message::DraftUri),
             ]
             .spacing(8),
-            text_input("Abstract", &self.draft.abstract_note)
-                .on_input(Message::DraftAbstract)
-                .padding(10),
+            text("Abstract").size(13),
+            text_editor(&self.draft.abstract_content)
+                .placeholder("Abstract")
+                .on_action(Message::DraftAbstract)
+                .height(Length::Fixed(180.0)),
         ]
         .spacing(8)
         .into()
     }
 
-    fn category_window(
-        &self,
-        state: &CategoryWindowState,
-    ) -> Element<'_, Message> {
-        let selected_count = state.selected_item_ids.len();
-        let common =
-            common_categories(&self.data.items, &state.selected_item_ids);
+    fn category_editor(&self) -> Element<'_, Message> {
+        let selected = self.selected_items.iter().cloned().collect::<Vec<_>>();
+        let common = common_categories(&self.data.items, &selected);
+        let mut current = column![].spacing(6);
+        for category in &common {
+            let path = category.clone();
+            current = current.push(
+                row![
+                    text(category.clone()).width(Length::Fill),
+                    button("Remove")
+                        .on_press(Message::RemoveCategoryFromSelection(path)),
+                ]
+                .spacing(8),
+            );
+        }
 
-        let mut all_categories = column![].spacing(6);
-        for category in &self.data.categories {
+        let mut available = column![].spacing(6);
+        for category in available_categories(&self.data.categories, &common) {
             let path = category.path.clone();
-            all_categories = all_categories.push(
+            available = available.push(
                 row![
                     text(&category.path).width(Length::Fill),
                     button("Add")
@@ -688,53 +854,78 @@ impl LocalrefDesktopApp {
             );
         }
 
-        let mut current = column![].spacing(6);
-        for category in common {
-            let path = category.clone();
-            current = current.push(
-                row![
-                    text(category).width(Length::Fill),
-                    button("Remove")
-                        .on_press(Message::RemoveCategoryFromSelection(path)),
-                ]
-                .spacing(8),
-            );
+        column![
+            text(format!("Categories for {} item(s)", selected.len()))
+                .size(18),
+            row![
+                text_input("Category path", &self.category_input)
+                    .on_input(Message::CategoryInputChanged),
+                button("Create Category").on_press(Message::CreateCategory),
+            ]
+            .spacing(8),
+            row![
+                column![text("Current Categories").size(16), current]
+                    .spacing(8)
+                    .width(Length::Fill),
+                vertical_rule(1),
+                column![text("Available Categories").size(16), available]
+                    .spacing(8)
+                    .width(Length::Fill),
+            ]
+            .spacing(12),
+        ]
+        .spacing(10)
+        .into()
+    }
+
+    fn files_tab(&self) -> Element<'_, Message> {
+        let selected = self.current_item_id().unwrap_or_default();
+        let drop_text = self
+            .hovered_file
+            .as_ref()
+            .map(|path| format!("Drop to add {}", path.display()))
+            .unwrap_or_else(|| {
+                "Drop a file here to add it to the selected item".to_string()
+            });
+        let mut files = column![].spacing(6);
+        if let Some(document) = &self.item_files {
+            for file in &document.files {
+                let path = file.path.clone();
+                let size = file
+                    .bytes
+                    .map(format_bytes)
+                    .unwrap_or_else(|| file.kind.clone());
+                files = files.push(
+                    button(
+                        row![
+                            text(&file.path).width(Length::Fill),
+                            text(size).size(12),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .on_press(Message::OpenFile(path)),
+                );
+            }
         }
 
-        container(
-            column![
-                text(format!("{} selected item(s)", selected_count)).size(24),
-                row![
-                    text_input("Category path", &self.category_input)
-                        .on_input(Message::CategoryInputChanged),
-                    button("Create Category")
-                        .on_press(Message::CreateCategory),
-                ]
-                .spacing(8),
-                horizontal_rule(1),
-                row![
-                    column![
-                        text("All Categories").size(18),
-                        scrollable(all_categories)
-                    ]
-                    .spacing(10)
-                    .width(Length::Fill),
-                    vertical_rule(1),
-                    column![
-                        text("Shared Categories").size(18),
-                        scrollable(current)
-                    ]
-                    .spacing(10)
-                    .width(Length::Fill),
-                ]
-                .spacing(16)
-                .height(Length::Fill),
+        column![
+            text("Files").size(24),
+            text(selected).size(13),
+            row![
+                button("Open Folder").on_press(Message::OpenSelectedFolder),
+                button("Refresh Files").on_press(Message::RefreshFiles),
             ]
-            .spacing(14)
-            .padding(18),
-        )
+            .spacing(8),
+            container(text(drop_text).size(13))
+                .padding(12)
+                .width(Length::Fill),
+            horizontal_rule(1),
+            files,
+        ]
+        .spacing(10)
         .width(Length::Fill)
-        .height(Length::Fill)
         .into()
     }
 
@@ -777,6 +968,8 @@ pub enum Message {
     WindowClosed(window::Id),
     /// Refresh desktop state from REST.
     Refresh,
+    /// Refresh file listing for the selected item.
+    RefreshFiles,
     /// Run daemon scan.
     RunScan,
     /// Switch the browser list between All and one category.
@@ -785,8 +978,12 @@ pub enum Message {
     SearchChanged(String),
     /// Execute the current search.
     RunSearch,
-    /// Select or deselect an item.
-    ToggleItem(String, bool),
+    /// Select one item from the browser list.
+    SelectItem(String),
+    /// Toggle one item in the multi-selection set.
+    ToggleItemSelection(String, bool),
+    /// Switch the right-side detail tab.
+    DetailTabChanged(DetailTab),
     /// Edit title.
     DraftTitle(String),
     /// Edit semicolon-separated author names.
@@ -804,13 +1001,11 @@ pub enum Message {
     /// Edit URI.
     DraftUri(String),
     /// Edit abstract.
-    DraftAbstract(String),
+    DraftAbstract(text_editor::Action),
     /// Save metadata.
     SaveMetadata,
     /// Update category input.
     CategoryInputChanged(String),
-    /// Open category membership window.
-    OpenCategoryWindow,
     /// Open event log window.
     OpenEventsWindow,
     /// Create a category directory.
@@ -819,6 +1014,14 @@ pub enum Message {
     AddCategoryToSelection(String),
     /// Remove category from selected items.
     RemoveCategoryFromSelection(String),
+    /// Open the selected item folder in the system viewer.
+    OpenSelectedFolder,
+    /// Open one item-relative file path in the system viewer.
+    OpenFile(String),
+    /// Add a dropped file to the selected item.
+    DroppedFile(PathBuf),
+    /// Handle raw iced window events.
+    WindowEvent(window::Event),
     /// Bring the main window forward from tray.
     TrayOpen,
     /// Poll tray-originated signals.
@@ -834,16 +1037,6 @@ pub enum DesktopSignal {
     Open,
     /// Refresh desktop state.
     Refresh,
-    /// Request a daemon scan.
-    Scan,
-    /// Pause watcher work.
-    PauseWatcher,
-    /// Pause writes.
-    PauseWrites,
-    /// Resume watcher work.
-    ResumeWatcher,
-    /// Resume writes.
-    ResumeWrites,
     /// Exit the desktop process.
     Quit,
 }
@@ -853,17 +1046,8 @@ pub enum DesktopSignal {
 pub enum WindowKind {
     /// Main browsing and metadata window.
     Main,
-    /// Category membership editing window.
-    Categories(CategoryWindowState),
     /// Event log window.
     Events,
-}
-
-/// State for one category membership editor window.
-#[derive(Clone, Debug)]
-pub struct CategoryWindowState {
-    /// Item ids being edited.
-    pub selected_item_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -883,6 +1067,15 @@ impl fmt::Display for BrowserSelection {
     }
 }
 
+/// Right-panel page shown for the selected item.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DetailTab {
+    /// Metadata and category editing.
+    Metadata,
+    /// Files currently present in the item folder.
+    Files,
+}
+
 #[derive(Default)]
 struct DesktopData {
     snapshot: DashboardSnapshot,
@@ -891,13 +1084,14 @@ struct DesktopData {
     events: Vec<Event>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct MetadataDraft {
     id: String,
     item_type: String,
     title: String,
     authors: String,
     abstract_note: String,
+    abstract_content: text_editor::Content,
     doi: String,
     uri: String,
     year: String,
@@ -914,6 +1108,9 @@ impl MetadataDraft {
             title: metadata.title.clone(),
             authors: author_summary(&metadata.author_names()),
             abstract_note: metadata.abstract_note.clone().unwrap_or_default(),
+            abstract_content: text_editor::Content::with_text(
+                metadata.abstract_note.as_deref().unwrap_or_default(),
+            ),
             doi: metadata.doi.clone().unwrap_or_default(),
             uri: metadata.uri.clone().unwrap_or_default(),
             year: metadata
@@ -1033,6 +1230,59 @@ fn event_kind(event: &Event) -> String {
         .to_string()
 }
 
+fn item_row_style(
+    selected: bool,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let background = match (selected, status) {
+        (true, iced::widget::button::Status::Hovered) => {
+            Color::from_rgb8(0xDF, 0xE8, 0xFF)
+        }
+        (true, _) => Color::from_rgb8(0xEA, 0xF0, 0xFF),
+        (false, iced::widget::button::Status::Hovered) => {
+            Color::from_rgb8(0xF1, 0xF3, 0xF5)
+        }
+        (false, _) => Color::from_rgb8(0xFF, 0xFF, 0xFF),
+    };
+    let border_color = if selected {
+        Color::from_rgb8(0x00, 0x2F, 0xA7)
+    } else {
+        Color::from_rgb8(0xDA, 0xDD, 0xE3)
+    };
+    let text_color = if selected {
+        Color::from_rgb8(0x00, 0x2F, 0xA7)
+    } else {
+        Color::from_rgb8(0x17, 0x20, 0x2A)
+    };
+
+    iced::widget::button::Style {
+        background: Some(Background::Color(background)),
+        text_color,
+        border: Border { color: border_color, width: 1.0, radius: 2.0.into() },
+        ..iced::widget::button::Style::default()
+    }
+}
+
+fn attachment_summary(item: &ItemDocument) -> String {
+    let count = usize::from(item.main_file.is_some()) + item.extra_files.len();
+    match count {
+        0 => "No files".to_string(),
+        1 => "1 file".to_string(),
+        count => format!("{count} files"),
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{} KB", bytes / 1024)
+    } else {
+        format!("{} MB", bytes / (1024 * 1024))
+    }
+}
+
+/// Return categories shared by every selected item.
 fn common_categories(items: &[ItemDocument], ids: &[String]) -> Vec<String> {
     let mut common: Option<BTreeSet<String>> = None;
     for id in ids {
@@ -1049,6 +1299,18 @@ fn common_categories(items: &[ItemDocument], ids: &[String]) -> Vec<String> {
         });
     }
     common.unwrap_or_default().into_iter().collect()
+}
+
+/// Return categories that can still be added to the selected items.
+fn available_categories<'a>(
+    categories: &'a [CategorySummary],
+    current: &[String],
+) -> Vec<&'a CategorySummary> {
+    let current = current.iter().collect::<BTreeSet<_>>();
+    categories
+        .iter()
+        .filter(|category| !current.contains(&category.path))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1116,6 +1378,27 @@ mod tests {
             common_categories(&items, &["a".to_string(), "b".to_string()]),
             vec!["Wireless".to_string()]
         );
+    }
+
+    #[test]
+    fn available_categories_hide_categories_already_on_selection() {
+        let categories = vec![
+            category_summary("Archive"),
+            category_summary("Inbox"),
+            category_summary("Wireless"),
+        ];
+        let current = vec!["Inbox".to_string(), "Wireless".to_string()];
+
+        let paths = available_categories(&categories, &current)
+            .into_iter()
+            .map(|category| category.path.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths, vec!["Archive".to_string()]);
+    }
+
+    fn category_summary(path: &str) -> CategorySummary {
+        CategorySummary { path: path.to_string(), item_ids: Vec::new() }
     }
 
     fn item_with_categories(id: &str, categories: &[&str]) -> ItemDocument {

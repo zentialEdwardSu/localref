@@ -5,13 +5,15 @@
 //! record daemon events and acquire filesystem locks before mutating durable
 //! library state.
 
-mod event_log;
 pub mod config;
 pub mod error;
+mod event_log;
 mod lock;
 pub mod model;
 mod pending;
 pub mod platformfs;
+pub mod rest;
+mod rest_files;
 pub mod rules;
 pub mod scan;
 pub mod storage;
@@ -22,23 +24,23 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{LocalrefError, Result};
-pub use event_log::EventLog;
-use lock::LockManager;
 use crate::model::{
     Creator, Event, EventKind, Metadata, MetadataDocument, MetadataFile,
     MetadataFiles, MetadataImport, MetadataState, MetadataTags,
 };
-pub use pending::{
-    PendingImportConfirmation, PendingImportSession, PendingImportStore,
-};
 use crate::platformfs::{LibraryFs, sanitize_ntfs_component};
 use crate::rules::RuleSet;
 use crate::scan::{AllEntryKind, CatEntryKind, scan_library};
-use serde::{Deserialize, Serialize};
 use crate::storage::{CategorySummary, ItemDocument, SearchHit, StorageDb};
 use crate::types::{
     CategoryPath, ConnectorAttachment, ConnectorImport, ImportOutcome, ItemId,
 };
+pub use event_log::EventLog;
+use lock::LockManager;
+pub use pending::{
+    PendingImportConfirmation, PendingImportSession, PendingImportStore,
+};
+use serde::{Deserialize, Serialize};
 
 /// Import pipeline rooted at one Localref library.
 #[derive(Clone, Debug)]
@@ -77,6 +79,13 @@ pub enum DaemonTask {
     /// Import one explicit file into `All/`.
     ImportFile {
         /// File path to import.
+        path: String,
+    },
+    /// Add one explicit file to an existing item directory.
+    AddItemFile {
+        /// Item id receiving the file.
+        item_id: String,
+        /// Source file path.
         path: String,
     },
     /// Create an empty category directory.
@@ -574,6 +583,52 @@ impl LocalrefDaemon {
         }
     }
 
+    /// Copy one explicit file into an existing indexed item directory.
+    pub fn add_file_to_item(
+        &self,
+        item_id: &str,
+        file_path: impl Into<PathBuf>,
+    ) -> Result<ItemDocument> {
+        let file_path = self.absolute_library_path(file_path.into());
+        let mut record = self.enqueue(DaemonTask::AddItemFile {
+            item_id: item_id.to_string(),
+            path: file_path.display().to_string(),
+        });
+        self.mark_running(record.id);
+        let result = self
+            .ensure_task_allowed(&record.task)
+            .and_then(|()| {
+                let item = self
+                    .storage
+                    .get_item(item_id)?
+                    .ok_or(LocalrefError::MissingField("item"))?;
+                let item_dir = self.library_root.join(&item.object_path);
+                ImportPipeline::new(&self.library_root)
+                    .add_file_to_item(&item_dir, &file_path)
+            })
+            .and_then(|_| {
+                self.storage.rebuild_from_all()?;
+                self.storage
+                    .get_item(item_id)?
+                    .ok_or(LocalrefError::MissingField("item"))
+            });
+
+        match result {
+            Ok(item) => {
+                record.state = DaemonTaskState::Completed;
+                record.message = Some(format!("added file to {item_id}"));
+                self.finish(record);
+                Ok(item)
+            }
+            Err(error) => {
+                record.state = DaemonTaskState::Failed;
+                record.message = Some(error.to_string());
+                self.finish(record);
+                Err(error)
+            }
+        }
+    }
+
     /// Normalize one real directory under `Cat/`.
     pub fn normalize_cat_directory(
         &self,
@@ -882,6 +937,11 @@ impl LocalrefDaemon {
                 DaemonTask::ImportFile { .. } => {
                     Err(LocalrefError::Unsupported(
                         "use import_file for file imports",
+                    ))
+                }
+                DaemonTask::AddItemFile { .. } => {
+                    Err(LocalrefError::Unsupported(
+                        "use add_file_to_item for item file additions",
                     ))
                 }
                 DaemonTask::CreateCategory { .. } => {
@@ -1321,6 +1381,41 @@ impl ImportPipeline {
         })
     }
 
+    /// Copy one file into an existing item directory and update metadata files.
+    pub fn add_file_to_item(
+        &self,
+        item_dir: &Path,
+        file_path: &Path,
+    ) -> Result<PathBuf> {
+        self.fs.ensure_layout()?;
+        ensure_inside_all(self.fs.root(), item_dir)?;
+        if !file_path.is_file() {
+            return Err(LocalrefError::MissingField("item file"));
+        }
+        let _lock = self.locks.acquire(
+            relative_to_root(self.fs.root(), item_dir),
+            "add_file_to_item",
+        )?;
+        let filename = file_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(LocalrefError::MissingField("file name"))?;
+        let target = unique_item_file_path(
+            item_dir,
+            &sanitize_ntfs_component(filename)?,
+        );
+        std::fs::copy(file_path, &target)
+            .map_err(|source| LocalrefError::io(&target, source))?;
+        self.append_file_to_metadata(item_dir, &target)?;
+        self.events.append(
+            EventKind::MetadataWritten,
+            "item file added",
+            None,
+            Some(relative_to_root(self.fs.root(), item_dir)),
+        )?;
+        Ok(target)
+    }
+
     /// Normalize a real directory under `Cat/` into `All/` plus a category link.
     pub fn normalize_cat_directory(
         &self,
@@ -1461,6 +1556,44 @@ impl ImportPipeline {
                 path: filename.to_string(),
                 kind: "attachment".to_string(),
                 mime_type: attachment.mime_type.clone(),
+            });
+        }
+
+        let metadata_bytes = metadata.to_toml_string()?.into_bytes();
+        self.fs.atomic_write(&metadata_path, &metadata_bytes)?;
+        Ok(())
+    }
+
+    fn append_file_to_metadata(
+        &self,
+        item_dir: &std::path::Path,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let metadata_path = item_dir.join("metadata.toml");
+        if !metadata_path.exists() {
+            return Ok(());
+        }
+
+        let metadata_text = std::fs::read_to_string(&metadata_path)
+            .map_err(|source| LocalrefError::io(&metadata_path, source))?;
+        let mut metadata = Metadata::from_toml_str(&metadata_text)?;
+        let Some(filename) = path.file_name().and_then(|name| name.to_str())
+        else {
+            return Ok(());
+        };
+
+        if metadata.files.main.is_none() {
+            metadata.files.main = Some(filename.to_string());
+        } else if !metadata
+            .files
+            .extra
+            .iter()
+            .any(|file| file.path == filename)
+        {
+            metadata.files.extra.push(MetadataFile {
+                path: filename.to_string(),
+                kind: "attachment".to_string(),
+                mime_type: None,
             });
         }
 
@@ -1641,6 +1774,28 @@ fn metadata_from_all_directory(
         state: MetadataState::default(),
         raw_connector: Default::default(),
     })
+}
+
+fn unique_item_file_path(item_dir: &Path, filename: &str) -> PathBuf {
+    let candidate = item_dir.join(filename);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = Path::new(filename);
+    let stem =
+        path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("file");
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    for suffix in 2.. {
+        let name = match extension {
+            Some(extension) => format!("{stem}-{suffix}.{extension}"),
+            None => format!("{stem}-{suffix}"),
+        };
+        let candidate = item_dir.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("unbounded suffix loop returns before exhausting usize")
 }
 
 fn metadata_from_imported_file(
@@ -1899,8 +2054,8 @@ fn connector_item_id(import: &ConnectorImport) -> Result<ItemId> {
 mod tests {
     use super::*;
     use crate::model::EventKind;
-    use serde_json::json;
     use crate::types::{ConnectorAttachment, ConnectorImport, ConnectorItem};
+    use serde_json::json;
 
     #[test]
     fn imports_connector_item_and_attachment_to_all() {

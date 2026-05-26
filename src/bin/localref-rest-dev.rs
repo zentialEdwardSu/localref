@@ -4,8 +4,8 @@
 //! the root `localref` binary; this server exists so REST API behavior can be
 //! exercised in isolation during development.
 
-use csc::rest::serve;
 use localref_core::config::LocalrefConfig;
+use localref_core::rest::serve;
 use localref_core::storage::StorageDb;
 
 /// Start the Localref REST development server.

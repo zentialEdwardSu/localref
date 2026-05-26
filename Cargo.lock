@@ -794,19 +794,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "core"
-version = "0.1.0"
-dependencies = [
- "redb",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "toml 0.9.12+spec-1.1.0",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -942,9 +929,9 @@ name = "csc"
 version = "0.1.0"
 dependencies = [
  "axum",
- "core",
  "http",
  "iced",
+ "localref-core",
  "serde",
  "serde_json",
  "tempfile",
@@ -2442,14 +2429,32 @@ name = "localref"
 version = "0.1.0"
 dependencies = [
  "clap",
- "core",
  "csc",
  "iced",
+ "localref-core",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tray-icon",
+]
+
+[[package]]
+name = "localref-core"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http",
+ "redb",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tower",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -6,7 +6,11 @@
 
 use std::sync::mpsc;
 
-use crate::tray::{TrayAction, TrayController, TrayMenuItem};
+use crate::runtime_log::RuntimeLogger;
+use crate::tray::{
+    TrayAction, TrayController, TrayMenuItem, TrayNotification,
+    TrayNotificationKind, notification_for_command,
+};
 use crate::ui::desktop_app::{DesktopLaunchOptions, DesktopSignal};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -15,11 +19,18 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 pub fn run_native_tray_with_options(
     controller: TrayController,
     options: DesktopLaunchOptions,
+    logger: RuntimeLogger,
 ) -> Result<(), String> {
     let (sender, receiver) = mpsc::channel();
     let tray = LocalrefTray::new(&controller.menu_items())
         .map_err(|error| error.to_string())?;
-    spawn_menu_thread(sender, tray.ids.clone());
+    spawn_menu_thread(
+        sender,
+        tray.ids.clone(),
+        controller.clone(),
+        NativeTrayNotifier::new(logger.clone()),
+    );
+    logger.info("tray", "native tray host started");
     let result =
         crate::ui::desktop_app::launch_with_client_signals_and_options(
             controller.rest_client(),
@@ -30,18 +41,72 @@ pub fn run_native_tray_with_options(
     result
 }
 
-fn spawn_menu_thread(sender: mpsc::Sender<DesktopSignal>, ids: TrayMenuIds) {
+fn spawn_menu_thread(
+    sender: mpsc::Sender<DesktopSignal>,
+    ids: TrayMenuIds,
+    controller: TrayController,
+    notifier: NativeTrayNotifier,
+) {
     std::thread::Builder::new()
         .name("localref-tray-menu".to_string())
         .spawn(move || {
             while let Ok(event) = MenuEvent::receiver().recv() {
-                let signal = ids.signal_for(event.id());
-                if sender.send(signal).is_err() {
+                let action = ids.action_for(event.id());
+                if !handle_tray_action(action, &controller, &notifier, &sender)
+                {
                     break;
                 }
             }
         })
         .expect("failed to start Localref tray menu thread");
+}
+
+fn handle_tray_action(
+    action: TrayAction,
+    controller: &TrayController,
+    notifier: &NativeTrayNotifier,
+    sender: &mpsc::Sender<DesktopSignal>,
+) -> bool {
+    match action {
+        TrayAction::OpenSimpleUi => sender.send(DesktopSignal::Open).is_ok(),
+        TrayAction::Quit => {
+            let result = Ok(crate::tray::TrayCommandResult::Quit);
+            notifier.notify(&notification_for_command(action, &result));
+            sender.send(DesktopSignal::Quit).is_ok()
+        }
+        _ => {
+            let result = controller.run_action(action);
+            notifier.notify(&notification_for_command(action, &result));
+            sender.send(DesktopSignal::Refresh).is_ok()
+        }
+    }
+}
+
+#[derive(Clone)]
+struct NativeTrayNotifier {
+    logger: RuntimeLogger,
+}
+
+impl NativeTrayNotifier {
+    /// Create a notifier that records every tray notification in runtime logs.
+    fn new(logger: RuntimeLogger) -> Self {
+        Self { logger }
+    }
+
+    /// Deliver one tray notification and record the delivery attempt.
+    fn notify(&self, notification: &TrayNotification) {
+        let message = format!("{}: {}", notification.title, notification.body);
+        match notification.kind {
+            TrayNotificationKind::Error => {
+                self.logger.error("tray-notification", &message)
+            }
+            _ => self.logger.info("tray-notification", &message),
+        }
+        #[cfg(windows)]
+        if let Err(error) = show_platform_notification(notification) {
+            self.logger.warn("tray-notification", error);
+        }
+    }
 }
 
 struct LocalrefTray {
@@ -85,26 +150,21 @@ struct TrayMenuId {
 }
 
 impl TrayMenuIds {
-    fn signal_for(&self, id: &MenuId) -> DesktopSignal {
+    fn action_for(&self, id: &MenuId) -> TrayAction {
         self.ids
             .iter()
             .find(|entry| id == &entry.id)
-            .map(|entry| signal_for_action(entry.action))
-            .unwrap_or(DesktopSignal::Refresh)
+            .map(|entry| entry.action)
+            .unwrap_or(TrayAction::RefreshStatus)
     }
 }
 
-fn signal_for_action(action: TrayAction) -> DesktopSignal {
-    match action {
-        TrayAction::OpenSimpleUi => DesktopSignal::Open,
-        TrayAction::RunScan => DesktopSignal::Scan,
-        TrayAction::PauseWatcher => DesktopSignal::PauseWatcher,
-        TrayAction::PauseWrites => DesktopSignal::PauseWrites,
-        TrayAction::ResumeWatcher => DesktopSignal::ResumeWatcher,
-        TrayAction::ResumeWrites => DesktopSignal::ResumeWrites,
-        TrayAction::RefreshStatus => DesktopSignal::Refresh,
-        TrayAction::Quit => DesktopSignal::Quit,
-    }
+#[cfg(windows)]
+/// No-op Windows notification hook until a native notifier is added.
+fn show_platform_notification(
+    _notification: &TrayNotification,
+) -> Result<(), String> {
+    Ok(())
 }
 
 /// Build a small generated Localref tray icon.

@@ -1,23 +1,93 @@
-//! Blocking REST client used by desktop entry points.
+//! Blocking REST client for Localref REST entry points.
 //!
 //! The client intentionally speaks only to the Localref REST API. It does not
-//! read or write the library filesystem, preserving the desktop boundary from
-//! `project.md`.
+//! read or write the library filesystem, preserving the process boundary.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
 use localref_core::config::LocalrefConfig;
-use localref_core::model::{Event, ItemDocument, Metadata, SearchHit};
-use serde::Deserialize;
+use localref_core::model::{
+    Event, ItemDocument, ItemFilesDocument, Metadata, MetadataDocument,
+    SearchHit,
+};
+pub use localref_core::storage::CategorySummary;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ui::view_model::{
-    CategoryRequest, CategorySummary, DaemonStatus, DashboardSnapshot,
-    MetadataDocument, MetadataPatchRequest, PauseRequest,
-    PendingImportSummary,
-};
+/// Snapshot rendered by the simple desktop dashboard.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+pub struct DashboardSnapshot {
+    /// Indexed item count.
+    pub item_count: usize,
+    /// Category count.
+    pub category_count: usize,
+    /// Pending import count.
+    pub pending_count: usize,
+    /// Recent event count.
+    pub event_count: usize,
+}
+
+/// Pending import summary returned by the REST API.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct PendingImportSummary {
+    /// Pending import id.
+    pub id: u64,
+    /// Item title.
+    pub title: String,
+    /// Imported item type, when known.
+    pub item_type: Option<String>,
+    /// Source URI, when known.
+    pub uri: Option<String>,
+    /// Rule-suggested categories.
+    pub suggested_categories: Vec<String>,
+}
+
+/// Request body used to patch one metadata document.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+struct MetadataPatchRequest {
+    /// Revision hash observed by the UI before editing.
+    expected_revision: String,
+    /// Complete metadata replacement.
+    metadata: Metadata,
+}
+
+/// Request body used by category add operations.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+struct CategoryRequest {
+    /// Category path relative to `Cat/`.
+    category: String,
+}
+
+/// Request body used by file import and file-open operations.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+struct FilePathRequest {
+    /// Path accepted by the target endpoint.
+    path: String,
+}
+
+/// Daemon queue status returned by `/api/daemon/status`.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+pub struct DaemonStatus {
+    /// Whether a daemon task is currently running.
+    pub running: bool,
+    /// Number of queued daemon tasks.
+    pub queued_tasks: usize,
+    /// Recent task records as API JSON.
+    #[serde(default)]
+    pub recent_tasks: Vec<serde_json::Value>,
+    /// Active pause modes.
+    #[serde(default)]
+    pub paused_modes: Vec<String>,
+}
+
+/// Request body used by daemon pause and resume endpoints.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+struct PauseRequest {
+    /// Pause mode to add or remove.
+    mode: String,
+}
 
 /// Small blocking REST client for localhost desktop entry points.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +137,46 @@ impl RestClient {
         item_id: &str,
     ) -> Result<MetadataDocument, String> {
         self.get_json(&format!("/api/items/{}/metadata", encode_path(item_id)))
+    }
+
+    /// Return files currently present in one item directory.
+    pub fn list_item_files(
+        &self,
+        item_id: &str,
+    ) -> Result<ItemFilesDocument, String> {
+        self.get_json(&format!("/api/items/{}/files", encode_path(item_id)))
+    }
+
+    /// Open an item-relative file path with the system viewer.
+    pub fn open_item_file(
+        &self,
+        item_id: &str,
+        path: impl Into<String>,
+    ) -> Result<Value, String> {
+        self.post_json(
+            &format!("/api/items/{}/files/open", encode_path(item_id)),
+            &FilePathRequest { path: path.into() },
+        )
+    }
+
+    /// Copy one file into an existing item directory.
+    pub fn add_item_file(
+        &self,
+        item_id: &str,
+        path: impl Into<String>,
+    ) -> Result<ItemDocument, String> {
+        self.post_json(
+            &format!("/api/items/{}/files", encode_path(item_id)),
+            &FilePathRequest { path: path.into() },
+        )
+    }
+
+    /// Open one item directory with the system file manager.
+    pub fn open_item_folder(&self, item_id: &str) -> Result<Value, String> {
+        self.post_json(
+            &format!("/api/items/{}/folder/open", encode_path(item_id)),
+            &Value::Null,
+        )
     }
 
     /// Patch a metadata document through the daemon queue.

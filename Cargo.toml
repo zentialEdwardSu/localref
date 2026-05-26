@@ -13,7 +13,7 @@ native-tray = ["desktop", "csc/native-tray", "dep:tray-icon"]
 clap = { workspace = true }
 csc = { path = "crates/csc" }
 iced = { workspace = true, optional = true }
-localref_core = { package = "core", path = "crates/core" }
+localref_core = { package = "localref-core", path = "crates/core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -50,6 +50,10 @@ tower = { version = "0.5", features = ["util"] }
 iced = { version = "0.13", features = ["tokio"] }
 tao = "0.30"
 tray-icon = "0.21"
+windows-sys = { version = "0.61", features = [
+	"Win32_UI_Shell",
+	"Win32_UI_WindowsAndMessaging",
+] }
 
 [workspace.lints.clippy]
 correctness = "deny"

@@ -11,12 +11,12 @@ use csc::{
     ConnectorEvent, ConnectorImportRequest, ConnectorImportSink,
     serve as serve_csc,
 };
-use localref_core::config::LocalrefConfig;
 use localref_core::LocalrefDaemon;
-use serde_json::Value;
+use localref_core::config::LocalrefConfig;
 use localref_core::types::{
     ConnectorAttachment, ConnectorImport, ConnectorItem, ImportOutcome,
 };
+use serde_json::Value;
 
 /// Import sink that prints connector traffic and writes through core.
 struct LoggingImportSink {
@@ -163,6 +163,16 @@ impl ConnectorImportSink for LoggingImportSink {
         println!("--- connector event ---");
         print_pretty_json(&event);
         Ok(())
+    }
+
+    /// Return Localref category paths for connector target selection.
+    fn category_paths(&self) -> Result<Vec<String>, String> {
+        self.daemon
+            .list_categories()
+            .map(|categories| {
+                categories.into_iter().map(|category| category.path).collect()
+            })
+            .map_err(|error| error.to_string())
     }
 }
 

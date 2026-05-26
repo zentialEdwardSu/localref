@@ -13,7 +13,7 @@ native-tray = ["desktop", "dep:tray-icon"]
 axum = { workspace = true }
 http = { workspace = true }
 iced = { workspace = true, optional = true }
-localref_core = { package = "core", path = "../core" }
+localref_core = { package = "localref-core", path = "../core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

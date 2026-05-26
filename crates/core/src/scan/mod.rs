@@ -8,8 +8,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::{LocalrefError, Result};
-use serde::{Deserialize, Serialize};
 use crate::types::CategoryPath;
+use serde::{Deserialize, Serialize};
 
 /// Complete read-only scan result for one library root.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]

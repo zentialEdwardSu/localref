@@ -49,6 +49,28 @@ pub enum TrayAction {
     Quit,
 }
 
+/// User-visible notification produced by tray commands.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrayNotification {
+    /// Notification title.
+    pub title: String,
+    /// Notification body.
+    pub body: String,
+    /// Notification severity.
+    pub kind: TrayNotificationKind,
+}
+
+/// Severity used by native tray notification delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrayNotificationKind {
+    /// Informational notification.
+    Info,
+    /// Successful command notification.
+    Success,
+    /// Error notification.
+    Error,
+}
+
 /// One tray menu item.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrayMenuItem {
@@ -174,6 +196,46 @@ impl TrayController {
     }
 }
 
+/// Build a notification from one tray command result.
+pub fn notification_for_command(
+    action: TrayAction,
+    result: &Result<TrayCommandResult, String>,
+) -> TrayNotification {
+    match result {
+        Ok(TrayCommandResult::Status(status)) => TrayNotification {
+            title: "Localref status".to_string(),
+            body: status_label(status),
+            kind: TrayNotificationKind::Info,
+        },
+        Ok(TrayCommandResult::Snapshot(snapshot)) => TrayNotification {
+            title: "Localref scan completed".to_string(),
+            body: format!(
+                "items={} categories={} pending={} events={}",
+                snapshot.item_count,
+                snapshot.category_count,
+                snapshot.pending_count,
+                snapshot.event_count
+            ),
+            kind: TrayNotificationKind::Success,
+        },
+        Ok(TrayCommandResult::UiRequested) => TrayNotification {
+            title: "Localref".to_string(),
+            body: "Opening Simple UI".to_string(),
+            kind: TrayNotificationKind::Info,
+        },
+        Ok(TrayCommandResult::Quit) => TrayNotification {
+            title: "Localref".to_string(),
+            body: "Quit requested".to_string(),
+            kind: TrayNotificationKind::Info,
+        },
+        Err(message) => TrayNotification {
+            title: "Localref error".to_string(),
+            body: format!("{action:?}: {message}"),
+            kind: TrayNotificationKind::Error,
+        },
+    }
+}
+
 /// Result of one tray command.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrayCommandResult {
@@ -239,5 +301,36 @@ mod tests {
             status_label(&TrayStatus::Paused(vec!["writes".to_string()])),
             "Localref: paused (writes)"
         );
+    }
+
+    #[test]
+    fn notification_for_scan_summarizes_snapshot() {
+        let notification = notification_for_command(
+            TrayAction::RunScan,
+            &Ok(TrayCommandResult::Snapshot(DashboardSnapshot {
+                item_count: 2,
+                category_count: 3,
+                pending_count: 1,
+                event_count: 4,
+            })),
+        );
+
+        assert_eq!(notification.title, "Localref scan completed");
+        assert_eq!(notification.kind, TrayNotificationKind::Success);
+        assert!(notification.body.contains("items=2"));
+        assert!(notification.body.contains("pending=1"));
+    }
+
+    #[test]
+    fn notification_for_error_names_action() {
+        let notification = notification_for_command(
+            TrayAction::PauseWrites,
+            &Err("REST offline".to_string()),
+        );
+
+        assert_eq!(notification.title, "Localref error");
+        assert_eq!(notification.kind, TrayNotificationKind::Error);
+        assert!(notification.body.contains("PauseWrites"));
+        assert!(notification.body.contains("REST offline"));
     }
 }

@@ -51,6 +51,7 @@
 //! as [`ConnectorEvent`] values so the future `core::ImportPipeline` can decide
 //! how to stage and persist them.
 
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -66,7 +67,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-pub mod rest;
 
 use localref_core::types::{ConnectorAttachment, ConnectorItem};
 
@@ -212,6 +212,11 @@ pub trait ConnectorImportSink: Send + Sync + 'static {
 
     /// Accept one connector event.
     fn accept_event(&self, event: ConnectorEvent) -> Result<(), String>;
+
+    /// Return category paths that can be shown as connector save targets.
+    fn category_paths(&self) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
 }
 
 /// In-memory sink used by tests.
@@ -548,10 +553,19 @@ async fn select_items(
 /// collection, editable flags, possible save targets, and tags.
 ///
 /// Localref behavior: Localref advertises a single editable "Localref" target.
-/// Future category selection belongs to the Localref UI, not Zotero collection
-/// selection.
-async fn selected_collection(State(state): State<AppState>) -> Response {
-    record_method(&state, "POST", "/connector/getSelectedCollection");
+/// Localref categories from `Cat/` are exposed as collection-like targets so
+/// the connector popup can display the user's local classification tree.
+async fn selected_collection(
+    method: Method,
+    State(state): State<AppState>,
+) -> Response {
+    record_method(&state, method.as_str(), "/connector/getSelectedCollection");
+    let category_paths = match state.sink.category_paths() {
+        Ok(paths) => paths,
+        Err(message) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, message);
+        }
+    };
     json_response(json!({
         "libraryID": 1,
         "libraryName": "Localref",
@@ -560,14 +574,72 @@ async fn selected_collection(State(state): State<AppState>) -> Response {
         "name": "Localref",
         "editable": true,
         "filesEditable": true,
-        "targets": [{
-            "id": "L1",
-            "name": "Localref",
-            "filesEditable": true,
-            "level": 0
-        }],
-        "tags": {}
+        "targets": connector_save_targets(category_paths),
+        "tags": {
+            "L1": []
+        }
     }))
+}
+
+/// Build Zotero Connector target records from Localref category paths.
+fn connector_save_targets(
+    category_paths: impl IntoIterator<Item = String>,
+) -> Vec<Value> {
+    let mut targets = vec![json!({
+        "id": "L1",
+        "name": "Localref",
+        "filesEditable": true,
+        "level": 0
+    })];
+    for category in normalized_category_prefixes(category_paths) {
+        let name = category
+            .rsplit('/')
+            .next()
+            .expect("normalized category should have a final segment");
+        targets.push(json!({
+            "id": format!("C{}", encode_target_path(&category)),
+            "name": name,
+            "filesEditable": true,
+            "level": category.split('/').count()
+        }));
+    }
+    targets
+}
+
+/// Return every category prefix needed to render a hierarchical target tree.
+fn normalized_category_prefixes(
+    category_paths: impl IntoIterator<Item = String>,
+) -> BTreeSet<String> {
+    let mut prefixes = BTreeSet::new();
+    for category in category_paths {
+        let normalized = category.trim().trim_matches('/').replace('\\', "/");
+        let mut prefix = String::new();
+        for part in
+            normalized.split('/').filter(|part| !part.trim().is_empty())
+        {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part.trim());
+            prefixes.insert(prefix.clone());
+        }
+    }
+    prefixes
+}
+
+/// Percent-encode category path bytes for connector target ids.
+fn encode_target_path(path: &str) -> String {
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'/')
+        {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 /// Handle `POST /connector/sessionProgress`.
@@ -1404,6 +1476,78 @@ mod tests {
                 .unwrap()
                 .contains("x-metadata")
         );
+    }
+
+    #[tokio::test]
+    async fn selected_collection_includes_local_category_targets() {
+        let sink = Arc::new(CategoryPathSink {
+            categories: vec![
+                "Wireless/RIS".to_string(),
+                "AI Papers/2026 Reads".to_string(),
+            ],
+        });
+        let response = router(sink)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/connector/getSelectedCollection")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_json(response).await;
+        assert_eq!(body["libraryID"], 1);
+        assert_eq!(body["id"], Value::Null);
+        assert_eq!(body["targets"][0]["id"], "L1");
+        assert!(body["targets"].as_array().unwrap().iter().any(|target| {
+            target["id"] == "CWireless"
+                && target["name"] == "Wireless"
+                && target["level"] == 1
+        }));
+        assert!(body["targets"].as_array().unwrap().iter().any(|target| {
+            target["id"] == "CWireless/RIS"
+                && target["name"] == "RIS"
+                && target["level"] == 2
+        }));
+        assert!(body["targets"].as_array().unwrap().iter().any(|target| {
+            target["id"] == "CAI%20Papers/2026%20Reads"
+                && target["name"] == "2026 Reads"
+                && target["level"] == 2
+        }));
+        assert_eq!(body["tags"]["L1"], json!([]));
+    }
+
+    #[derive(Debug)]
+    struct CategoryPathSink {
+        categories: Vec<String>,
+    }
+
+    impl ConnectorImportSink for CategoryPathSink {
+        fn accept_import(
+            &self,
+            _request: ConnectorImportRequest,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn accept_attachment(
+            &self,
+            _attachment: ConnectorAttachment,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn accept_event(&self, _event: ConnectorEvent) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn category_paths(&self) -> Result<Vec<String>, String> {
+            Ok(self.categories.clone())
+        }
     }
 
     async fn to_json(response: Response) -> Value {

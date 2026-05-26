@@ -8,6 +8,8 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+mod rest_client;
+mod runtime_log;
 mod tray;
 mod ui;
 
@@ -22,6 +24,7 @@ use localref_core::storage::StorageDb;
 use localref_core::types::{
     ConnectorAttachment, ConnectorImport, ConnectorItem, ImportOutcome,
 };
+use runtime_log::RuntimeLogger;
 use tray::{TrayAction, TrayCommandResult, TrayController, status_label};
 
 /// Start Localref in the selected mode.
@@ -112,6 +115,8 @@ impl From<TrayCliAction> for TrayAction {
 
 /// Start the tray-hosted daemon runtime.
 fn run_tray_host(config: LocalrefConfig) -> std::io::Result<()> {
+    let logger = RuntimeLogger::new(config.library_root());
+    logger.info("runtime", "tray host starting");
     if config.desktop_quiet_start() {
         detach_console_for_quiet_start();
     } else {
@@ -122,16 +127,20 @@ fn run_tray_host(config: LocalrefConfig) -> std::io::Result<()> {
         config.clone(),
         daemon,
         !config.desktop_quiet_start(),
+        logger.clone(),
     )?;
-    run_native_tray_host(&config)
+    run_native_tray_host(&config, logger)
 }
 
 /// Start both long-lived HTTP surfaces.
 async fn serve_all(config: LocalrefConfig) -> std::io::Result<()> {
+    let logger = RuntimeLogger::new(config.library_root());
+    logger.info("runtime", "headless server starting");
     print_config_summary(&config);
     let daemon = open_daemon(&config);
-    let rest = serve_rest_with_daemon(config.clone(), daemon.clone());
-    let csc = serve_csc_with_daemon(config, daemon);
+    let rest =
+        serve_rest_with_daemon(config.clone(), daemon.clone(), logger.clone());
+    let csc = serve_csc_with_daemon(config, daemon, logger);
     tokio::try_join!(rest, csc).map(|_| ())
 }
 
@@ -157,11 +166,14 @@ fn start_api_runtime(
     config: LocalrefConfig,
     daemon: LocalrefDaemon,
     print_listeners: bool,
+    logger: RuntimeLogger,
 ) -> std::io::Result<JoinHandle<()>> {
     std::thread::Builder::new().name("localref-api-runtime".to_string()).spawn(
         move || {
             let rest_config = config.clone();
             let rest_daemon = daemon.clone();
+            let rest_logger = logger.clone();
+            let csc_logger = logger.clone();
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
@@ -171,13 +183,19 @@ fn start_api_runtime(
                     rest_config,
                     rest_daemon,
                     print_listeners,
+                    rest_logger,
                 );
                 let csc = serve_csc_with_daemon_logging(
                     config,
                     daemon,
                     print_listeners,
+                    csc_logger,
                 );
                 if let Err(error) = tokio::try_join!(rest, csc).map(|_| ()) {
+                    logger.error(
+                        "runtime",
+                        format!("localref API runtime stopped: {error}"),
+                    );
                     eprintln!("localref API runtime stopped: {error}");
                 }
             });
@@ -187,17 +205,19 @@ fn start_api_runtime(
 
 /// Start only the user-facing REST API.
 async fn serve_rest(config: LocalrefConfig) -> std::io::Result<()> {
+    let logger = RuntimeLogger::new(config.library_root());
     let storage = StorageDb::open(config.library_root())
         .expect("failed to open Localref query database");
-    serve_rest_with_daemon(config, LocalrefDaemon::new(storage)).await
+    serve_rest_with_daemon(config, LocalrefDaemon::new(storage), logger).await
 }
 
 /// Start the REST API using an already-open daemon.
 async fn serve_rest_with_daemon(
     config: LocalrefConfig,
     daemon: LocalrefDaemon,
+    logger: RuntimeLogger,
 ) -> std::io::Result<()> {
-    serve_rest_with_daemon_logging(config, daemon, true).await
+    serve_rest_with_daemon_logging(config, daemon, true, logger).await
 }
 
 /// Start the REST API and optionally print its listener address.
@@ -205,26 +225,30 @@ async fn serve_rest_with_daemon_logging(
     config: LocalrefConfig,
     daemon: LocalrefDaemon,
     print_listener: bool,
+    logger: RuntimeLogger,
 ) -> std::io::Result<()> {
     if print_listener {
         println!("localref REST listening on http://{}", config.rest_addr());
     }
-    csc::rest::serve_with_daemon(config.rest_addr(), daemon).await
+    logger.info("rest", format!("listening on http://{}", config.rest_addr()));
+    localref_core::rest::serve_with_daemon(config.rest_addr(), daemon).await
 }
 
 /// Start only the Zotero Connector-compatible API.
 async fn serve_csc_only(config: LocalrefConfig) -> std::io::Result<()> {
+    let logger = RuntimeLogger::new(config.library_root());
     let daemon = LocalrefDaemon::for_library(config.library_root())
         .expect("failed to open Localref daemon");
-    serve_csc_with_daemon(config, daemon).await
+    serve_csc_with_daemon(config, daemon, logger).await
 }
 
 /// Start the connector API using an already-open daemon.
 async fn serve_csc_with_daemon(
     config: LocalrefConfig,
     daemon: LocalrefDaemon,
+    logger: RuntimeLogger,
 ) -> std::io::Result<()> {
-    serve_csc_with_daemon_logging(config, daemon, true).await
+    serve_csc_with_daemon_logging(config, daemon, true, logger).await
 }
 
 /// Start the connector API and optionally print its listener address.
@@ -232,11 +256,13 @@ async fn serve_csc_with_daemon_logging(
     config: LocalrefConfig,
     daemon: LocalrefDaemon,
     print_listener: bool,
+    logger: RuntimeLogger,
 ) -> std::io::Result<()> {
-    let sink = Arc::new(LoggingImportSink::new(daemon));
+    let sink = Arc::new(LoggingImportSink::new(daemon, logger.clone()));
     if print_listener {
         println!("localref CSC listening on http://{}", config.csc_addr());
     }
+    logger.info("csc", format!("listening on http://{}", config.csc_addr()));
     serve_csc(config.csc_addr(), sink).await
 }
 
@@ -255,20 +281,27 @@ fn launch_ui() -> Result<(), String> {
 
 /// Run the native tray loop for the daemon host.
 #[cfg(feature = "native-tray")]
-fn run_native_tray_host(config: &LocalrefConfig) -> std::io::Result<()> {
+fn run_native_tray_host(
+    config: &LocalrefConfig,
+    logger: RuntimeLogger,
+) -> std::io::Result<()> {
     let controller = TrayController::from_config(config);
     let options = if config.desktop_start_hidden() {
         ui::desktop_app::DesktopLaunchOptions::hidden()
     } else {
         ui::desktop_app::DesktopLaunchOptions::visible()
     };
-    tray::native::run_native_tray_with_options(controller, options)
+    tray::native::run_native_tray_with_options(controller, options, logger)
         .map_err(std::io::Error::other)
 }
 
 /// Fail loudly when the binary was built without native tray support.
 #[cfg(not(feature = "native-tray"))]
-fn run_native_tray_host(_config: &LocalrefConfig) -> std::io::Result<()> {
+fn run_native_tray_host(
+    _config: &LocalrefConfig,
+    logger: RuntimeLogger,
+) -> std::io::Result<()> {
+    logger.error("tray", "native tray feature is not enabled");
     Err(std::io::Error::other(
         "native tray feature is not enabled; use `localref headless` for diagnostics",
     ))
@@ -276,6 +309,8 @@ fn run_native_tray_host(_config: &LocalrefConfig) -> std::io::Result<()> {
 
 /// Execute a tray command without spawning another Localref binary.
 fn run_tray_action(config: &LocalrefConfig, action: TrayAction) {
+    let logger = RuntimeLogger::new(config.library_root());
+    logger.info("tray", format!("running tray action: {action:?}"));
     let controller = TrayController::from_config(config);
     match controller.run_action(action) {
         Ok(TrayCommandResult::Status(status)) => {
@@ -296,7 +331,10 @@ fn run_tray_action(config: &LocalrefConfig, action: TrayAction) {
             }
         }
         Ok(TrayCommandResult::Quit) => println!("Localref: quit requested"),
-        Err(message) => println!("Localref: error: {message}"),
+        Err(message) => {
+            logger.error("tray", format!("tray action failed: {message}"));
+            println!("Localref: error: {message}");
+        }
     }
 }
 
@@ -328,6 +366,7 @@ fn detach_console_for_quiet_start() {}
 /// Connector sink that logs incoming connector data and forwards it to core.
 struct LoggingImportSink {
     daemon: LocalrefDaemon,
+    logger: RuntimeLogger,
     sessions: Mutex<Vec<PendingImport>>,
 }
 
@@ -342,8 +381,8 @@ struct PendingImport {
 
 impl LoggingImportSink {
     /// Create a sink from an already-open daemon facade.
-    fn new(daemon: LocalrefDaemon) -> Self {
-        Self { daemon, sessions: Mutex::new(Vec::new()) }
+    fn new(daemon: LocalrefDaemon, logger: RuntimeLogger) -> Self {
+        Self { daemon, logger, sessions: Mutex::new(Vec::new()) }
     }
 
     /// Try to import every buffered session that has metadata.
@@ -365,8 +404,14 @@ impl LoggingImportSink {
                 })
                 .map_err(|error| error.to_string())?;
             println!("saved Localref item: {}", outcome.item_dir.display());
+            self.logger.info(
+                "csc-import",
+                format!("saved Localref item: {}", outcome.item_dir.display()),
+            );
             for file in &outcome.written_files {
                 println!("  wrote: {}", file.display());
+                self.logger
+                    .info("csc-import", format!("wrote {}", file.display()));
             }
             session.outcome = Some(outcome);
         }
@@ -380,6 +425,10 @@ impl ConnectorImportSink for LoggingImportSink {
         request: ConnectorImportRequest,
     ) -> Result<(), String> {
         println!("connector import: {} item(s)", request.items.len());
+        self.logger.info(
+            "csc-import",
+            format!("connector import: {} item(s)", request.items.len()),
+        );
         for item in &request.normalized_items {
             println!("  title: {}", item.title);
             if let Some(item_type) = &item.item_type {
@@ -409,6 +458,14 @@ impl ConnectorImportSink for LoggingImportSink {
             attachment.bytes.len(),
             attachment.filename
         );
+        self.logger.info(
+            "csc-attachment",
+            format!(
+                "connector attachment: {} bytes, file {}",
+                attachment.bytes.len(),
+                attachment.filename
+            ),
+        );
         let mut sessions =
             self.sessions.lock().expect("connector sessions mutex poisoned");
         let session_index = sessions
@@ -430,6 +487,10 @@ impl ConnectorImportSink for LoggingImportSink {
                 )
                 .map_err(|error| error.to_string())?;
             println!("  wrote: {}", path.display());
+            self.logger.info(
+                "csc-attachment",
+                format!("saved late attachment: {}", path.display()),
+            );
         } else {
             session.attachments.push(attachment);
             self.try_import_locked(&mut sessions)?;
@@ -442,7 +503,22 @@ impl ConnectorImportSink for LoggingImportSink {
             "connector event: {}",
             serde_json::to_string(&event).map_err(|error| error.to_string())?
         );
+        self.logger.info(
+            "csc-event",
+            serde_json::to_string(&event)
+                .map_err(|error| error.to_string())?,
+        );
         Ok(())
+    }
+
+    /// Return Localref category paths for connector target selection.
+    fn category_paths(&self) -> Result<Vec<String>, String> {
+        self.daemon
+            .list_categories()
+            .map(|categories| {
+                categories.into_iter().map(|category| category.path).collect()
+            })
+            .map_err(|error| error.to_string())
     }
 }
 

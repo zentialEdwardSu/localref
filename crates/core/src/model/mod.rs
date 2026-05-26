@@ -177,6 +177,29 @@ pub struct ItemDocument {
     pub categories: Vec<String>,
 }
 
+/// Files currently present under one item directory.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct ItemFilesDocument {
+    /// Stable Localref item id.
+    pub item_id: String,
+    /// Relative object path under the library root, such as `All/Paper`.
+    pub object_path: String,
+    /// Files and directories inside the item directory.
+    #[serde(default)]
+    pub files: Vec<ItemFileEntry>,
+}
+
+/// One filesystem entry inside an item directory.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct ItemFileEntry {
+    /// Path relative to the item directory.
+    pub path: String,
+    /// Entry kind: `file`, `directory`, or `other`.
+    pub kind: String,
+    /// File size in bytes when the entry is a regular file.
+    pub bytes: Option<u64>,
+}
+
 /// Full metadata payload paired with its source revision.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct MetadataDocument {

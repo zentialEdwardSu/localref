@@ -75,9 +75,9 @@ use std::path::Path;
 
 use crate::error::{LocalrefError, Result};
 use crate::model::Metadata;
+use crate::types::CategoryPath;
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
-use crate::types::CategoryPath;
 
 /// A parsed set of import-time classification rules.
 #[derive(Clone, Debug, Default)]

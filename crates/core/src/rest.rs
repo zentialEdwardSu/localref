@@ -8,17 +8,18 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use crate::model::Metadata;
+use crate::rest_files;
+use crate::storage::StorageDb;
+use crate::types::CategoryPath;
+use crate::{LocalrefDaemon, PauseMode, PendingImportConfirmation};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use localref_core::{LocalrefDaemon, PauseMode, PendingImportConfirmation};
-use localref_core::model::Metadata;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use localref_core::storage::StorageDb;
-use localref_core::types::CategoryPath;
 
 /// Shared API application state.
 #[derive(Clone)]
@@ -53,6 +54,13 @@ pub struct PatchMetadataRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct ImportFolderRequest {
     /// Absolute path or library-relative path to the directory.
+    pub path: PathBuf,
+}
+
+/// Request body for opening one item-relative file path.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct OpenItemFileRequest {
+    /// Path relative to the selected item directory.
     pub path: PathBuf,
 }
 
@@ -97,6 +105,9 @@ pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
         .route("/api/import/pending/{id}/cancel", post(cancel_pending_import))
         .route("/api/items", get(list_items))
         .route("/api/items/{id}", get(get_item))
+        .route("/api/items/{id}/files", get(item_files).post(add_item_file))
+        .route("/api/items/{id}/files/open", post(open_item_file))
+        .route("/api/items/{id}/folder/open", post(open_item_folder))
         .route(
             "/api/items/{id}/metadata",
             get(get_metadata).patch(patch_metadata),
@@ -118,7 +129,7 @@ pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
 /// Open storage at `library_root` and build the API router.
 pub fn router_for_library(
     library_root: impl Into<PathBuf>,
-) -> localref_core::error::Result<Router> {
+) -> crate::error::Result<Router> {
     Ok(router(StorageDb::open(library_root)?))
 }
 
@@ -189,6 +200,74 @@ async fn get_item(
 ) -> Response {
     match state.daemon.get_item(&id) {
         Ok(Some(item)) => Json(item).into_response(),
+        Ok(None) => {
+            api_error(StatusCode::NOT_FOUND, format!("item not found: {id}"))
+        }
+        Err(error) => {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
+    }
+}
+
+async fn item_files(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Response {
+    match rest_files::item_files(&state.daemon, &id) {
+        Ok(Some(files)) => Json(files).into_response(),
+        Ok(None) => {
+            api_error(StatusCode::NOT_FOUND, format!("item not found: {id}"))
+        }
+        Err(error) => {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
+    }
+}
+
+async fn open_item_file(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(request): Json<OpenItemFileRequest>,
+) -> Response {
+    match rest_files::item_file_path(&state.daemon, &id, &request.path) {
+        Ok(Some(path)) => match rest_files::open_system_path(&path) {
+            Ok(()) => Json(json!({"opened": request.path})).into_response(),
+            Err(error) => {
+                api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
+        },
+        Ok(None) => api_error(
+            StatusCode::NOT_FOUND,
+            format!("item file not found: {id}"),
+        ),
+        Err(error) => api_error(StatusCode::BAD_REQUEST, error.to_string()),
+    }
+}
+
+async fn add_item_file(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(request): Json<ImportFolderRequest>,
+) -> Response {
+    match state.daemon.add_file_to_item(&id, request.path) {
+        Ok(item) => Json(item).into_response(),
+        Err(error) => {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
+    }
+}
+
+async fn open_item_folder(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Response {
+    match rest_files::item_folder(&state.daemon, &id) {
+        Ok(Some(path)) => match rest_files::open_system_path(&path) {
+            Ok(()) => Json(json!({"opened": id})).into_response(),
+            Err(error) => {
+                api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
+        },
         Ok(None) => {
             api_error(StatusCode::NOT_FOUND, format!("item not found: {id}"))
         }
@@ -435,12 +514,12 @@ fn api_error(status: StatusCode, message: impl Into<String>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{ConnectorImport, ConnectorItem};
     use axum::body::Body;
     use axum::body::to_bytes;
     use http::Request;
     use serde_json::Value;
     use tower::ServiceExt;
-    use localref_core::types::{ConnectorImport, ConnectorItem};
 
     #[tokio::test]
     async fn scans_lists_and_searches_items() {
@@ -731,6 +810,97 @@ main = "paper.pdf"
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(body.contains("event: metadata_created"));
+    }
+
+    #[tokio::test]
+    async fn lists_item_folder_files_without_exposing_parent_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let item_dir = temp.path().join("All").join("File Paper");
+        std::fs::create_dir_all(item_dir.join("figures")).unwrap();
+        std::fs::write(item_dir.join("paper.pdf"), b"pdf").unwrap();
+        std::fs::write(item_dir.join("figures").join("one.png"), b"png")
+            .unwrap();
+        std::fs::write(
+            item_dir.join("metadata.toml"),
+            r#"
+id = "lr:test:files"
+type = "journalArticle"
+title = "File Paper"
+
+[files]
+main = "paper.pdf"
+"#,
+        )
+        .unwrap();
+        let app = router_for_library(temp.path()).unwrap();
+        request_json(&app, "POST", "/api/daemon/scan").await;
+
+        let files =
+            request_json(&app, "GET", "/api/items/lr:test:files/files").await;
+
+        assert_eq!(files["item_id"], "lr:test:files");
+        assert!(
+            files["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["path"] == "paper.pdf"
+                    && entry["kind"] == "file")
+        );
+        assert!(
+            files["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["path"] == "figures/one.png")
+        );
+
+        let rejected = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/items/lr:test:files/files/open")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"path": "../paper.pdf"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn adds_dropped_file_to_existing_item_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let item_dir = temp.path().join("All").join("Drop Target");
+        std::fs::create_dir_all(&item_dir).unwrap();
+        std::fs::write(
+            item_dir.join("metadata.toml"),
+            r#"
+id = "lr:test:drop"
+type = "journalArticle"
+title = "Drop Target"
+"#,
+        )
+        .unwrap();
+        let source = temp.path().join("appendix.pdf");
+        std::fs::write(&source, b"pdf").unwrap();
+        let app = router_for_library(temp.path()).unwrap();
+        request_json(&app, "POST", "/api/daemon/scan").await;
+
+        let item = request_json_body(
+            &app,
+            "POST",
+            "/api/items/lr:test:drop/files",
+            json!({"path": source}),
+        )
+        .await;
+
+        assert_eq!(item["main_file"], "appendix.pdf");
+        assert!(item_dir.join("appendix.pdf").is_file());
     }
 
     #[tokio::test]

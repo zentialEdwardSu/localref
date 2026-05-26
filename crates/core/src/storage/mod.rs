@@ -12,8 +12,8 @@ use std::sync::Arc;
 use crate::error::{LocalrefError, Result};
 use crate::model::Metadata;
 pub use crate::model::{ItemDocument, SearchHit};
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use crate::scan::{CatEntryKind, scan_cat};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 const ITEMS_TABLE: TableDefinition<&str, &[u8]> =
     TableDefinition::new("items");
@@ -447,7 +447,9 @@ title = "Categorized Paper"
     #[test]
     fn list_categories_includes_empty_cat_directories() {
         let temp = tempfile::tempdir().unwrap();
-        crate::platformfs::LibraryFs::new(temp.path()).ensure_layout().unwrap();
+        crate::platformfs::LibraryFs::new(temp.path())
+            .ensure_layout()
+            .unwrap();
         crate::platformfs::LibraryFs::new(temp.path())
             .create_category_dir(
                 &crate::types::CategoryPath::new("Inbox/New").unwrap(),
