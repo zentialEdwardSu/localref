@@ -13,7 +13,7 @@ mod dto;
 mod state;
 
 use actions::{UiAction, run_action};
-use assets::{favicon, ui_css, ui_wasm, ui_wasm_js};
+use assets::{favicon, ui_css, ui_wasm, ui_wasm_bindgen_js, ui_wasm_js};
 use axum::Json;
 use axum::Router;
 use axum::extract::{Form, Query, State};
@@ -33,7 +33,8 @@ pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
         .route("/assets/favicon.ico", get(favicon))
         .route("/assets/localref-ui.css", get(ui_css))
         .route("/assets/localref-ui.js", get(ui_wasm_js))
-        .route("/assets/localref-ui_bg.wasm", get(ui_wasm))
+        .route("/assets/localref-ui-bindgen.js", get(ui_wasm_bindgen_js))
+        .route("/assets/localref-ui-bindgen_bg.wasm", get(ui_wasm))
         .route("/ui/action", post(action))
         .with_state(UiState { daemon })
 }
@@ -245,13 +246,34 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("text/javascript; charset=utf-8")
         );
-        assert!(script.contains("localref-ui_bg.wasm"));
+        assert!(script.contains("import init"));
+        assert!(script.contains("await init()"));
+        assert!(script.contains("localref-ui-bindgen.js"));
         assert!(!script.contains("filterRouteFrom"));
+
+        let bindgen_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/localref-ui-bindgen.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bindgen = String::from_utf8(
+            to_bytes(bindgen_response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(bindgen.contains("localref-ui-bindgen_bg.wasm"));
 
         let wasm_response = app
             .oneshot(
                 Request::builder()
-                    .uri("/assets/localref-ui_bg.wasm")
+                    .uri("/assets/localref-ui-bindgen_bg.wasm")
                     .body(Body::empty())
                     .unwrap(),
             )
