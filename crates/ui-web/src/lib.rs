@@ -145,7 +145,8 @@ mod tests {
         assert!(html.contains("Current"));
         assert!(html.contains("Available"));
         assert!(html.contains("Current Categories:"));
-        assert!(html.contains("filterRouteFrom"));
+        assert!(html.contains(r#"src="/assets/localref-ui.js""#));
+        assert!(!html.contains("filterRouteFrom"));
         assert!(!html.contains("document.querySelectorAll('.library-row')"));
         assert!(!html.contains("cdn.tailwindcss.com"));
         assert!(!html.contains("Update Selection"));
@@ -327,9 +328,9 @@ mod tests {
         assert!(html.contains(r#"data-route-active="lr:zotero:one""#));
         assert!(html.contains(r#"data-route-tab="metadata""#));
         assert!(html.contains(r#"data-route-tab="files""#));
-        assert!(html.contains("history.pushState"));
-        assert!(html.contains("fetch(routeUrl"));
-        assert!(html.contains("DOMParser"));
+        assert!(html.contains(r#"src="/assets/localref-ui.js""#));
+        assert!(!html.contains("history.pushState"));
+        assert!(!html.contains("fetch(routeUrl"));
         assert!(!html.contains(r#"<a class="item-link""#));
         assert!(!html.contains(r#"<a class="right-tab"#));
     }
@@ -439,14 +440,13 @@ mod tests {
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(html.contains("form.selection-form"));
-        assert!(html.contains("new URLSearchParams(new FormData(form))"));
-        assert!(html.contains("formData.getAll('item')"));
-        assert!(html.contains("params.set('selected', selected.join(','))"));
-        assert!(html.contains("scheduleFilterRoute"));
-        assert!(html.contains("routeUrl.searchParams.delete('selected')"));
-        assert!(html.contains(".row-check"));
-        assert!(html.contains("visitRoute(selectionRouteFrom(form), true)"));
+        assert!(html.contains(r#"class="selection-form""#));
+        assert!(html.contains(r#"src="/assets/localref-ui.js""#));
+        assert!(!html.contains("formData.getAll('item')"));
+        assert!(!html.contains("params.set('selected', selected.join(','))"));
+        assert!(!html.contains("scheduleFilterRoute"));
+        assert!(!html.contains("routeUrl.searchParams.delete('selected')"));
+        assert!(!html.contains("visitRoute(selectionRouteFrom(form), true)"));
     }
 
     #[tokio::test]
