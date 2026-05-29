@@ -50,6 +50,10 @@ pub enum LocalrefError {
     #[error("unsupported operation: {0}")]
     Unsupported(&'static str),
 
+    /// Platform-native helper failed.
+    #[error("platform operation failed: {0}")]
+    Platform(String),
+
     /// A write conflict prevented a filesystem or metadata operation.
     #[error("conflict: {0}")]
     Conflict(String),

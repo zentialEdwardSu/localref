@@ -1,0 +1,373 @@
+@import "tailwindcss";
+
+@source "../crates/ui-web/src";
+
+@theme {
+  --font-sans: "Helvetica Neue", Arial, sans-serif;
+  --font-mono: Consolas, "Courier New", monospace;
+  --color-localref-page: #F7F7F8;
+  --color-localref-panel: #FFFFFF;
+  --color-localref-ink: #17202A;
+  --color-localref-muted: #4A5563;
+  --color-localref-line: #DADEE5;
+  --color-localref-input: #AEB6C2;
+  --color-localref-accent: #002FA7;
+  --color-localref-danger: #A82626;
+  --shadow-localref-dialog: 0 16px 36px rgba(23, 32, 42, 0.18);
+}
+
+@layer base {
+  * {
+    @apply box-border;
+  }
+
+  body {
+    @apply m-0 font-sans text-localref-ink tracking-normal;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  button {
+    @apply cursor-pointer;
+  }
+
+  button:disabled {
+    @apply cursor-not-allowed opacity-45;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply m-0;
+  }
+
+  h1 {
+    @apply text-4xl leading-none;
+  }
+
+  h2 {
+    @apply text-3xl leading-tight;
+  }
+}
+
+@layer components {
+  .app-shell {
+    @apply min-h-screen;
+  }
+
+  .topbar {
+    @apply sticky top-0 z-20 grid gap-4 border-b border-localref-ink bg-localref-panel px-6 py-3 min-[900px]:grid-cols-[minmax(0,1fr)_auto] min-[900px]:items-end max-[899px]:px-4;
+  }
+
+  .brand-block {
+    @apply grid gap-2.5;
+  }
+
+  .brand-row {
+    @apply flex items-end gap-3.5;
+  }
+
+  .status-pill,
+  .category-tag {
+    @apply border border-localref-line bg-localref-panel px-2 py-1 text-xs;
+  }
+
+  .top-link,
+  .right-tab,
+  .button {
+    @apply inline-flex items-center justify-center border border-localref-ink bg-localref-panel text-localref-ink no-underline transition hover:-translate-y-px hover:bg-localref-accent hover:text-white active:translate-y-0 active:bg-localref-ink active:text-white;
+  }
+
+  .top-link,
+  .right-tab {
+    @apply px-3.5 py-2;
+  }
+
+  .top-link.is-active,
+  .right-tab.is-active {
+    @apply bg-localref-accent text-white;
+  }
+
+  .top-actions {
+    @apply grid gap-3;
+  }
+
+  .stats {
+    @apply grid grid-cols-2 gap-px border border-localref-line bg-localref-line text-sm min-[900px]:grid-cols-4;
+  }
+
+  .stats span {
+    @apply bg-localref-panel px-2.5 py-2 transition hover:bg-localref-page;
+  }
+
+  .control-row {
+    @apply flex flex-wrap gap-2;
+  }
+
+  .button {
+    @apply h-10 rounded-[2px] px-3;
+  }
+
+  .button.primary {
+    @apply border-localref-accent bg-localref-accent text-white;
+  }
+
+  .button.compact,
+  .button.tiny {
+    @apply h-auto px-2.5 py-1.5 text-[13px];
+  }
+
+  .radio-pair {
+    @apply grid grid-cols-2 gap-px bg-localref-ink p-px text-sm;
+  }
+
+  .radio-option {
+    @apply flex h-10 items-center justify-center bg-localref-panel px-3 transition hover:bg-localref-page;
+  }
+
+  .radio-option input {
+    @apply pointer-events-none absolute opacity-0;
+  }
+
+  .radio-option.is-active {
+    @apply bg-localref-accent text-white;
+  }
+
+  .workspace {
+    @apply grid gap-px px-6 py-px min-[900px]:grid-cols-[352px_minmax(0,1fr)] max-[899px]:grid-cols-1 max-[899px]:px-4;
+  }
+
+  .library-pane,
+  .detail-pane {
+    @apply bg-localref-panel;
+  }
+
+  .library-pane {
+    @apply min-[900px]:sticky min-[900px]:top-[109px] min-[900px]:flex min-[900px]:max-h-[calc(100vh-110px)] min-[900px]:flex-col;
+  }
+
+  .filter-panel {
+    @apply grid gap-3 border-b border-localref-line p-4;
+  }
+
+  .field {
+    @apply grid gap-[5px] text-xs font-semibold;
+  }
+
+  .field input,
+  .field select,
+  .field textarea,
+  .new-category input {
+    @apply h-10 w-full rounded-[2px] border border-localref-input bg-localref-panel px-2.5 py-2 outline-none focus:border-localref-accent;
+  }
+
+  .field textarea {
+    @apply h-auto min-h-35 resize-y;
+  }
+
+  .selection-form {
+    @apply grid min-h-0 min-[900px]:flex min-[900px]:flex-1 min-[900px]:grid-rows-[auto_minmax(0,1fr)];
+  }
+
+  .selection-toolbar {
+    @apply flex items-center justify-between border-b border-localref-line px-4 py-3 text-sm;
+  }
+
+  .item-list {
+    @apply min-h-0 overflow-auto;
+  }
+
+  .item-row {
+    @apply grid grid-cols-[24px_minmax(0,1fr)] gap-2.5 border-b border-localref-line bg-localref-panel px-4 py-3 transition hover:bg-localref-page;
+  }
+
+  .item-row.is-active {
+    @apply bg-localref-page;
+  }
+
+  .row-check {
+    @apply mt-[3px] accent-localref-accent;
+  }
+
+  .item-link {
+    @apply grid gap-1 border-0 bg-transparent p-0 text-left text-localref-ink no-underline;
+  }
+
+  .item-link strong,
+  .item-link span {
+    @apply overflow-hidden text-ellipsis whitespace-nowrap;
+  }
+
+  .item-link strong {
+    @apply text-sm font-semibold;
+  }
+
+  .item-link span {
+    @apply text-xs text-localref-muted;
+  }
+
+  .detail-head {
+    @apply grid gap-3.5 border-b border-localref-line p-[18px] min-[900px]:grid-cols-[minmax(0,1fr)_auto] min-[900px]:items-end;
+  }
+
+  .right-tabs {
+    @apply flex gap-px bg-localref-line p-px;
+  }
+
+  .detail-body,
+  .event-panel {
+    @apply p-[18px];
+  }
+
+  .metadata-layout,
+  .files-pane {
+    @apply grid gap-px bg-localref-line;
+  }
+
+  .category-summary,
+  .metadata-form,
+  .rules-form,
+  .file-actions,
+  .file-list,
+  .event-list {
+    @apply bg-localref-panel;
+  }
+
+  .category-summary {
+    @apply grid gap-3.5 p-4;
+  }
+
+  .summary-head {
+    @apply grid gap-3.5;
+  }
+
+  .new-category {
+    @apply grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2 border-t border-localref-line p-3 max-[899px]:grid-cols-1;
+  }
+
+  .tag-strip {
+    @apply flex flex-wrap gap-2;
+  }
+
+  .category-editor {
+    @apply border border-localref-line;
+  }
+
+  .category-editor summary {
+    @apply cursor-pointer px-3 py-2.5 font-semibold transition hover:bg-localref-page;
+  }
+
+  .transfer-grid {
+    @apply grid gap-px border-t border-localref-line bg-localref-line min-[900px]:grid-cols-2;
+  }
+
+  .transfer-grid section {
+    @apply min-w-0 bg-localref-panel;
+  }
+
+  .transfer-grid h4 {
+    @apply border-b border-localref-line px-3 py-2.5 text-sm;
+  }
+
+  .category-list {
+    @apply max-h-80 overflow-auto;
+  }
+
+  .category-row,
+  .file-row,
+  .event-row {
+    @apply grid items-center gap-2.5 border-b border-localref-line px-3 py-2.5;
+  }
+
+  .category-row {
+    @apply grid-cols-[minmax(0,1fr)_auto] transition hover:bg-localref-page;
+  }
+
+  .category-row span,
+  .file-row span {
+    @apply overflow-hidden text-ellipsis whitespace-nowrap;
+  }
+
+  .metadata-form,
+  .rules-form {
+    @apply grid gap-3.5 p-4;
+  }
+
+  .metadata-form {
+    @apply min-[900px]:grid-cols-2;
+  }
+
+  .rules-form textarea {
+    @apply min-h-[520px] font-mono text-[13px] leading-[1.45];
+  }
+
+  .wide {
+    @apply col-span-full;
+  }
+
+  .file-actions {
+    @apply grid gap-3 p-4 min-[900px]:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] min-[900px]:items-end;
+  }
+
+  .path-form {
+    @apply grid gap-2 min-[900px]:grid-cols-[minmax(0,1fr)_auto] min-[900px]:items-end;
+  }
+
+  .file-row {
+    @apply grid-cols-[minmax(0,1fr)_100px_auto] bg-localref-panel max-[899px]:grid-cols-1;
+  }
+
+  .event-list {
+    @apply border border-localref-line;
+  }
+
+  .event-row {
+    @apply grid-cols-[64px_150px_minmax(0,1fr)] max-[899px]:grid-cols-1;
+  }
+
+  .event-row span {
+    @apply text-xs text-localref-muted;
+  }
+
+  .event-row strong {
+    @apply text-sm font-semibold;
+  }
+
+  .rules-result-dialog {
+    @apply fixed right-6 bottom-6 z-40 grid max-h-[min(620px,calc(100vh-32px))] w-[min(520px,calc(100vw-32px))] overflow-auto border border-localref-ink bg-localref-panel shadow-localref-dialog;
+  }
+
+  .rules-result-dialog.is-error {
+    @apply border-localref-danger;
+  }
+
+  .dialog-head {
+    @apply flex items-center justify-between gap-3 border-b border-localref-line px-3.5 py-3;
+  }
+
+  .rules-result-dialog p {
+    @apply m-0 p-3.5 leading-normal;
+  }
+
+  .rules-result-list {
+    @apply grid;
+  }
+
+  .rules-result-row {
+    @apply grid gap-[5px] border-b border-localref-line px-3.5 py-3;
+  }
+
+  .rules-result-row span {
+    @apply text-xs text-localref-muted;
+  }
+
+  .rules-result-row code {
+    @apply overflow-auto bg-localref-page p-2 font-mono text-xs;
+  }
+}

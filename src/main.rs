@@ -70,7 +70,7 @@ enum AppCommand {
     /// Start only the connector-compatible API for manual diagnostics.
     #[command(alias = "csc-dev")]
     Csc,
-    /// Launch the iced simple UI.
+    /// Open the browser-served UI.
     Ui,
     /// Execute one tray action through the same binary.
     Tray {
@@ -83,7 +83,7 @@ enum AppCommand {
 /// Tray action selected from CLI arguments.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Subcommand)]
 enum TrayCliAction {
-    /// Open the Simple UI.
+    /// Open the web UI.
     OpenUi,
     /// Request a library scan.
     Scan,
@@ -231,7 +231,21 @@ async fn serve_rest_with_daemon_logging(
         println!("localref REST listening on http://{}", config.rest_addr());
     }
     logger.info("rest", format!("listening on http://{}", config.rest_addr()));
-    localref_core::rest::serve_with_daemon(config.rest_addr(), daemon).await
+    let listener = tokio::net::TcpListener::bind(config.rest_addr()).await?;
+    axum::serve(listener, rest_app(daemon)).await
+}
+
+/// Build the REST listener application.
+#[cfg(feature = "desktop")]
+fn rest_app(daemon: LocalrefDaemon) -> axum::Router {
+    localref_core::rest::router_with_daemon(daemon.clone())
+        .merge(ui_web::router_with_daemon(daemon))
+}
+
+/// Build the REST listener application.
+#[cfg(not(feature = "desktop"))]
+fn rest_app(daemon: LocalrefDaemon) -> axum::Router {
+    localref_core::rest::router_with_daemon(daemon)
 }
 
 /// Start only the Zotero Connector-compatible API.
@@ -266,16 +280,19 @@ async fn serve_csc_with_daemon_logging(
     serve_csc(config.csc_addr(), sink).await
 }
 
-/// Launch the iced desktop UI inside this process.
+/// Open the browser-served UI endpoint.
 #[cfg(feature = "desktop")]
 fn launch_ui() -> Result<(), String> {
-    ui::desktop_app::launch()
+    let config = LocalrefConfig::load().map_err(|error| error.to_string())?;
+    let endpoint = config.rest_endpoint();
+    println!("Localref UI: {endpoint}");
+    native_win32::open_uri(&endpoint).map_err(|error| error.to_string())
 }
 
-/// Report unavailable UI support when the binary was built without desktop UI.
+/// Report unavailable UI support when the binary was built without web UI.
 #[cfg(not(feature = "desktop"))]
 fn launch_ui() -> Result<(), String> {
-    println!("Localref: desktop UI feature is not enabled");
+    println!("Localref: web UI feature is not enabled");
     Ok(())
 }
 
@@ -286,12 +303,10 @@ fn run_native_tray_host(
     logger: RuntimeLogger,
 ) -> std::io::Result<()> {
     let controller = TrayController::from_config(config);
-    let options = if config.desktop_start_hidden() {
-        ui::desktop_app::DesktopLaunchOptions::hidden()
-    } else {
-        ui::desktop_app::DesktopLaunchOptions::visible()
-    };
-    tray::native::run_native_tray_with_options(controller, options, logger)
+    if !config.desktop_start_hidden() {
+        let _ = native_win32::open_uri(&config.rest_endpoint());
+    }
+    tray::native::run_native_tray(controller, logger)
         .map_err(std::io::Error::other)
 }
 
@@ -349,14 +364,7 @@ fn print_config_summary(config: &LocalrefConfig) {
 /// Detach the inherited Windows console for configured quiet tray startup.
 #[cfg(windows)]
 fn detach_console_for_quiet_start() {
-    unsafe extern "system" {
-        fn FreeConsole() -> i32;
-    }
-    // SAFETY: FreeConsole only detaches this process from an inherited console.
-    // It does not access Rust-managed memory and failing to detach is harmless.
-    unsafe {
-        FreeConsole();
-    }
+    let _ = native_win32::detach_console();
 }
 
 /// Keep non-Windows quiet startup behavior explicit.
@@ -440,12 +448,19 @@ impl ConnectorImportSink for LoggingImportSink {
         }
         let mut sessions =
             self.sessions.lock().expect("connector sessions mutex poisoned");
-        sessions.push(PendingImport {
-            session_id: request.session_id,
-            items: request.normalized_items,
-            attachments: Vec::new(),
-            outcome: None,
-        });
+        if let Some(session) = sessions.iter_mut().find(|session| {
+            session.session_id == request.session_id
+                && session.outcome.is_none()
+        }) {
+            session.items = request.normalized_items;
+        } else {
+            sessions.push(PendingImport {
+                session_id: request.session_id,
+                items: request.normalized_items,
+                attachments: Vec::new(),
+                outcome: None,
+            });
+        }
         self.try_import_locked(&mut sessions)
     }
 
@@ -471,11 +486,41 @@ impl ConnectorImportSink for LoggingImportSink {
         let session_index = sessions
             .iter()
             .position(|session| session.session_id == attachment.session_id)
-            .or_else(|| sessions.len().checked_sub(1));
+            .or_else(|| {
+                attachment
+                    .session_id
+                    .is_none()
+                    .then(|| sessions.len().checked_sub(1))
+                    .flatten()
+            });
         let Some(session_index) = session_index else {
-            return Err(
-                "attachment arrived before any saveItems request".to_string()
-            );
+            if attachment.parent_item_id.is_none() {
+                let outcome = self
+                    .daemon
+                    .import_connector_item(standalone_attachment_import(
+                        attachment,
+                    ))
+                    .map_err(|error| error.to_string())?;
+                println!(
+                    "saved Localref item: {}",
+                    outcome.item_dir.display()
+                );
+                self.logger.info(
+                    "csc-attachment",
+                    format!(
+                        "saved standalone attachment: {}",
+                        outcome.item_dir.display()
+                    ),
+                );
+                return Ok(());
+            }
+            sessions.push(PendingImport {
+                session_id: attachment.session_id.clone(),
+                items: Vec::new(),
+                attachments: vec![attachment],
+                outcome: None,
+            });
+            return Ok(());
         };
         let session = &mut sessions[session_index];
         if let Some(outcome) = &session.outcome {
@@ -522,6 +567,37 @@ impl ConnectorImportSink for LoggingImportSink {
     }
 }
 
+/// Build a top-level Localref import for a standalone connector attachment.
+fn standalone_attachment_import(
+    attachment: ConnectorAttachment,
+) -> ConnectorImport {
+    let title = attachment
+        .title
+        .clone()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| attachment.filename.clone());
+    let uri = attachment.raw_metadata.as_ref().and_then(|metadata| {
+        metadata
+            .get("url")
+            .or_else(|| metadata.get("uri"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    });
+    let item = ConnectorItem {
+        session_id: attachment.session_id.clone(),
+        uri,
+        connector_item_id: None,
+        item_type: Some("attachment".to_string()),
+        title,
+        abstract_note: None,
+        doi: None,
+        raw: attachment.raw_metadata.clone().unwrap_or_else(
+            || serde_json::json!({ "title": attachment.filename }),
+        ),
+    };
+    ConnectorImport { item, attachments: vec![attachment] }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,6 +624,47 @@ mod tests {
         assert_eq!(
             Cli::parse_from(["localref", "tray", "scan"]).command,
             Some(AppCommand::Tray { action: Some(TrayCliAction::Scan) })
+        );
+    }
+
+    #[test]
+    fn standalone_connector_attachment_creates_item() {
+        use serde_json::json;
+
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        let sink = LoggingImportSink::new(
+            daemon.clone(),
+            RuntimeLogger::new(temp.path()),
+        );
+
+        sink.accept_attachment(ConnectorAttachment {
+            session_id: Some("session-standalone".to_string()),
+            parent_item_id: None,
+            title: Some("Standalone PDF".to_string()),
+            filename: "standalone.pdf".to_string(),
+            mime_type: Some("application/pdf".to_string()),
+            bytes: b"pdf bytes".to_vec(),
+            raw_metadata: Some(json!({
+                "title": "Standalone PDF",
+                "url": "https://example.test/standalone.pdf",
+                "contentType": "application/pdf"
+            })),
+        })
+        .unwrap();
+
+        let metadata = daemon
+            .get_metadata("lr:zotero:session-standalone")
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata.metadata.title, "Standalone PDF");
+        assert_eq!(metadata.metadata.files.main.unwrap(), "standalone.pdf");
+        assert!(
+            temp.path()
+                .join("All")
+                .join("Standalone PDF")
+                .join("standalone.pdf")
+                .exists()
         );
     }
 }

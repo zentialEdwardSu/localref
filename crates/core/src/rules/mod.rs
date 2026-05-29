@@ -96,6 +96,17 @@ pub struct Rule {
     pub query: String,
 }
 
+/// Display-ready description of one parsed automatic-classification rule.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuleSummary {
+    /// Human-readable rule name.
+    pub name: String,
+    /// Target category path relative to `Cat/`.
+    pub target: String,
+    /// Query expression matched against metadata.
+    pub query: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct RuleConfig {
     #[serde(default)]
@@ -132,6 +143,18 @@ impl RuleSet {
             parse_query(&rule.query)?;
         }
         Ok(Self { rules: config.rules })
+    }
+
+    /// Return display-ready summaries for every parsed rule.
+    pub fn summaries(&self) -> Vec<RuleSummary> {
+        self.rules
+            .iter()
+            .map(|rule| RuleSummary {
+                name: rule.name.clone(),
+                target: rule.target.clone(),
+                query: rule.query.clone(),
+            })
+            .collect()
     }
 
     /// Return all categories matched by a metadata record.
@@ -292,5 +315,25 @@ query = 'tags:ris'
         assert_eq!(categories.len(), 2);
         assert_eq!(categories[0].as_str(), "Wireless/RIS");
         assert_eq!(categories[1].as_str(), "Tagged");
+    }
+
+    #[test]
+    fn returns_display_summaries_for_parsed_rules() {
+        let rules = RuleSet::parse(
+            r#"
+[[rules]]
+name = "near-field"
+target = "Wireless/RIS"
+query = 'title:RIS'
+"#,
+        )
+        .unwrap();
+
+        let summaries = rules.summaries();
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "near-field");
+        assert_eq!(summaries[0].target, "Wireless/RIS");
+        assert_eq!(summaries[0].query, "title:RIS");
     }
 }

@@ -60,7 +60,8 @@ pub fn item_file_path(
 /// Open a file or directory with the platform's default viewer.
 #[cfg(windows)]
 pub fn open_system_path(path: &Path) -> Result<()> {
-    open_windows_system_path(path)
+    native_win32::open_path(path)
+        .map_err(|source| LocalrefError::Platform(source.to_string()))
 }
 
 /// Open a file or directory with the platform's default viewer.
@@ -112,38 +113,6 @@ fn collect_entries(
         if metadata.is_dir() {
             collect_entries(root, &path, entries)?;
         }
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-/// Open one path through the Windows shell without spawning a script host.
-fn open_windows_system_path(path: &Path) -> Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr;
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    let wide_path = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let result = unsafe {
-        // SAFETY: `wide_path` is null-terminated and all optional pointers are
-        // null, which ShellExecuteW accepts for the default "open" operation.
-        ShellExecuteW(
-            ptr::null_mut(),
-            ptr::null(),
-            wide_path.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-
-    if result as isize <= 32 {
-        return Err(LocalrefError::Unsupported("system open failed"));
     }
     Ok(())
 }

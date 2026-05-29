@@ -1,22 +1,16 @@
 [package]
-name = "csc"
+name = "ui-web"
 version = "0.1.0"
 edition = "2024"
-autobins = false
-
-[features]
-default = []
-desktop = []
-native-tray = ["desktop"]
 
 [dependencies]
 axum = { workspace = true }
-http = { workspace = true }
+leptos = { workspace = true }
 localref_core = { package = "localref-core", path = "../core" }
 serde = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true }
 tower = { workspace = true }

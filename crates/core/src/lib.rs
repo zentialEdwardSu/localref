@@ -25,8 +25,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::{LocalrefError, Result};
 use crate::model::{
-    Creator, Event, EventKind, Metadata, MetadataDocument, MetadataFile,
-    MetadataFiles, MetadataImport, MetadataState, MetadataTags,
+    Creator, Event, EventKind, ItemFilesDocument, Metadata, MetadataDocument,
+    MetadataFile, MetadataFiles, MetadataImport, MetadataState, MetadataTags,
 };
 use crate::platformfs::{LibraryFs, sanitize_ntfs_component};
 use crate::rules::RuleSet;
@@ -227,6 +227,27 @@ impl LocalrefDaemon {
     /// Open storage for a library root and create a daemon facade.
     pub fn for_library(library_root: impl Into<PathBuf>) -> Result<Self> {
         Ok(Self::new(StorageDb::open(library_root)?))
+    }
+
+    /// Return the raw automatic-classification rules text.
+    pub fn read_rules_text(&self) -> Result<String> {
+        let path = self.library_root.join(".localref").join("rules.toml");
+        if !path.exists() {
+            return Ok(String::new());
+        }
+        std::fs::read_to_string(&path)
+            .map_err(|source| LocalrefError::io(&path, source))
+    }
+
+    /// Validate and replace the automatic-classification rules text.
+    pub fn write_rules_text(&self, text: &str) -> Result<()> {
+        RuleSet::parse(text)?;
+        let dir = self.library_root.join(".localref");
+        std::fs::create_dir_all(&dir)
+            .map_err(|source| LocalrefError::io(&dir, source))?;
+        let path = dir.join("rules.toml");
+        std::fs::write(&path, text)
+            .map_err(|source| LocalrefError::io(&path, source))
     }
 
     /// Return daemon status and recent task history.
@@ -726,6 +747,39 @@ impl LocalrefDaemon {
         self.finish_task_result(record, result)
     }
 
+    /// Add multiple indexed items to one category with one index rebuild.
+    pub fn add_items_category(
+        &self,
+        item_ids: &[String],
+        category: CategoryPath,
+    ) -> Result<CategorySummary> {
+        let record = self.enqueue(DaemonTask::AddCategory {
+            item_id: item_ids.join(","),
+            category: category.clone(),
+        });
+        self.mark_running(record.id);
+        let result = self.ensure_task_allowed(&record.task).and_then(|()| {
+            let fs = LibraryFs::new(&self.library_root);
+            for item_id in item_ids {
+                let item = self
+                    .storage
+                    .get_item(item_id)?
+                    .ok_or(LocalrefError::MissingField("item"))?;
+                let item_dir = self.library_root.join(&item.object_path);
+                let link = fs.create_category_link(&category, &item_dir)?;
+                self.events.append(
+                    EventKind::CatLinkCreated,
+                    format!("category link created: {}", category.as_str()),
+                    Some(item_id.to_string()),
+                    Some(relative_to_root(&self.library_root, &link)),
+                )?;
+            }
+            self.storage.rebuild_from_all()?;
+            category_summary_for(&self.storage, &category)
+        });
+        self.finish_task_result(record, result)
+    }
+
     /// Remove one indexed item from a category.
     pub fn remove_item_category(
         &self,
@@ -756,6 +810,51 @@ impl LocalrefDaemon {
                     Some(item_id.to_string()),
                     Some(relative_to_root(&self.library_root, &path)),
                 )?;
+            }
+            self.storage.rebuild_from_all()?;
+            category_summary_for(&self.storage, &category)
+        });
+        self.finish_task_result(record, result)
+    }
+
+    /// Remove multiple indexed items from one category with one index rebuild.
+    pub fn remove_items_category(
+        &self,
+        item_ids: &[String],
+        category: CategoryPath,
+    ) -> Result<CategorySummary> {
+        let record = self.enqueue(DaemonTask::RemoveCategory {
+            item_id: item_ids.join(","),
+            category: category.clone(),
+        });
+        self.mark_running(record.id);
+        let result = self.ensure_task_allowed(&record.task).and_then(|()| {
+            let fs = LibraryFs::new(&self.library_root);
+            for item_id in item_ids {
+                let item = self
+                    .storage
+                    .get_item(item_id)?
+                    .ok_or(LocalrefError::MissingField("item"))?;
+                let item_dir = self.library_root.join(&item.object_path);
+                let entry_name = item_dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or(LocalrefError::MissingField(
+                        "item directory name",
+                    ))?;
+                if let Some(path) =
+                    fs.remove_category_link(&category, entry_name)?
+                {
+                    self.events.append(
+                        EventKind::CatLinkDeleted,
+                        format!(
+                            "category link deleted: {}",
+                            category.as_str()
+                        ),
+                        Some(item_id.to_string()),
+                        Some(relative_to_root(&self.library_root, &path)),
+                    )?;
+                }
             }
             self.storage.rebuild_from_all()?;
             category_summary_for(&self.storage, &category)
@@ -826,6 +925,37 @@ impl LocalrefDaemon {
     /// Return all indexed items.
     pub fn list_items(&self) -> Result<Vec<ItemDocument>> {
         self.storage.list_items()
+    }
+
+    /// Return filesystem entries under one indexed item directory.
+    pub fn item_files(
+        &self,
+        item_id: &str,
+    ) -> Result<Option<ItemFilesDocument>> {
+        rest_files::item_files(self, item_id)
+    }
+
+    /// Open one indexed item directory with the platform file manager.
+    pub fn open_item_folder(&self, item_id: &str) -> Result<bool> {
+        let Some(path) = rest_files::item_folder(self, item_id)? else {
+            return Ok(false);
+        };
+        rest_files::open_system_path(&path)?;
+        Ok(true)
+    }
+
+    /// Open one item-relative file with the platform default application.
+    pub fn open_item_file(
+        &self,
+        item_id: &str,
+        relative: &Path,
+    ) -> Result<bool> {
+        let Some(path) = rest_files::item_file_path(self, item_id, relative)?
+        else {
+            return Ok(false);
+        };
+        rest_files::open_system_path(&path)?;
+        Ok(true)
     }
 
     /// Return one indexed item by id.
@@ -2696,5 +2826,29 @@ abstract = "Queue visible abstract"
         let status = daemon.resume(PauseMode::Indexing);
         assert!(status.paused_modes.is_empty());
         assert!(daemon.scan_all().is_ok());
+    }
+
+    #[test]
+    fn daemon_reads_and_writes_rules_text() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        let text = "[[rules]]\nname = \"RIS\"\ntarget = \"Wireless/RIS\"\nquery = 'title:RIS'\n";
+
+        daemon.write_rules_text(text).unwrap();
+
+        assert_eq!(daemon.read_rules_text().unwrap(), text);
+    }
+
+    #[test]
+    fn daemon_rejects_invalid_rules_text() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+
+        let result = daemon.write_rules_text(
+            "[[rules]]\nname = \"Bad\"\ntarget = \"\"\nquery = 'title:bad'\n",
+        );
+
+        assert!(result.is_err());
+        assert!(!temp.path().join(".localref").join("rules.toml").exists());
     }
 }

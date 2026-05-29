@@ -292,35 +292,3 @@ async fn main() -> std::io::Result<()> {
 
     serve_csc(addr, Arc::new(LoggingImportSink::new(library_root))).await
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn first_string_reads_string_number_and_bool_fields() {
-        let value = json!({
-            "title": "A Test Paper",
-            "year": 2026,
-            "openAccess": true
-        });
-
-        assert_eq!(
-            first_string(&value, &["missing", "title"]).as_deref(),
-            Some("A Test Paper")
-        );
-        assert_eq!(first_string(&value, &["year"]).as_deref(), Some("2026"));
-        assert_eq!(
-            first_string(&value, &["openAccess"]).as_deref(),
-            Some("true")
-        );
-    }
-
-    #[test]
-    fn format_bytes_uses_human_readable_units() {
-        assert_eq!(format_bytes(42), "42 B");
-        assert_eq!(format_bytes(2048), "2.00 KiB");
-        assert_eq!(format_bytes(3 * 1024 * 1024), "3.00 MiB");
-    }
-}

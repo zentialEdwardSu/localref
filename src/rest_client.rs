@@ -45,6 +45,7 @@ pub struct PendingImportSummary {
 }
 
 /// Request body used to patch one metadata document.
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 struct MetadataPatchRequest {
     /// Revision hash observed by the UI before editing.
@@ -54,6 +55,7 @@ struct MetadataPatchRequest {
 }
 
 /// Request body used by category add operations.
+#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 struct CategoryRequest {
     /// Category path relative to `Cat/`.
@@ -61,6 +63,7 @@ struct CategoryRequest {
 }
 
 /// Request body used by file import and file-open operations.
+#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 struct FilePathRequest {
     /// Path accepted by the target endpoint.
@@ -107,6 +110,7 @@ impl RestClient {
     }
 
     /// Create a client by loading the Localref configuration file.
+    #[allow(dead_code)]
     pub fn from_config_file() -> Result<Self, String> {
         LocalrefConfig::load().map(|config| Self::from_config(&config))
     }
@@ -132,6 +136,7 @@ impl RestClient {
     }
 
     /// Return the full metadata document for one item.
+    #[allow(dead_code)]
     pub fn get_metadata(
         &self,
         item_id: &str,
@@ -140,6 +145,7 @@ impl RestClient {
     }
 
     /// Return files currently present in one item directory.
+    #[allow(dead_code)]
     pub fn list_item_files(
         &self,
         item_id: &str,
@@ -148,6 +154,7 @@ impl RestClient {
     }
 
     /// Open an item-relative file path with the system viewer.
+    #[allow(dead_code)]
     pub fn open_item_file(
         &self,
         item_id: &str,
@@ -160,6 +167,7 @@ impl RestClient {
     }
 
     /// Copy one file into an existing item directory.
+    #[allow(dead_code)]
     pub fn add_item_file(
         &self,
         item_id: &str,
@@ -172,6 +180,7 @@ impl RestClient {
     }
 
     /// Open one item directory with the system file manager.
+    #[allow(dead_code)]
     pub fn open_item_folder(&self, item_id: &str) -> Result<Value, String> {
         self.post_json(
             &format!("/api/items/{}/folder/open", encode_path(item_id)),
@@ -180,6 +189,7 @@ impl RestClient {
     }
 
     /// Patch a metadata document through the daemon queue.
+    #[allow(dead_code)]
     pub fn patch_metadata(
         &self,
         item_id: &str,
@@ -202,6 +212,7 @@ impl RestClient {
     }
 
     /// Create one empty category.
+    #[allow(dead_code)]
     pub fn create_category(
         &self,
         category: impl Into<String>,
@@ -213,6 +224,7 @@ impl RestClient {
     }
 
     /// Add one item to one category.
+    #[allow(dead_code)]
     pub fn add_item_category(
         &self,
         item_id: &str,
@@ -225,6 +237,7 @@ impl RestClient {
     }
 
     /// Remove one item from one category.
+    #[allow(dead_code)]
     pub fn remove_item_category(
         &self,
         item_id: &str,
@@ -250,6 +263,7 @@ impl RestClient {
     }
 
     /// Search indexed items.
+    #[allow(dead_code)]
     pub fn search(&self, term: &str) -> Result<Vec<SearchHit>, String> {
         self.get_json(&format!("/api/search?q={}", encode_query(term)))
     }
@@ -306,6 +320,7 @@ impl RestClient {
     }
 
     /// Patch JSON to one API path and decode the JSON response.
+    #[allow(dead_code)]
     pub fn patch_json<T, B>(&self, path: &str, body: &B) -> Result<T, String>
     where
         T: for<'de> Deserialize<'de>,
@@ -317,6 +332,7 @@ impl RestClient {
     }
 
     /// Send a JSON DELETE request and decode the JSON response.
+    #[allow(dead_code)]
     pub fn delete_json<T>(&self, path: &str) -> Result<T, String>
     where
         T: for<'de> Deserialize<'de>,

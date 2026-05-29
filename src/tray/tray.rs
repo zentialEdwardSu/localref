@@ -1,8 +1,8 @@
 //! Lightweight tray entry support.
 //!
 //! This crate owns the desktop tray command boundary. It calls the user-facing
-//! REST API and can request that the single `localref` process show its egui
-//! simple UI, but it does not access the Localref library filesystem directly.
+//! REST API and can request that the single `localref` process open its web UI,
+//! but it does not access the Localref library filesystem directly.
 
 use crate::ui::{DashboardSnapshot, RestClient};
 use localref_core::config::LocalrefConfig;
@@ -33,7 +33,7 @@ pub enum TrayStatus {
 pub enum TrayAction {
     /// Refresh status from the REST API.
     RefreshStatus,
-    /// Open the Dioxus simple UI.
+    /// Open the browser-served web UI.
     OpenSimpleUi,
     /// Ask the daemon to rebuild the query cache.
     RunScan,
@@ -106,7 +106,7 @@ impl TrayController {
     pub fn menu_items(&self) -> Vec<TrayMenuItem> {
         vec![
             TrayMenuItem {
-                label: "Open Simple UI",
+                label: "Open UI",
                 action: TrayAction::OpenSimpleUi,
             },
             TrayMenuItem { label: "Run Scan", action: TrayAction::RunScan },
@@ -125,10 +125,6 @@ impl TrayController {
             TrayMenuItem {
                 label: "Resume Writes",
                 action: TrayAction::ResumeWrites,
-            },
-            TrayMenuItem {
-                label: "Refresh Status",
-                action: TrayAction::RefreshStatus,
             },
             TrayMenuItem { label: "Quit", action: TrayAction::Quit },
         ]
@@ -220,7 +216,7 @@ pub fn notification_for_command(
         },
         Ok(TrayCommandResult::UiRequested) => TrayNotification {
             title: "Localref".to_string(),
-            body: "Opening Simple UI".to_string(),
+            body: "Opening UI".to_string(),
             kind: TrayNotificationKind::Info,
         },
         Ok(TrayCommandResult::Quit) => TrayNotification {
@@ -243,7 +239,7 @@ pub enum TrayCommandResult {
     Status(TrayStatus),
     /// The command returned dashboard counts.
     Snapshot(DashboardSnapshot),
-    /// The single `localref` process should show its in-process simple UI.
+    /// The single `localref` process should open its browser-served UI.
     UiRequested,
     /// The tray process should quit.
     Quit,

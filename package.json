@@ -1,0 +1,11 @@
+{
+  "name": "localref",
+  "private": true,
+  "scripts": {
+    "build:css": "tailwindcss -i ./assets/localref-ui.tailwind.css -o ./assets/localref-ui.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.0.0",
+    "tailwindcss": "^4.0.0"
+  }
+}

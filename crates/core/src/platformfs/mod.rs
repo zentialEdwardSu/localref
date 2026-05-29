@@ -358,28 +358,8 @@ fn is_reserved_windows_name(value: &str) -> bool {
 
 #[cfg(windows)]
 fn create_dir_link(target: &Path, link: &Path) -> Result<()> {
-    let output = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(link)
-        .arg(target)
-        .output()
-        .map_err(|source| LocalrefError::io(link, source))?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    std::os::windows::fs::symlink_dir(target, link).map_err(|source| {
-        LocalrefError::io(
-            link,
-            std::io::Error::new(
-                source.kind(),
-                format!(
-                    "failed to create junction or directory symlink: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                ),
-            ),
-        )
-    })
+    native_win32::create_directory_junction(link, target)
+        .map_err(|source| LocalrefError::Platform(source.to_string()))
 }
 
 #[cfg(unix)]
@@ -425,6 +405,10 @@ mod tests {
         let link = fs.create_category_link(&category, &item_dir).unwrap();
 
         assert!(link.exists());
+        assert_eq!(
+            link.canonicalize().unwrap(),
+            item_dir.canonicalize().unwrap()
+        );
     }
 
     #[test]
