@@ -10,8 +10,7 @@ use crate::render::{render_detail_html, render_item_list_html};
 /// Bind Localref browsing controls in the current browser document.
 #[cfg(target_arch = "wasm32")]
 pub fn start_controller() -> Result<(), JsValue> {
-    bind_search()?;
-    bind_category()?;
+    bind_filters()?;
     bind_clicks()?;
     bind_submits()?;
     bind_popstate()?;
@@ -24,40 +23,27 @@ fn document() -> Result<web_sys::Document, JsValue> {
         .ok_or_else(|| JsValue::from_str("missing document"))
 }
 
-fn bind_search() -> Result<(), JsValue> {
-    let Some(element) = document()?.get_element_by_id("library-search") else {
-        return Ok(());
-    };
-    let input: web_sys::HtmlInputElement = element.dyn_into()?;
-    let bound_input = input.clone();
+fn bind_filters() -> Result<(), JsValue> {
     let closure = Closure::wrap(Box::new(move |_event: web_sys::Event| {
         let mut route = current_route();
-        route.search = optional_text(&bound_input.value());
+        if let Ok(doc) = document() {
+            route.search = doc
+                .get_element_by_id("library-search")
+                .and_then(|element| {
+                    element.dyn_into::<web_sys::HtmlInputElement>().ok()
+                })
+                .and_then(|input| optional_text(&input.value()));
+            route.category = doc
+                .get_element_by_id("library-category")
+                .and_then(|element| {
+                    element.dyn_into::<web_sys::HtmlSelectElement>().ok()
+                })
+                .and_then(|select| optional_text(&select.value()));
+        }
         route.selected_ids.clear();
         schedule_route(route);
     }) as Box<dyn FnMut(_)>);
-    input.add_event_listener_with_callback(
-        "change",
-        closure.as_ref().unchecked_ref(),
-    )?;
-    closure.forget();
-    Ok(())
-}
-
-fn bind_category() -> Result<(), JsValue> {
-    let Some(element) = document()?.get_element_by_id("library-category")
-    else {
-        return Ok(());
-    };
-    let select: web_sys::HtmlSelectElement = element.dyn_into()?;
-    let bound_select = select.clone();
-    let closure = Closure::wrap(Box::new(move |_event: web_sys::Event| {
-        let mut route = current_route();
-        route.category = optional_text(&bound_select.value());
-        route.selected_ids.clear();
-        schedule_route(route);
-    }) as Box<dyn FnMut(_)>);
-    select.add_event_listener_with_callback(
+    document()?.add_event_listener_with_callback(
         "change",
         closure.as_ref().unchecked_ref(),
     )?;

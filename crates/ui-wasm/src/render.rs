@@ -69,11 +69,16 @@ fn render_files_html(state: &UiStateDto) -> String {
 }
 
 fn render_metadata_html(state: &UiStateDto) -> String {
+    let category_summary = render_category_summary_html(state);
     let Some(detail) = &state.active_detail else {
-        return r#"<div class="metadata-layout"></div>"#.to_string();
+        return format!(
+            r#"<div class="metadata-layout">{category_summary}{}</div>"#,
+            render_empty_metadata_form(state)
+        );
     };
     format!(
-        r#"<div class="metadata-layout"><form method="post" action="/ui/action" class="metadata-form"><input type="hidden" name="return_to" value="{return_to}"/><input type="hidden" name="action" value="save_metadata"/><input type="hidden" name="item_id" value="{item_id}"/><input type="hidden" name="expected_revision" value="{revision}"/><label class="field"><span>Title</span><input name="title" value="{title}"/></label><label class="field"><span>Authors</span><input name="authors" value="{authors}"/></label><label class="field"><span>Type</span><input name="item_type" value="{item_type}"/></label><button class="button primary wide" type="submit">Save Metadata</button></form></div>"#,
+        r#"<div class="metadata-layout">{category_summary}<form method="post" action="/ui/action" class="metadata-form"><input type="hidden" name="return_to" value="{return_to}"/><input type="hidden" name="action" value="save_metadata"/><input type="hidden" name="item_id" value="{item_id}"/><input type="hidden" name="expected_revision" value="{revision}"/><label class="field"><span>Title</span><input name="title" value="{title}"/></label><label class="field"><span>Authors</span><input name="authors" value="{authors}"/></label><label class="field"><span>Type</span><input name="item_type" value="{item_type}"/></label><button class="button primary wide" type="submit">Save Metadata</button></form></div>"#,
+        category_summary = category_summary,
         return_to = escape_attr(&state.return_to),
         item_id = escape_attr(state.active_id.as_deref().unwrap_or_default()),
         revision = escape_attr(&detail.metadata_revision),
@@ -81,6 +86,79 @@ fn render_metadata_html(state: &UiStateDto) -> String {
         authors = escape_attr(&detail.authors),
         item_type = escape_attr(&detail.item_type),
     )
+}
+
+fn render_empty_metadata_form(state: &UiStateDto) -> String {
+    format!(
+        r#"<form method="post" action="/ui/action" class="metadata-form"><input type="hidden" name="return_to" value="{return_to}"/><input type="hidden" name="action" value="save_metadata"/><input type="hidden" name="item_id" value=""/><input type="hidden" name="expected_revision" value=""/><label class="field"><span>Title</span><input name="title" value=""/></label><label class="field"><span>Authors</span><input name="authors" value=""/></label><label class="field"><span>Type</span><input name="item_type" value=""/></label><label class="field"><span>Year</span><input name="year" value=""/></label><label class="field"><span>DOI</span><input name="doi" value=""/></label><label class="field"><span>Venue</span><input name="venue" value=""/></label><label class="field"><span>Language</span><input name="language" value=""/></label><label class="field"><span>URI</span><input name="uri" value=""/></label><label class="field wide">Abstract<textarea name="abstract_note"></textarea></label><button class="button primary wide" type="submit">Save Metadata</button></form>"#,
+        return_to = escape_attr(&state.return_to),
+    )
+}
+
+fn render_category_summary_html(state: &UiStateDto) -> String {
+    let current = current_categories(state);
+    let current_tags = current
+        .iter()
+        .map(|category| {
+            format!(
+                r#"<span class="category-tag">{}</span>"#,
+                escape_text(category)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let available_rows = state
+        .categories
+        .iter()
+        .filter(|category| !current.contains(&category.path))
+        .map(|category| {
+            let path = escape_attr(&category.path);
+            let label = escape_text(&category.path);
+            format!(
+                r#"<form method="post" action="/ui/action" class="category-row" data-route-action="true"><input type="hidden" name="return_to" value="{return_to}"/><input type="hidden" name="action" value="add_category"/><input type="hidden" name="category" value="{path}"/><span>{label}</span><button class="button tiny" type="submit">Add</button></form>"#,
+                return_to = escape_attr(&state.return_to),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let current_rows = current
+        .iter()
+        .map(|category| {
+            let path = escape_attr(category);
+            let label = escape_text(category);
+            format!(
+                r#"<form method="post" action="/ui/action" class="category-row" data-route-action="true"><input type="hidden" name="return_to" value="{return_to}"/><input type="hidden" name="action" value="remove_category"/><input type="hidden" name="category" value="{path}"/><span>{label}</span><button class="button tiny" type="submit">Remove</button></form>"#,
+                return_to = escape_attr(&state.return_to),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    format!(
+        r#"<section class="category-summary"><details class="category-editor"><summary>Current Categories: <div class="tag-strip">{current_tags}</div></summary><form method="post" action="/ui/action" class="new-category" data-route-action="true"><input type="hidden" name="return_to" value="{return_to}"/><input type="hidden" name="action" value="create_category"/><input name="category" placeholder="Category path"/><button class="button secondary" type="submit">Create Category</button></form><div class="transfer-grid"><section><h4>Available</h4><div class="category-list">{available_rows}</div></section><section><h4>Current</h4><div class="category-list">{current_rows}</div></section></div></details></section>"#,
+        return_to = escape_attr(&state.return_to),
+    )
+}
+
+fn current_categories(state: &UiStateDto) -> Vec<String> {
+    let target_ids = if state.category_target_ids.is_empty() {
+        state.active_id.iter().cloned().collect::<Vec<_>>()
+    } else {
+        state.category_target_ids.clone()
+    };
+    let mut common: Option<Vec<String>> = None;
+    for id in target_ids {
+        let Some(item) = state.items.iter().find(|item| item.id == id) else {
+            continue;
+        };
+        common = Some(match common {
+            Some(current) => current
+                .into_iter()
+                .filter(|category| item.categories.contains(category))
+                .collect(),
+            None => item.categories.clone(),
+        });
+    }
+    common.unwrap_or_default()
 }
 
 fn escape_text(value: &str) -> String {
@@ -117,6 +195,35 @@ mod tests {
         assert!(html.contains("paper.pdf"));
         assert!(html.contains("12 bytes"));
         assert!(!html.contains("Save Metadata"));
+    }
+
+    #[test]
+    fn detail_html_keeps_category_editor_without_active_item() {
+        let state: UiStateDto = serde_json::from_str(
+            r#"{
+                "items": [],
+                "categories": [{"path": "Inbox", "item_count": 0}],
+                "events": [],
+                "pending_count": 0,
+                "selected_ids": [],
+                "category_target_ids": [],
+                "active_id": null,
+                "active_detail": null,
+                "tab": "metadata",
+                "return_to": "/?tab=metadata",
+                "status_label": "Running",
+                "files": [],
+                "rules_notice": null
+            }"#,
+        )
+        .unwrap();
+
+        let html = render_detail_html(&state);
+
+        assert!(html.contains("Current Categories:"));
+        assert!(html.contains("Create Category"));
+        assert!(html.contains(r#"data-route-action="true""#));
+        assert!(html.contains("Save Metadata"));
     }
 
     fn state_fixture(tab: &str) -> UiStateDto {
