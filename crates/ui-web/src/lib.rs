@@ -352,12 +352,13 @@ mod tests {
         assert!(html.contains(r#"data-route-action="true""#));
         assert!(html.contains(r#"value="create_category""#));
         assert!(html.contains(r#"value="add_category""#));
-        assert!(html.contains("addEventListener('submit'"));
-        assert!(html.contains("form.getAttribute('action') || form.action"));
-        assert!(html.contains("fetch(actionUrl"));
-        assert!(html.contains("keepCategoryEditorOpen"));
-        assert!(html.contains("setAttribute('open', '')"));
-        assert!(html.contains("new URLSearchParams(new FormData(form))"));
+        assert!(html.contains(r#"src="/assets/localref-ui.js""#));
+        assert!(!html.contains("addEventListener('submit'"));
+        assert!(!html.contains("form.getAttribute('action') || form.action"));
+        assert!(!html.contains("fetch(actionUrl"));
+        assert!(!html.contains("keepCategoryEditorOpen"));
+        assert!(!html.contains("setAttribute('open', '')"));
+        assert!(!html.contains("new URLSearchParams(new FormData(form))"));
         assert!(!html.contains("body: new FormData(form)"));
     }
 
@@ -668,8 +669,9 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains(r#"data-open-file="paper.pdf""#));
-        assert!(html.contains("addEventListener('dblclick'"));
-        assert!(html.contains("openItemFile(button)"));
+        assert!(html.contains(r#"src="/assets/localref-ui.js""#));
+        assert!(!html.contains("addEventListener('dblclick'"));
+        assert!(!html.contains("openItemFile(button)"));
     }
 
     #[tokio::test]

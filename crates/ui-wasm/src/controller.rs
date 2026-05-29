@@ -13,6 +13,7 @@ pub fn start_controller() -> Result<(), JsValue> {
     bind_search()?;
     bind_category()?;
     bind_clicks()?;
+    bind_submits()?;
     bind_popstate()?;
     Ok(())
 }
@@ -75,6 +76,10 @@ fn bind_clicks() -> Result<(), JsValue> {
         if let Some(button) =
             closest(&element, "[data-route-active],[data-route-tab]")
         {
+            if event.type_() == "dblclick" {
+                schedule_open_file(button);
+                return;
+            }
             event.prevent_default();
             let mut route = current_route();
             if let Some(active) = button.get_attribute("data-route-active") {
@@ -87,6 +92,16 @@ fn bind_clicks() -> Result<(), JsValue> {
                 }
             }
             schedule_route(route);
+            return;
+        }
+        if let Some(toggle) = closest(&element, "[data-events-toggle]") {
+            event.prevent_default();
+            toggle_events(&toggle);
+            return;
+        }
+        if let Some(button) = closest(&element, "[data-dismiss-dialog]") {
+            event.prevent_default();
+            dismiss_dialog(&button);
             return;
         }
         if let Some(input) = closest(&element, ".row-check") {
@@ -107,6 +122,35 @@ fn bind_clicks() -> Result<(), JsValue> {
     }) as Box<dyn FnMut(_)>);
     document()?.add_event_listener_with_callback(
         "click",
+        closure.as_ref().unchecked_ref(),
+    )?;
+    document()?.add_event_listener_with_callback(
+        "dblclick",
+        closure.as_ref().unchecked_ref(),
+    )?;
+    closure.forget();
+    Ok(())
+}
+
+fn bind_submits() -> Result<(), JsValue> {
+    let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let Some(target) = event.target() else {
+            return;
+        };
+        let Ok(element) = target.dyn_into::<web_sys::Element>() else {
+            return;
+        };
+        let Some(form) = closest(&element, "form[data-route-action]") else {
+            return;
+        };
+        event.prevent_default();
+        let Ok(form) = form.dyn_into::<web_sys::HtmlFormElement>() else {
+            return;
+        };
+        schedule_action_submit(form);
+    }) as Box<dyn FnMut(_)>);
+    document()?.add_event_listener_with_callback(
+        "submit",
         closure.as_ref().unchecked_ref(),
     )?;
     closure.forget();
@@ -185,6 +229,179 @@ async fn visit_route(
             .push_state_with_url(&JsValue::NULL, "", Some(&url))?;
     }
     Ok(())
+}
+
+fn toggle_events(toggle: &web_sys::Element) {
+    let Ok(doc) = document() else {
+        return;
+    };
+    let Ok(primary_detail) = doc.query_selector("[data-primary-detail]")
+    else {
+        return;
+    };
+    let Ok(event_panel) = doc.query_selector(".event-panel") else {
+        return;
+    };
+    let Some(event_panel) = event_panel else {
+        return;
+    };
+    let open = event_panel
+        .dyn_ref::<web_sys::HtmlElement>()
+        .map(web_sys::HtmlElement::hidden)
+        .unwrap_or(false);
+    if let Some(primary_detail) = primary_detail {
+        if let Some(element) = primary_detail.dyn_ref::<web_sys::HtmlElement>()
+        {
+            element.set_hidden(open);
+        }
+    }
+    if let Some(element) = event_panel.dyn_ref::<web_sys::HtmlElement>() {
+        element.set_hidden(!open);
+    }
+    let _ = toggle
+        .set_attribute("aria-pressed", if open { "true" } else { "false" });
+    let class_list = toggle.class_list();
+    if open {
+        let _ = class_list.add_1("is-active");
+    } else {
+        let _ = class_list.remove_1("is-active");
+    }
+}
+
+fn dismiss_dialog(button: &web_sys::Element) {
+    if let Ok(Some(dialog)) = button.closest(".rules-result-dialog") {
+        dialog.remove();
+    }
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(location) = window.location().href() else {
+        return;
+    };
+    let Ok(url) = web_sys::Url::new(&location) else {
+        return;
+    };
+    url.search_params().delete("rules_status");
+    url.search_params().delete("rules_error");
+    let _ = window.history().and_then(|history| {
+        history.replace_state_with_url(&JsValue::NULL, "", Some(&url.href()))
+    });
+}
+
+fn schedule_open_file(button: web_sys::Element) {
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(error) = open_file(button).await {
+            web_sys::console::error_1(&error);
+        }
+    });
+}
+
+async fn open_file(button: web_sys::Element) -> Result<(), JsValue> {
+    let file_path = button.get_attribute("data-open-file").unwrap_or_default();
+    let item_id =
+        button.get_attribute("data-route-active").unwrap_or_default();
+    if file_path.trim().is_empty() || item_id.trim().is_empty() {
+        return Ok(());
+    }
+    let params = web_sys::UrlSearchParams::new()?;
+    params.set("return_to", &current_return_to());
+    params.set("action", "open_file");
+    params.set("item_id", &item_id);
+    params.set("file_path", &file_path);
+    post_form_encoded("/ui/action", &params).await.map(|_| ())
+}
+
+fn schedule_action_submit(form: web_sys::HtmlFormElement) {
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(error) = submit_action(form).await {
+            web_sys::console::error_1(&error);
+        }
+    });
+}
+
+async fn submit_action(form: web_sys::HtmlFormElement) -> Result<(), JsValue> {
+    let action_url = form
+        .get_attribute("action")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| form.action());
+    let keep_category_editor_open = form
+        .closest(".category-editor")?
+        .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+        .map(|element| !element.hidden())
+        .unwrap_or(false);
+    let form_data = web_sys::FormData::new_with_form(&form)?;
+    let params = web_sys::UrlSearchParams::new_with_str_sequence_sequence(
+        &form_data.into(),
+    )?;
+    let response = post_form_encoded(&action_url, &params).await?;
+    replace_shell(response).await?;
+    if keep_category_editor_open {
+        if let Some(editor) = document()?.query_selector(".category-editor")? {
+            let _ = editor.set_attribute("open", "");
+        }
+    }
+    Ok(())
+}
+
+async fn post_form_encoded(
+    url: &str,
+    params: &web_sys::UrlSearchParams,
+) -> Result<web_sys::Response, JsValue> {
+    let headers = web_sys::Headers::new()?;
+    headers.set("content-type", "application/x-www-form-urlencoded")?;
+    headers.set("X-Localref-UI-Router", "1")?;
+    let init = web_sys::RequestInit::new();
+    init.set_method("POST");
+    init.set_mode(web_sys::RequestMode::SameOrigin);
+    init.set_headers(&headers);
+    init.set_body(&params.to_string().into());
+    let request = web_sys::Request::new_with_str_and_init(url, &init)?;
+    let response = wasm_bindgen_futures::JsFuture::from(
+        web_sys::window()
+            .ok_or_else(|| JsValue::from_str("missing window"))?
+            .fetch_with_request(&request),
+    )
+    .await?;
+    response.dyn_into::<web_sys::Response>()
+}
+
+async fn replace_shell(response: web_sys::Response) -> Result<(), JsValue> {
+    if !response.ok() {
+        return Err(JsValue::from_str(&format!(
+            "action failed: {}",
+            response.status()
+        )));
+    }
+    let response_url = response.url();
+    let text = wasm_bindgen_futures::JsFuture::from(response.text()?).await?;
+    let Some(text) = text.as_string() else {
+        return Err(JsValue::from_str("action body is not text"));
+    };
+    let parser = web_sys::DomParser::new()?;
+    let doc =
+        parser.parse_from_string(&text, web_sys::SupportedType::TextHtml)?;
+    let Some(next_shell) = doc.query_selector(".app-shell")? else {
+        return Err(JsValue::from_str("action response missing app shell"));
+    };
+    let Some(current_shell) = document()?.query_selector(".app-shell")? else {
+        return Err(JsValue::from_str("current document missing app shell"));
+    };
+    current_shell.set_inner_html(&next_shell.inner_html());
+    web_sys::window()
+        .ok_or_else(|| JsValue::from_str("missing window"))?
+        .history()?
+        .replace_state_with_url(&JsValue::NULL, "", Some(&response_url))?;
+    Ok(())
+}
+
+fn current_return_to() -> String {
+    let Some(window) = web_sys::window() else {
+        return "/".to_string();
+    };
+    let location = window.location();
+    let path = location.pathname().unwrap_or_else(|_| "/".to_string());
+    let search = location.search().unwrap_or_default();
+    format!("{path}{search}")
 }
 
 fn optional_text(value: &str) -> Option<String> {

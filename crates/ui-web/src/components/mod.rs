@@ -4,7 +4,6 @@ mod category;
 mod detail;
 mod events;
 mod files;
-mod script;
 mod sidebar;
 
 use leptos::prelude::*;
@@ -12,7 +11,6 @@ use leptos::prelude::*;
 use crate::state::{RulesNotice, UiModel};
 use detail::render_detail;
 use events::render_events;
-use script::INTERACTION_SCRIPT;
 use sidebar::render_sidebar;
 
 /// Render the complete server-side HTML document.
@@ -33,7 +31,6 @@ pub(crate) fn render_page(model: UiModel) -> String {
                     <link rel="icon" href="/assets/favicon.ico" type="image/x-icon"/>
                     <link rel="stylesheet" href="/assets/localref-ui.css"/>
                     <script type="module" src="/assets/localref-ui.js"></script>
-                    <script>{INTERACTION_SCRIPT}</script>
                 </head>
                 <body>
                     {render_rules_notice(&model)}
