@@ -5,7 +5,10 @@ use wasm_bindgen::prelude::{Closure, JsValue};
 
 use crate::api::fetch_state;
 use crate::query::RouteState;
-use crate::render::{render_detail_html, render_item_list_html};
+use crate::render::{
+    render_detail_head_html, render_detail_html, render_events_html,
+    render_item_list_html,
+};
 
 /// Bind Localref browsing controls in the current browser document.
 #[cfg(target_arch = "wasm32")]
@@ -24,7 +27,18 @@ fn document() -> Result<web_sys::Document, JsValue> {
 }
 
 fn bind_filters() -> Result<(), JsValue> {
-    let closure = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+    let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let Some(target) = event.target() else {
+            return;
+        };
+        let Ok(element) = target.dyn_into::<web_sys::Element>() else {
+            return;
+        };
+        if element.id() != "library-search"
+            && element.id() != "library-category"
+        {
+            return;
+        }
         let mut route = current_route();
         if let Ok(doc) = document() {
             route.search = doc
@@ -40,6 +54,7 @@ fn bind_filters() -> Result<(), JsValue> {
                 })
                 .and_then(|select| optional_text(&select.value()));
         }
+        route.active_id = None;
         route.selected_ids.clear();
         schedule_route(route);
     }) as Box<dyn FnMut(_)>);
@@ -59,6 +74,22 @@ fn bind_clicks() -> Result<(), JsValue> {
         let Ok(element) = target.dyn_into::<web_sys::Element>() else {
             return;
         };
+        if let Some(input) = closest(&element, ".row-check") {
+            let Ok(input) = input.dyn_into::<web_sys::HtmlInputElement>()
+            else {
+                return;
+            };
+            let mut route = current_route();
+            if input.checked() {
+                if !route.selected_ids.contains(&input.value()) {
+                    route.selected_ids.push(input.value());
+                }
+            } else {
+                route.selected_ids.retain(|id| id != &input.value());
+            }
+            schedule_route(route);
+            return;
+        }
         if let Some(button) =
             closest(&element, "[data-route-active],[data-route-tab]")
         {
@@ -89,21 +120,6 @@ fn bind_clicks() -> Result<(), JsValue> {
             event.prevent_default();
             dismiss_dialog(&button);
             return;
-        }
-        if let Some(input) = closest(&element, ".row-check") {
-            let Ok(input) = input.dyn_into::<web_sys::HtmlInputElement>()
-            else {
-                return;
-            };
-            let mut route = current_route();
-            if input.checked() {
-                if !route.selected_ids.contains(&input.value()) {
-                    route.selected_ids.push(input.value());
-                }
-            } else {
-                route.selected_ids.retain(|id| id != &input.value());
-            }
-            schedule_route(route);
         }
     }) as Box<dyn FnMut(_)>);
     document()?.add_event_listener_with_callback(
@@ -204,15 +220,55 @@ async fn visit_route(
     if let Some(list) = doc.get_element_by_id("library-list") {
         list.set_inner_html(&render_item_list_html(&state));
     }
+    if let Some(head) = doc.query_selector("[data-primary-detail-head]")? {
+        head.set_inner_html(&render_detail_head_html(&state));
+    }
     if let Some(body) = doc.query_selector(".detail-body")? {
         body.set_inner_html(&render_detail_html(&state));
     }
+    if let Some(panel) = doc.query_selector(".event-panel")? {
+        panel.set_inner_html(&render_events_html(&state));
+    }
+    sync_detail_visibility(&doc, state.tab == "events")?;
     if push_history {
         let url = format!("/?{}", route.to_query_string());
         web_sys::window()
             .ok_or_else(|| JsValue::from_str("missing window"))?
             .history()?
             .push_state_with_url(&JsValue::NULL, "", Some(&url))?;
+    }
+    Ok(())
+}
+
+/// Keep the primary detail and events panel consistent after client routing.
+fn sync_detail_visibility(
+    doc: &web_sys::Document,
+    events_open: bool,
+) -> Result<(), JsValue> {
+    if let Some(primary_detail) =
+        doc.query_selector("[data-primary-detail]")?
+    {
+        if let Some(element) = primary_detail.dyn_ref::<web_sys::HtmlElement>()
+        {
+            element.set_hidden(events_open);
+        }
+    }
+    if let Some(event_panel) = doc.query_selector(".event-panel")? {
+        if let Some(element) = event_panel.dyn_ref::<web_sys::HtmlElement>() {
+            element.set_hidden(!events_open);
+        }
+    }
+    if let Some(toggle) = doc.query_selector("[data-events-toggle]")? {
+        toggle.set_attribute(
+            "aria-pressed",
+            if events_open { "true" } else { "false" },
+        )?;
+        let class_list = toggle.class_list();
+        if events_open {
+            class_list.add_1("is-active")?;
+        } else {
+            class_list.remove_1("is-active")?;
+        }
     }
     Ok(())
 }

@@ -72,7 +72,13 @@ impl UiModel {
         let active_id = query
             .active
             .clone()
-            .or_else(|| selected_ids.first().cloned())
+            .filter(|id| item_id_is_visible(&items, id))
+            .or_else(|| {
+                selected_ids
+                    .iter()
+                    .find(|id| item_id_is_visible(&items, id))
+                    .cloned()
+            })
             .or_else(|| items.first().map(|item| item.id.clone()));
         if query.selected.is_none() && !query.item.is_empty() {
             query.selected = Some(query.item.join(","));
@@ -181,6 +187,11 @@ fn item_matches_search(item: &ItemDocument, needle: &str) -> bool {
             .authors
             .iter()
             .any(|author| author.to_ascii_lowercase().contains(needle))
+}
+
+/// Return whether an item id is present in the currently visible item list.
+fn item_id_is_visible(items: &[ItemDocument], id: &str) -> bool {
+    items.iter().any(|item| item.id == id)
 }
 
 /// Return item ids that category operations should mutate.

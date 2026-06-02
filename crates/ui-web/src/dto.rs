@@ -35,6 +35,8 @@ pub(crate) struct UiStateDto {
     pub(crate) status_label: String,
     /// Files shown for the active item.
     pub(crate) files: Vec<FileEntryDto>,
+    /// Current automatic-classification rules text.
+    pub(crate) rules_text: String,
     /// Optional rules save result notice.
     pub(crate) rules_notice: Option<RulesNoticeDto>,
 }
@@ -62,6 +64,7 @@ impl UiStateDto {
             tab: model.tab,
             return_to: model.return_to,
             files: model.files.into_iter().map(FileEntryDto::from).collect(),
+            rules_text: model.rules_text,
             rules_notice: model.rules_notice.map(RulesNoticeDto::from),
         }
     }

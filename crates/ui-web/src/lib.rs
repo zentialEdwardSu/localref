@@ -589,7 +589,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/ui/state?q=alpha&tab=files")
+                    .uri("/ui/state?q=alpha&active=lr:zotero:beta&tab=files")
                     .body(Body::empty())
                     .unwrap(),
             )

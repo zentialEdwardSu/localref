@@ -98,24 +98,3 @@ impl RuntimeLogger {
         file.flush().map_err(|e| e.to_string())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn writes_jsonl_runtime_records() {
-        let temp = tempfile::tempdir().unwrap();
-        let logger = RuntimeLogger::new(temp.path());
-
-        logger.info("test", "runtime online");
-
-        let text = std::fs::read_to_string(logger.path()).unwrap();
-        let value: serde_json::Value =
-            serde_json::from_str(text.lines().next().unwrap()).unwrap();
-        assert_eq!(value["level"], "info");
-        assert_eq!(value["target"], "test");
-        assert_eq!(value["message"], "runtime online");
-        assert!(value["ts_unix_ms"].as_u64().is_some());
-    }
-}

@@ -31,6 +31,8 @@ pub struct UiStateDto {
     pub status_label: String,
     /// Files for the active item.
     pub files: Vec<FileEntryDto>,
+    /// Current automatic-classification rules text.
+    pub rules_text: String,
     /// Optional rules save result.
     pub rules_notice: Option<RulesNoticeDto>,
 }
@@ -215,6 +217,7 @@ mod tests {
             "return_to": "/?active=lr:zotero:alpha&tab=files",
             "status_label": "Running",
             "files": [{"path": "paper.pdf", "kind": "file", "bytes": 12}],
+            "rules_text": "[[rules]]\nname = \"Inbox\"\n",
             "rules_notice": null
         }"#;
 
