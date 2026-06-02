@@ -288,6 +288,8 @@ pub enum EventKind {
     CategoryRenamed,
     /// A category directory was merged into another category.
     CategoryMerged,
+    /// An indexed item directory was deleted from `All/`.
+    ItemDeleted,
 }
 
 impl Metadata {

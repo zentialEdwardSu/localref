@@ -8,7 +8,6 @@
 
 mod actions;
 mod assets;
-mod components;
 mod dto;
 mod state;
 
@@ -16,17 +15,24 @@ use actions::{UiAction, run_action};
 use assets::{favicon, ui_css, ui_wasm, ui_wasm_bindgen_js, ui_wasm_js};
 use axum::Json;
 use axum::Router;
-use axum::extract::{Form, Query, State};
+use axum::extract::{Form, Multipart, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use components::render_page;
-use dto::UiStateDto;
+use dto::app_state_from_model;
 use localref_core::LocalrefDaemon;
 use state::{UiModel, UiQuery, escape_text, return_path};
 
 /// Build the server-rendered UI router for one daemon facade.
 pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
+    router_with_daemon_and_repo_name(daemon, "Localref")
+}
+
+/// Build the server-rendered UI router with a configured repository name.
+pub fn router_with_daemon_and_repo_name(
+    daemon: LocalrefDaemon,
+    repo_name: impl Into<String>,
+) -> Router {
     Router::new()
         .route("/", get(home))
         .route("/ui/state", get(ui_state))
@@ -36,22 +42,31 @@ pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
         .route("/assets/localref-ui-bindgen.js", get(ui_wasm_bindgen_js))
         .route("/assets/localref-ui-bindgen_bg.wasm", get(ui_wasm))
         .route("/ui/action", post(action))
-        .with_state(UiState { daemon })
+        .route("/ui/upload", post(upload))
+        .with_state(UiState { daemon, repo_name: repo_name.into() })
 }
 
 #[derive(Clone)]
 struct UiState {
     daemon: LocalrefDaemon,
+    repo_name: String,
 }
 
 async fn home(
     State(state): State<UiState>,
     Query(query): Query<UiQuery>,
 ) -> Response {
+    let repo_name = state.repo_name.clone();
     match UiModel::load(&state.daemon, query) {
-        Ok(model) => Html(render_page(model)).into_response(),
+        Ok(model) => Html(ui_app::render_page(app_state_from_model(
+            model,
+            repo_name,
+        )))
+        .into_response(),
         Err(error) => Html(format!(
-            "<!doctype html><title>Localref</title><main><h1>Localref</h1><p>{}</p></main>",
+            "<!doctype html><title>{}</title><main><h1>{}</h1><p>{}</p></main>",
+            escape_text(&repo_name),
+            escape_text(&repo_name),
             escape_text(&error.to_string())
         ))
         .into_response(),
@@ -62,8 +77,11 @@ async fn ui_state(
     State(state): State<UiState>,
     Query(query): Query<UiQuery>,
 ) -> Response {
+    let repo_name = state.repo_name.clone();
     match UiModel::load(&state.daemon, query) {
-        Ok(model) => Json(UiStateDto::from_model(model)).into_response(),
+        Ok(model) => {
+            Json(app_state_from_model(model, repo_name)).into_response()
+        }
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
             .into_response(),
     }
@@ -80,6 +98,60 @@ async fn action(
         return_path(&form.return_to)
     };
     Redirect::to(target.as_str())
+}
+
+async fn upload(
+    State(state): State<UiState>,
+    mut multipart: Multipart,
+) -> Response {
+    let mut item_id = String::new();
+    let mut return_to_value = "/?tab=files".to_string();
+    let mut files = Vec::new();
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(error) => {
+                return (StatusCode::BAD_REQUEST, error.to_string())
+                    .into_response();
+            }
+        };
+        let name = field.name().unwrap_or_default().to_string();
+        match name.as_str() {
+            "item_id" => {
+                item_id = field.text().await.unwrap_or_default();
+            }
+            "return_to" => {
+                return_to_value = field.text().await.unwrap_or_default();
+            }
+            "file" => {
+                let filename = field
+                    .file_name()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "upload".to_string());
+                match field.bytes().await {
+                    Ok(bytes) => files.push((filename, bytes.to_vec())),
+                    Err(error) => {
+                        return (StatusCode::BAD_REQUEST, error.to_string())
+                            .into_response();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if !item_id.trim().is_empty() {
+        for (filename, bytes) in files {
+            if let Err(error) = state
+                .daemon
+                .add_uploaded_file_to_item(&item_id, &filename, &bytes)
+            {
+                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                    .into_response();
+            }
+        }
+    }
+    Redirect::to(return_path(&return_to_value).as_str()).into_response()
 }
 
 fn rules_action_return(result: &Result<(), String>) -> String {
@@ -133,6 +205,10 @@ mod tests {
         assert!(html.contains("Run Scan"));
         assert!(html.contains("Watcher On"));
         assert!(html.contains("Watcher Paused"));
+        assert!(html.contains(r#"class="watcher-form""#));
+        assert!(html.contains(r#"data-route-action="true""#));
+        assert!(html.contains(r#"type="radio""#));
+        assert!(html.contains("Apply Watcher"));
         assert!(html.contains("library-search"));
         assert!(html.contains("library-category"));
         assert!(html.contains("<link"));
@@ -153,13 +229,32 @@ mod tests {
         assert!(!html.contains("Update Selection"));
 
         let events_index = html.find(">Events</button>").unwrap();
-        let metadata_index = html.find(">Metadata</button>").unwrap();
-        let files_index = html.find(">Files</button>").unwrap();
+        let metadata_index = html.find(">Metadata</a>").unwrap();
+        let files_index = html.find(">Files</a>").unwrap();
         let editor_index = html.find("Current Categories:").unwrap();
         let create_index = html.find("Create Category").unwrap();
         assert!(events_index < metadata_index);
         assert!(metadata_index < files_index);
         assert!(editor_index < create_index);
+    }
+
+    #[tokio::test]
+    async fn renders_configured_repository_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        let app = router_with_daemon_and_repo_name(daemon, "Research Vault");
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert!(response.status().is_success());
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<title>Research Vault</title>"));
+        assert!(html.contains("<h1>Research Vault</h1>"));
+        assert!(html.contains(r#""repo_name":"Research Vault""#));
     }
 
     #[tokio::test]
@@ -743,14 +838,49 @@ mod tests {
 
     #[tokio::test]
     async fn renders_local_file_actions_on_files_tab() {
+        use localref_core::types::{
+            ConnectorAttachment, ConnectorImport, ConnectorItem,
+        };
+        use serde_json::json;
+
         let temp = tempfile::tempdir().unwrap();
         let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        daemon
+            .import_connector_item(ConnectorImport {
+                item: ConnectorItem {
+                    session_id: Some("session-files".to_string()),
+                    uri: None,
+                    connector_item_id: Some("files".to_string()),
+                    item_type: Some("journalArticle".to_string()),
+                    title: "Files Paper".to_string(),
+                    abstract_note: None,
+                    doi: None,
+                    raw: json!({"title": "Files Paper"}),
+                },
+                attachments: vec![ConnectorAttachment {
+                    session_id: Some("session-files".to_string()),
+                    parent_item_id: Some("files".to_string()),
+                    title: Some("PDF".to_string()),
+                    filename: "paper.pdf".to_string(),
+                    mime_type: Some("application/pdf".to_string()),
+                    bytes: b"pdf".to_vec(),
+                    raw_metadata: None,
+                }],
+            })
+            .unwrap();
+        daemon
+            .add_uploaded_file_to_item(
+                "lr:zotero:files",
+                "notes.txt",
+                b"notes",
+            )
+            .unwrap();
         let app = router_with_daemon(daemon);
 
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/?tab=files")
+                    .uri("/?active=lr:zotero:files&tab=files")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -760,8 +890,76 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("Open Folder"));
-        assert!(html.contains("Add File"));
-        assert!(html.contains("Import File"));
+        assert!(html.contains("Add Files"));
+        assert!(html.contains("Drop files here"));
+        assert!(html.contains(r#"action="/ui/upload""#));
+        assert!(html.contains(r#"type="file""#));
+        assert!(html.contains("Main"));
+        assert!(html.contains("Set Main"));
+        assert!(html.contains("main .pdf"));
+        assert!(!html.contains("Local File Path"));
+        assert!(!html.contains("Import Path"));
+        assert!(!html.contains("Import File"));
+    }
+
+    #[tokio::test]
+    async fn upload_route_adds_selected_file_to_active_item() {
+        use axum::http::header::CONTENT_TYPE;
+        use localref_core::types::{ConnectorImport, ConnectorItem};
+        use serde_json::json;
+
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        daemon
+            .import_connector_item(ConnectorImport {
+                item: ConnectorItem {
+                    session_id: Some("session-upload".to_string()),
+                    uri: None,
+                    connector_item_id: Some("upload".to_string()),
+                    item_type: Some("journalArticle".to_string()),
+                    title: "Upload Paper".to_string(),
+                    abstract_note: None,
+                    doi: None,
+                    raw: json!({"title": "Upload Paper"}),
+                },
+                attachments: Vec::new(),
+            })
+            .unwrap();
+        let app = router_with_daemon(daemon.clone());
+        let body = concat!(
+            "--LOCALREF\r\n",
+            "Content-Disposition: form-data; name=\"item_id\"\r\n\r\n",
+            "lr:zotero:upload\r\n",
+            "--LOCALREF\r\n",
+            "Content-Disposition: form-data; name=\"return_to\"\r\n\r\n",
+            "/?active=lr:zotero:upload&tab=files\r\n",
+            "--LOCALREF\r\n",
+            "Content-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\n",
+            "Content-Type: text/plain\r\n\r\n",
+            "notes\r\n",
+            "--LOCALREF--\r\n",
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ui/upload")
+                    .header(
+                        CONTENT_TYPE,
+                        "multipart/form-data; boundary=LOCALREF",
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(response.status().is_redirection());
+        let files = daemon.item_files("lr:zotero:upload").unwrap().unwrap();
+        assert!(files.files.iter().any(|file| file.path == "notes.txt"));
+        let item = daemon.get_item("lr:zotero:upload").unwrap().unwrap();
+        assert_eq!(item.main_file.as_deref(), Some("notes.txt"));
     }
 
     #[tokio::test]
@@ -1112,6 +1310,65 @@ mod tests {
         let rules_path = temp.path().join(".localref").join("rules.toml");
         let saved = std::fs::read_to_string(rules_path).unwrap();
         assert!(saved.contains("target = \"Wireless/RIS\""));
+    }
+
+    #[test]
+    fn set_main_file_preserves_previous_main_as_extra_file() {
+        use localref_core::types::{
+            ConnectorAttachment, ConnectorImport, ConnectorItem,
+        };
+        use serde_json::json;
+
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        daemon
+            .import_connector_item(ConnectorImport {
+                item: ConnectorItem {
+                    session_id: Some("session-main".to_string()),
+                    uri: None,
+                    connector_item_id: Some("main".to_string()),
+                    item_type: Some("journalArticle".to_string()),
+                    title: "Main Paper".to_string(),
+                    abstract_note: None,
+                    doi: None,
+                    raw: json!({"title": "Main Paper"}),
+                },
+                attachments: vec![ConnectorAttachment {
+                    session_id: Some("session-main".to_string()),
+                    parent_item_id: Some("main".to_string()),
+                    title: Some("PDF".to_string()),
+                    filename: "paper.pdf".to_string(),
+                    mime_type: Some("application/pdf".to_string()),
+                    bytes: b"pdf".to_vec(),
+                    raw_metadata: None,
+                }],
+            })
+            .unwrap();
+        daemon
+            .add_uploaded_file_to_item("lr:zotero:main", "notes.txt", b"notes")
+            .unwrap();
+        let revision = daemon
+            .get_metadata("lr:zotero:main")
+            .unwrap()
+            .unwrap()
+            .metadata_revision;
+
+        run_action(
+            &daemon,
+            &UiAction {
+                action: "set_main_file".to_string(),
+                return_to: "/?active=lr:zotero:main&tab=files".to_string(),
+                item_id: Some("lr:zotero:main".to_string()),
+                file_path: Some("notes.txt".to_string()),
+                expected_revision: Some(revision),
+                ..UiAction::default()
+            },
+        )
+        .unwrap();
+
+        let item = daemon.get_item("lr:zotero:main").unwrap().unwrap();
+        assert_eq!(item.main_file.as_deref(), Some("notes.txt"));
+        assert!(item.extra_files.iter().any(|path| path == "paper.pdf"));
     }
 
     #[test]

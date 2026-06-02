@@ -232,19 +232,23 @@ async fn serve_rest_with_daemon_logging(
     }
     logger.info("rest", format!("listening on http://{}", config.rest_addr()));
     let listener = tokio::net::TcpListener::bind(config.rest_addr()).await?;
-    axum::serve(listener, rest_app(daemon)).await
+    axum::serve(listener, rest_app(&config, daemon)).await
 }
 
 /// Build the REST listener application.
 #[cfg(feature = "desktop")]
-fn rest_app(daemon: LocalrefDaemon) -> axum::Router {
-    localref_core::rest::router_with_daemon(daemon.clone())
-        .merge(ui_web::router_with_daemon(daemon))
+fn rest_app(config: &LocalrefConfig, daemon: LocalrefDaemon) -> axum::Router {
+    localref_core::rest::router_with_daemon(daemon.clone()).merge(
+        ui_web::router_with_daemon_and_repo_name(
+            daemon,
+            config.repo_name().to_string(),
+        ),
+    )
 }
 
 /// Build the REST listener application.
 #[cfg(not(feature = "desktop"))]
-fn rest_app(daemon: LocalrefDaemon) -> axum::Router {
+fn rest_app(_config: &LocalrefConfig, daemon: LocalrefDaemon) -> axum::Router {
     localref_core::rest::router_with_daemon(daemon)
 }
 

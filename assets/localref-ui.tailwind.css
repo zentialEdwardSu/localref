@@ -1,5 +1,6 @@
 @import "tailwindcss";
 
+@source "../crates/ui-app/src";
 @source "../crates/ui-web/src";
 
 @theme {
@@ -124,15 +125,15 @@
   }
 
   .radio-pair {
-    @apply grid grid-cols-2 gap-px bg-localref-ink p-px text-sm;
+    @apply grid grid-cols-2 gap-px border border-localref-ink bg-localref-line p-px text-sm;
   }
 
   .radio-option {
-    @apply flex h-10 items-center justify-center bg-localref-panel px-3 transition hover:bg-localref-page;
+    @apply flex h-10 items-center justify-center gap-2 bg-localref-panel px-3 transition hover:bg-localref-page;
   }
 
   .radio-option input {
-    @apply pointer-events-none absolute opacity-0;
+    @apply size-4 accent-localref-accent;
   }
 
   .radio-option.is-active {
@@ -312,15 +313,27 @@
   }
 
   .file-actions {
-    @apply grid gap-3 p-4 min-[900px]:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] min-[900px]:items-end;
+    @apply grid gap-3 p-4 min-[900px]:grid-cols-[auto_minmax(0,1fr)] min-[900px]:items-stretch;
   }
 
-  .path-form {
-    @apply grid gap-2 min-[900px]:grid-cols-[minmax(0,1fr)_auto] min-[900px]:items-end;
+  .upload-zone {
+    @apply grid min-h-20 place-items-center gap-2 border border-dashed border-localref-input bg-localref-page px-4 py-3 text-sm text-localref-muted transition hover:border-localref-accent hover:bg-localref-panel min-[900px]:grid-cols-[auto_minmax(0,1fr)] min-[900px]:justify-items-start;
+  }
+
+  .file-input {
+    @apply sr-only;
   }
 
   .file-row {
-    @apply grid-cols-[minmax(0,1fr)_100px_auto] bg-localref-panel max-[899px]:grid-cols-1;
+    @apply grid-cols-[minmax(0,1fr)_100px_auto_auto] bg-localref-panel max-[899px]:grid-cols-1;
+  }
+
+  .file-name {
+    @apply flex min-w-0 items-center gap-2;
+  }
+
+  .main-file-badge {
+    @apply shrink-0 border border-localref-accent px-1.5 py-0.5 text-[11px] uppercase text-localref-accent;
   }
 
   .event-list {
@@ -369,5 +382,33 @@
 
   .rules-result-row code {
     @apply overflow-auto bg-localref-page p-2 font-mono text-xs;
+  }
+
+  .item-context-menu {
+    @apply fixed z-50 grid w-[min(320px,calc(100vw-24px))] gap-px border border-localref-ink bg-localref-line shadow-localref-dialog;
+  }
+
+  .item-context-menu section {
+    @apply min-w-0 bg-localref-panel;
+  }
+
+  .item-context-menu h3 {
+    @apply border-b border-localref-line px-3 py-2 text-xs font-semibold uppercase text-localref-muted;
+  }
+
+  .context-file-list {
+    @apply max-h-64 overflow-auto;
+  }
+
+  .context-file-list p {
+    @apply m-0 px-3 py-2.5 text-sm text-localref-muted;
+  }
+
+  .context-menu-button {
+    @apply block w-full overflow-hidden text-ellipsis whitespace-nowrap border-0 bg-localref-panel px-3 py-2.5 text-left text-sm text-localref-ink transition hover:bg-localref-page;
+  }
+
+  .context-menu-button.danger {
+    @apply text-localref-danger hover:bg-localref-danger hover:text-white;
   }
 }

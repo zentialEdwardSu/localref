@@ -26,6 +26,7 @@ pub const DEFAULT_REST_ENDPOINT: &str = "http://127.0.0.1:24817";
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalrefConfig {
     source_path: PathBuf,
+    repo_name: String,
     library_root: PathBuf,
     rest_addr: SocketAddr,
     rest_endpoint: String,
@@ -36,6 +37,7 @@ pub struct LocalrefConfig {
 
 #[derive(Debug, Default, Deserialize)]
 struct ConfigFile {
+    repo_name: Option<String>,
     library_root: Option<PathBuf>,
     rest: Option<RestConfigFile>,
     csc: Option<CscConfigFile>,
@@ -94,6 +96,11 @@ impl LocalrefConfig {
         &self.library_root
     }
 
+    /// Return the configured repository display name.
+    pub fn repo_name(&self) -> &str {
+        &self.repo_name
+    }
+
     /// Return the REST API bind address for server binaries.
     pub fn rest_addr(&self) -> SocketAddr {
         self.rest_addr
@@ -125,6 +132,10 @@ impl LocalrefConfig {
     ) -> Result<Self, String> {
         let library_root =
             file.library_root.unwrap_or(default_library_root()?);
+        let repo_name = file
+            .repo_name
+            .and_then(|value| optional_text(&value))
+            .unwrap_or_else(|| "Localref".to_string());
         let rest = file.rest.unwrap_or_default();
         let csc = file.csc.unwrap_or_default();
         let desktop = file.desktop.unwrap_or_default();
@@ -140,6 +151,7 @@ impl LocalrefConfig {
         )?;
         Ok(Self {
             source_path,
+            repo_name,
             library_root,
             rest_addr,
             rest_endpoint,
@@ -185,7 +197,8 @@ fn write_default_config(config: &LocalrefConfig) -> Result<(), String> {
         })?;
     }
     let text = format!(
-        "library_root = '{}'\n\n[rest]\naddr = \"{}\"\nendpoint = \"{}\"\n\n[csc]\naddr = \"{}\"\n\n[desktop]\nstart_hidden = {}\nquiet_start = {}\n",
+        "repo_name = \"{}\"\nlibrary_root = '{}'\n\n[rest]\naddr = \"{}\"\nendpoint = \"{}\"\n\n[csc]\naddr = \"{}\"\n\n[desktop]\nstart_hidden = {}\nquiet_start = {}\n",
+        toml_basic_string(&config.repo_name),
         toml_literal_path(&config.library_root),
         config.rest_addr,
         config.rest_endpoint,
@@ -202,6 +215,15 @@ fn toml_literal_path(path: &Path) -> String {
     path.to_string_lossy().replace('\'', "''")
 }
 
+fn toml_basic_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn optional_text(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() { None } else { Some(value.to_string()) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +234,7 @@ mod tests {
         let config = LocalrefConfig::load_from_path(&temp).unwrap();
 
         assert_eq!(config.source_path(), temp.as_path());
+        assert_eq!(config.repo_name(), "Localref");
         assert_eq!(config.library_root(), default_library_root().unwrap());
         assert_eq!(config.rest_addr().to_string(), DEFAULT_REST_ADDR);
         assert_eq!(config.rest_endpoint(), "http://127.0.0.1:24817");
@@ -219,6 +242,7 @@ mod tests {
         assert!(config.desktop_start_hidden());
         assert!(config.desktop_quiet_start());
         let written = std::fs::read_to_string(&temp).unwrap();
+        assert!(written.contains("repo_name = \"Localref\""));
         assert!(written.contains("library_root = "));
         assert!(written.contains("[rest]"));
         assert!(written.contains("[csc]"));
@@ -236,6 +260,7 @@ mod tests {
             &temp,
             r#"
 library_root = "D:/LocalrefLibrary"
+repo_name = "Research Vault"
 
 [rest]
 addr = "127.0.0.1:3001"
@@ -253,6 +278,7 @@ quiet_start = false
 
         let config = LocalrefConfig::load_from_path(&temp).unwrap();
 
+        assert_eq!(config.repo_name(), "Research Vault");
         assert_eq!(config.library_root(), Path::new("D:/LocalrefLibrary"));
         assert_eq!(config.rest_addr().to_string(), "127.0.0.1:3001");
         assert_eq!(config.rest_endpoint(), "http://localhost:3001");

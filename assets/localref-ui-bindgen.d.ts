@@ -1,5 +1,40 @@
 /* tslint:disable */
 /* eslint-disable */
+/**
+ * The `ReadableStreamType` enum.
+ *
+ * *This API requires the following crate features to be activated: `ReadableStreamType`*
+ */
+
+export type ReadableStreamType = "bytes";
+
+export class IntoUnderlyingByteSource {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    cancel(): void;
+    pull(controller: ReadableByteStreamController): Promise<any>;
+    start(controller: ReadableByteStreamController): void;
+    readonly autoAllocateChunkSize: number;
+    readonly type: ReadableStreamType;
+}
+
+export class IntoUnderlyingSink {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    abort(reason: any): Promise<any>;
+    close(): Promise<any>;
+    write(chunk: any): Promise<any>;
+}
+
+export class IntoUnderlyingSource {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    cancel(): void;
+    pull(controller: ReadableStreamDefaultController): Promise<any>;
+}
 
 /**
  * Start the browser-side Localref UI controller.
@@ -11,8 +46,23 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly start: () => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h929e9088d8f661b9: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__ha1ad888e934069c6: (a: number, b: number, c: any) => void;
+    readonly __wbg_intounderlyingbytesource_free: (a: number, b: number) => void;
+    readonly intounderlyingbytesource_autoAllocateChunkSize: (a: number) => number;
+    readonly intounderlyingbytesource_cancel: (a: number) => void;
+    readonly intounderlyingbytesource_pull: (a: number, b: any) => any;
+    readonly intounderlyingbytesource_start: (a: number, b: any) => void;
+    readonly intounderlyingbytesource_type: (a: number) => number;
+    readonly __wbg_intounderlyingsink_free: (a: number, b: number) => void;
+    readonly __wbg_intounderlyingsource_free: (a: number, b: number) => void;
+    readonly intounderlyingsink_abort: (a: number, b: any) => any;
+    readonly intounderlyingsink_close: (a: number) => any;
+    readonly intounderlyingsink_write: (a: number, b: any) => any;
+    readonly intounderlyingsource_cancel: (a: number) => void;
+    readonly intounderlyingsource_pull: (a: number, b: any) => any;
+    readonly wasm_bindgen__convert__closures_____invoke__h34637895556656d0: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h656b56621c8487c9: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h1860d65c074b4dca: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h1860d65c074b4dca_2: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

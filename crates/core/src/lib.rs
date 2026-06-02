@@ -88,6 +88,11 @@ pub enum DaemonTask {
         /// Source file path.
         path: String,
     },
+    /// Delete one indexed item directory.
+    DeleteItem {
+        /// Item id being deleted.
+        item_id: String,
+    },
     /// Create an empty category directory.
     CreateCategory {
         /// Category path.
@@ -650,6 +655,52 @@ impl LocalrefDaemon {
         }
     }
 
+    /// Write uploaded bytes into an existing indexed item directory.
+    pub fn add_uploaded_file_to_item(
+        &self,
+        item_id: &str,
+        filename: &str,
+        bytes: &[u8],
+    ) -> Result<ItemDocument> {
+        let mut record = self.enqueue(DaemonTask::AddItemFile {
+            item_id: item_id.to_string(),
+            path: filename.to_string(),
+        });
+        self.mark_running(record.id);
+        let result = self
+            .ensure_task_allowed(&record.task)
+            .and_then(|()| {
+                let item = self
+                    .storage
+                    .get_item(item_id)?
+                    .ok_or(LocalrefError::MissingField("item"))?;
+                let item_dir = self.library_root.join(&item.object_path);
+                ImportPipeline::new(&self.library_root)
+                    .add_uploaded_file_to_item(&item_dir, filename, bytes)
+            })
+            .and_then(|_| {
+                self.storage.rebuild_from_all()?;
+                self.storage
+                    .get_item(item_id)?
+                    .ok_or(LocalrefError::MissingField("item"))
+            });
+
+        match result {
+            Ok(item) => {
+                record.state = DaemonTaskState::Completed;
+                record.message = Some(format!("uploaded file to {item_id}"));
+                self.finish(record);
+                Ok(item)
+            }
+            Err(error) => {
+                record.state = DaemonTaskState::Failed;
+                record.message = Some(error.to_string());
+                self.finish(record);
+                Err(error)
+            }
+        }
+    }
+
     /// Normalize one real directory under `Cat/`.
     pub fn normalize_cat_directory(
         &self,
@@ -858,6 +909,60 @@ impl LocalrefDaemon {
             }
             self.storage.rebuild_from_all()?;
             category_summary_for(&self.storage, &category)
+        });
+        self.finish_task_result(record, result)
+    }
+
+    /// Delete one indexed item directory and its category links.
+    pub fn delete_item(&self, item_id: &str) -> Result<bool> {
+        let record = self
+            .enqueue(DaemonTask::DeleteItem { item_id: item_id.to_string() });
+        self.mark_running(record.id);
+        let result = self.ensure_task_allowed(&record.task).and_then(|()| {
+            let Some(item) = self.storage.get_item(item_id)? else {
+                return Ok(false);
+            };
+            let item_dir = self.library_root.join(&item.object_path);
+            ensure_inside_all(&self.library_root, &item_dir)?;
+            let entry_name = item_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(LocalrefError::MissingField("item directory name"))?;
+            let fs = LibraryFs::new(&self.library_root);
+            let locks = LockManager::new(&self.library_root);
+            let _lock = locks.acquire(item_id, "delete_item")?;
+            for category in &item.categories {
+                let category =
+                    CategoryPath::new(category).ok_or_else(|| {
+                        LocalrefError::InvalidPathComponent {
+                            component: category.clone(),
+                            reason: "indexed category path is invalid",
+                        }
+                    })?;
+                if let Some(path) =
+                    fs.remove_category_link(&category, entry_name)?
+                {
+                    self.events.append(
+                        EventKind::CatLinkDeleted,
+                        format!(
+                            "category link deleted: {}",
+                            category.as_str()
+                        ),
+                        Some(item_id.to_string()),
+                        Some(relative_to_root(&self.library_root, &path)),
+                    )?;
+                }
+            }
+            std::fs::remove_dir_all(&item_dir)
+                .map_err(|source| LocalrefError::io(&item_dir, source))?;
+            self.events.append(
+                EventKind::ItemDeleted,
+                "item deleted",
+                Some(item_id.to_string()),
+                Some(relative_to_root(&self.library_root, &item_dir)),
+            )?;
+            self.storage.rebuild_from_all()?;
+            Ok(true)
         });
         self.finish_task_result(record, result)
     }
@@ -1074,6 +1179,11 @@ impl LocalrefDaemon {
                         "use add_file_to_item for item file additions",
                     ))
                 }
+                DaemonTask::DeleteItem { .. } => {
+                    Err(LocalrefError::Unsupported(
+                        "use delete_item for item deletion",
+                    ))
+                }
                 DaemonTask::CreateCategory { .. } => {
                     Err(LocalrefError::Unsupported(
                         "use create_category for category creation",
@@ -1195,6 +1305,8 @@ impl LocalrefDaemon {
             }
             DaemonTask::ImportAllDirectory { .. }
             | DaemonTask::ImportFile { .. }
+            | DaemonTask::AddItemFile { .. }
+            | DaemonTask::DeleteItem { .. }
                 if queue.paused_modes.contains(&PauseMode::Writes) =>
             {
                 Err(LocalrefError::Unsupported("writes are paused"))
@@ -1540,6 +1652,34 @@ impl ImportPipeline {
         self.events.append(
             EventKind::MetadataWritten,
             "item file added",
+            None,
+            Some(relative_to_root(self.fs.root(), item_dir)),
+        )?;
+        Ok(target)
+    }
+
+    /// Write uploaded file bytes into an existing item directory.
+    pub fn add_uploaded_file_to_item(
+        &self,
+        item_dir: &Path,
+        filename: &str,
+        bytes: &[u8],
+    ) -> Result<PathBuf> {
+        self.fs.ensure_layout()?;
+        ensure_inside_all(self.fs.root(), item_dir)?;
+        let _lock = self.locks.acquire(
+            relative_to_root(self.fs.root(), item_dir),
+            "add_uploaded_file_to_item",
+        )?;
+        let target = unique_item_file_path(
+            item_dir,
+            &sanitize_ntfs_component(filename)?,
+        );
+        self.fs.atomic_write(&target, bytes)?;
+        self.append_file_to_metadata(item_dir, &target)?;
+        self.events.append(
+            EventKind::MetadataWritten,
+            "uploaded item file added",
             None,
             Some(relative_to_root(self.fs.root(), item_dir)),
         )?;
@@ -2528,6 +2668,76 @@ query = 'tags:ris'
         );
         let item = daemon.get_item("lr:manual:source").unwrap().unwrap();
         assert_eq!(item.main_file.as_deref(), Some("source.pdf"));
+    }
+
+    #[test]
+    fn daemon_add_uploaded_file_to_item_updates_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        daemon
+            .import_connector_item(ConnectorImport {
+                item: ConnectorItem {
+                    session_id: Some("session-upload".to_string()),
+                    uri: None,
+                    connector_item_id: Some("upload".to_string()),
+                    item_type: Some("journalArticle".to_string()),
+                    title: "Upload Target".to_string(),
+                    abstract_note: None,
+                    doi: None,
+                    raw: json!({"title": "Upload Target"}),
+                },
+                attachments: Vec::new(),
+            })
+            .unwrap();
+
+        let item = daemon
+            .add_uploaded_file_to_item("lr:zotero:upload", "paper.pdf", b"pdf")
+            .unwrap();
+
+        assert_eq!(item.main_file.as_deref(), Some("paper.pdf"));
+        let item_dir = temp.path().join(item.object_path);
+        assert_eq!(std::fs::read(item_dir.join("paper.pdf")).unwrap(), b"pdf");
+    }
+
+    #[test]
+    fn daemon_delete_item_removes_all_directory_and_category_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        daemon
+            .import_connector_item(ConnectorImport {
+                item: ConnectorItem {
+                    session_id: Some("session-delete".to_string()),
+                    uri: None,
+                    connector_item_id: Some("delete".to_string()),
+                    item_type: Some("journalArticle".to_string()),
+                    title: "Delete Target".to_string(),
+                    abstract_note: None,
+                    doi: None,
+                    raw: json!({"title": "Delete Target"}),
+                },
+                attachments: Vec::new(),
+            })
+            .unwrap();
+        daemon.create_category(CategoryPath::new("Inbox").unwrap()).unwrap();
+        daemon
+            .add_item_category(
+                "lr:zotero:delete",
+                CategoryPath::new("Inbox").unwrap(),
+            )
+            .unwrap();
+        let item = daemon.get_item("lr:zotero:delete").unwrap().unwrap();
+        let item_dir = temp.path().join(&item.object_path);
+
+        assert!(daemon.delete_item("lr:zotero:delete").unwrap());
+
+        assert!(!item_dir.exists());
+        assert!(daemon.get_item("lr:zotero:delete").unwrap().is_none());
+        let categories = daemon.list_categories().unwrap();
+        let inbox = categories
+            .iter()
+            .find(|category| category.path == "Inbox")
+            .unwrap();
+        assert!(inbox.item_ids.is_empty());
     }
 
     #[test]

@@ -5,9 +5,9 @@ edition = "2024"
 
 [dependencies]
 axum = { workspace = true }
-leptos = { workspace = true }
 localref_core = { package = "localref-core", path = "../core" }
 serde = { workspace = true }
+ui-app = { path = "../ui-app", features = ["ssr"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -50,6 +50,8 @@ pub(crate) fn run_action(
         "open_file" => open_file(daemon, form),
         "add_file" => add_file(daemon, form),
         "import_file" => import_file(daemon, form),
+        "set_main_file" => set_main_file(daemon, form),
+        "delete_item" => delete_item(daemon, form),
         "save_metadata" => save_metadata(daemon, form),
         "save_rules" => save_rules(daemon, form),
         _ => Ok(()),
@@ -145,6 +147,66 @@ fn import_file(
         return Ok(());
     };
     daemon.import_file(PathBuf::from(path)).map(|_| ()).map_err(to_string)
+}
+
+fn set_main_file(
+    daemon: &LocalrefDaemon,
+    form: &UiAction,
+) -> Result<(), String> {
+    let Some(item_id) = form.item_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(path) = optional_text(form.file_path.as_deref()) else {
+        return Ok(());
+    };
+    let Some(document) = daemon.get_metadata(item_id).map_err(to_string)?
+    else {
+        return Ok(());
+    };
+    let files = daemon
+        .item_files(item_id)
+        .map_err(to_string)?
+        .map(|document| document.files)
+        .unwrap_or_default();
+    if path == "metadata.toml"
+        || !files.iter().any(|file| file.path == path && file.kind == "file")
+    {
+        return Err("main file must be an existing item file".to_string());
+    }
+    let mut metadata = document.metadata;
+    let old_main = metadata.files.main.clone();
+    metadata.files.main = Some(path.clone());
+    metadata.files.extra.retain(|file| file.path != path);
+    if let Some(old_main) = old_main
+        && old_main != path
+        && !metadata.files.extra.iter().any(|file| file.path == old_main)
+    {
+        metadata.files.extra.push(localref_core::model::MetadataFile {
+            path: old_main,
+            kind: "attachment".to_string(),
+            mime_type: None,
+        });
+    }
+    daemon
+        .patch_metadata(
+            item_id,
+            form.expected_revision
+                .as_deref()
+                .unwrap_or(document.metadata_revision.as_str()),
+            metadata,
+        )
+        .map(|_| ())
+        .map_err(to_string)
+}
+
+fn delete_item(
+    daemon: &LocalrefDaemon,
+    form: &UiAction,
+) -> Result<(), String> {
+    let Some(item_id) = form.item_id.as_deref() else {
+        return Ok(());
+    };
+    daemon.delete_item(item_id).map(|_| ()).map_err(to_string)
 }
 
 fn save_metadata(

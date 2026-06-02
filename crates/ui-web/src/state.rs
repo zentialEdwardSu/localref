@@ -1,6 +1,5 @@
 //! URL state and view model assembly for the Localref web UI.
 
-use leptos::prelude::*;
 use localref_core::model::{
     Creator, Event, ItemDocument, ItemFileEntry, Metadata, MetadataDocument,
 };
@@ -34,7 +33,6 @@ pub(crate) struct UiModel {
     pub(crate) selected_ids: Vec<String>,
     pub(crate) category_target_ids: Vec<String>,
     pub(crate) active_id: Option<String>,
-    pub(crate) active_item: Option<ItemDocument>,
     pub(crate) active_metadata: Option<MetadataDocument>,
     pub(crate) files: Vec<ItemFileEntry>,
     pub(crate) rules_text: String,
@@ -83,9 +81,6 @@ impl UiModel {
         if query.selected.is_none() && !query.item.is_empty() {
             query.selected = Some(query.item.join(","));
         }
-        let active_item = active_id
-            .as_ref()
-            .and_then(|id| items.iter().find(|item| &item.id == id).cloned());
         let active_metadata = match active_id.as_deref() {
             Some(id) => daemon.get_metadata(id)?,
             None => None,
@@ -114,7 +109,6 @@ impl UiModel {
             selected_ids,
             category_target_ids,
             active_id,
-            active_item,
             active_metadata,
             files,
             rules_text,
@@ -293,28 +287,8 @@ pub(crate) fn author_summary(metadata: &Metadata) -> String {
         .join("; ")
 }
 
-/// Return categories common to every selected item.
-pub(crate) fn common_categories(
-    items: &[ItemDocument],
-    ids: &[String],
-) -> Vec<String> {
-    let mut common: Option<std::collections::BTreeSet<String>> = None;
-    for id in ids {
-        let Some(item) = items.iter().find(|item| &item.id == id) else {
-            continue;
-        };
-        let categories = item.categories.iter().cloned().collect();
-        common = Some(match common {
-            Some(current) => {
-                current.intersection(&categories).cloned().collect()
-            }
-            None => categories,
-        });
-    }
-    common.unwrap_or_default().into_iter().collect()
-}
-
 /// Return categories that can be added to the current selection.
+#[cfg(test)]
 pub(crate) fn available_categories<'a>(
     categories: &'a [CategorySummary],
     current: &[String],
@@ -323,20 +297,6 @@ pub(crate) fn available_categories<'a>(
         .iter()
         .filter(|category| !current.contains(&category.path))
         .collect()
-}
-
-/// Render one metadata text input.
-pub(crate) fn field(
-    label: &'static str,
-    name: &'static str,
-    value: String,
-) -> impl IntoView {
-    view! {
-        <label class="field">
-            <span>{label}</span>
-            <input name=name value=value/>
-        </label>
-    }
 }
 
 /// Escape raw text for an HTML error page.
