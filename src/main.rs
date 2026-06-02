@@ -239,7 +239,7 @@ async fn serve_rest_with_daemon_logging(
 #[cfg(feature = "desktop")]
 fn rest_app(config: &LocalrefConfig, daemon: LocalrefDaemon) -> axum::Router {
     localref_core::rest::router_with_daemon(daemon.clone()).merge(
-        ui_web::router_with_daemon_and_repo_name(
+        ui_app::router_with_daemon_and_repo_name(
             daemon,
             config.repo_name().to_string(),
         ),

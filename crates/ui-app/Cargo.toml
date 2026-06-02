@@ -3,9 +3,12 @@ name = "ui-app"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [features]
 default = ["ssr"]
-ssr = ["leptos/ssr"]
+ssr = ["leptos/ssr", "dep:axum", "dep:localref_core"]
 hydrate = [
     "leptos/hydrate",
     "dep:serde-wasm-bindgen",
@@ -15,10 +18,17 @@ hydrate = [
 ]
 
 [dependencies]
+axum = { workspace = true, optional = true }
 leptos = { workspace = true }
+localref_core = { package = "localref-core", path = "../core", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 web-sys = { version = "0.3", optional = true, features = ["Blob", "console", "DataTransfer", "Document", "DomParser", "DomTokenList", "DragEvent", "Element", "Event", "EventTarget", "File", "FileList", "FormData", "Headers", "History", "HtmlElement", "HtmlFormElement", "HtmlInputElement", "HtmlSelectElement", "Location", "MouseEvent", "Request", "RequestInit", "RequestMode", "Response", "SubmitEvent", "SupportedType", "Url", "UrlSearchParams", "Window"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }

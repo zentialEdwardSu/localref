@@ -1,10 +1,10 @@
 //! Conversion from daemon-backed UI models into shared app state.
 //!
-//! The browser JSON contract and SSR renderer both use `ui_app::UiState`, so
+//! The browser JSON contract and SSR renderer both use [`crate::UiState`], so
 //! this module is the only place that maps core daemon models into view data.
 
 use crate::state::{RulesNotice, UiModel, author_summary};
-use ui_app::{
+use crate::{
     ActiveDetail, CategorySummary, EventSummary, FileEntry, ItemSummary,
     RuleSummary, RulesNotice as AppRulesNotice, UiState,
 };

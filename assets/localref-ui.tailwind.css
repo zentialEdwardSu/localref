@@ -1,7 +1,6 @@
 @import "tailwindcss";
 
 @source "../crates/ui-app/src";
-@source "../crates/ui-web/src";
 
 @theme {
   --font-sans: "Helvetica Neue", Arial, sans-serif;

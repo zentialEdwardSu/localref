@@ -1,27 +1,22 @@
-#![recursion_limit = "256"]
-
 //! Server-rendered Localref web UI.
 //!
 //! The UI renders through Leptos on top of Axum and talks directly to the
 //! daemon facade. Browser forms post back to this router, then redirect to a
 //! URL-query state that can be bookmarked or opened from the tray.
 
-mod actions;
-mod assets;
-mod dto;
-mod state;
-
-use actions::{UiAction, run_action};
-use assets::{favicon, ui_css, ui_wasm, ui_wasm_bindgen_js, ui_wasm_js};
+use crate::actions::{UiAction, run_action};
+use crate::assets::{
+    favicon, ui_css, ui_wasm, ui_wasm_bindgen_js, ui_wasm_js,
+};
+use crate::dto::app_state_from_model;
+use crate::state::{UiModel, UiQuery, escape_text, return_path};
 use axum::Json;
 use axum::Router;
 use axum::extract::{Form, Multipart, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use dto::app_state_from_model;
 use localref_core::LocalrefDaemon;
-use state::{UiModel, UiQuery, escape_text, return_path};
 
 /// Build the server-rendered UI router for one daemon facade.
 pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
@@ -58,11 +53,10 @@ async fn home(
 ) -> Response {
     let repo_name = state.repo_name.clone();
     match UiModel::load(&state.daemon, query) {
-        Ok(model) => Html(ui_app::render_page(app_state_from_model(
-            model,
-            repo_name,
-        )))
-        .into_response(),
+        Ok(model) => {
+            Html(crate::render_page(app_state_from_model(model, repo_name)))
+                .into_response()
+        }
         Err(error) => Html(format!(
             "<!doctype html><title>{}</title><main><h1>{}</h1><p>{}</p></main>",
             escape_text(&repo_name),
@@ -1385,7 +1379,7 @@ mod tests {
         ];
         let current = vec!["Inbox".to_string()];
 
-        let paths = state::available_categories(&categories, &current)
+        let paths = crate::state::available_categories(&categories, &current)
             .into_iter()
             .map(|category| category.path.clone())
             .collect::<Vec<_>>();

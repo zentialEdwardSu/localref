@@ -1900,7 +1900,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tray-icon",
- "ui-web",
+ "ui-app",
 ]
 
 [[package]]
@@ -3401,35 +3401,18 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 name = "ui-app"
 version = "0.1.0"
 dependencies = [
- "leptos",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "ui-wasm"
-version = "0.1.0"
-dependencies = [
- "ui-app",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "ui-web"
-version = "0.1.0"
-dependencies = [
  "axum",
+ "leptos",
  "localref-core",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "tempfile",
  "tokio",
  "tower",
- "ui-app",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

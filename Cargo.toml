@@ -6,7 +6,7 @@ license = "MIT"
 
 [features]
 default = ["desktop", "native-tray"]
-desktop = ["dep:ui-web"]
+desktop = ["dep:ui-app"]
 native-tray = ["desktop", "dep:tao", "dep:tray-icon"]
 
 [dependencies]
@@ -20,7 +20,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tao = { workspace = true, optional = true }
 tray-icon = { workspace = true, optional = true }
-ui-web = { path = "crates/ui-web", optional = true }
+ui-app = { path = "crates/ui-app", features = ["ssr"], optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -32,8 +32,6 @@ members = [
 	"crates/csc",
 	"crates/native-win32",
 	"crates/ui-app",
-	"crates/ui-web",
-	"crates/ui-wasm",
 ]
 
 [workspace.package]
