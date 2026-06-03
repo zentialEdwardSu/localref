@@ -8,7 +8,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["ssr"]
-ssr = ["leptos/ssr", "dep:axum", "dep:localref_core"]
+ssr = ["leptos/ssr", "dep:axum", "dep:localref_core", "dep:localref_plugin", "dep:native-win32", "dep:tokio", "dep:mime_guess"]
 hydrate = [
     "leptos/hydrate",
     "dep:serde-wasm-bindgen",
@@ -20,7 +20,11 @@ hydrate = [
 [dependencies]
 axum = { workspace = true, optional = true }
 leptos = { workspace = true }
+mime_guess = { version = "2", optional = true }
 localref_core = { package = "localref-core", path = "../core", optional = true }
+localref_plugin = { package = "localref-plugin", path = "../plugin", optional = true }
+native-win32 = { path = "../native-win32", optional = true }
+tokio = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }

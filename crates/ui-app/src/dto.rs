@@ -45,6 +45,11 @@ pub(crate) fn app_state_from_model(
             .collect(),
         rules_text: model.rules_text,
         rules_notice: model.rules_notice.map(rules_notice),
+        plugin_tabs: model.plugin_tabs,
+        plugin_buttons: model.plugin_buttons,
+        plugin_menu_items: model.plugin_menu_items,
+        plugin_slots: model.plugin_slots,
+        plugin_page_html: model.plugin_page_html,
     }
 }
 

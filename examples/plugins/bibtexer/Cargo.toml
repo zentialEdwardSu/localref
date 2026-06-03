@@ -1,0 +1,14 @@
+[package]
+name = "localref-plugin-bibtexer"
+version = "0.1.0"
+edition = "2024"
+description = "Example Localref plugin: export citations in BibTeX / RIS format"
+
+[[bin]]
+name = "bibtexer"
+path = "src/main.rs"
+
+[dependencies]
+localref-plugin = { path = "../../../crates/plugin" }
+serde = { workspace = true }
+serde_json = { workspace = true }

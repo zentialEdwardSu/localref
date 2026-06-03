@@ -14,6 +14,7 @@ axum = { workspace = true }
 clap = { workspace = true }
 csc = { path = "crates/csc" }
 localref_core = { package = "localref-core", path = "crates/core" }
+localref_plugin = { package = "localref-plugin", path = "crates/plugin" }
 native-win32 = { path = "crates/native-win32" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -31,7 +32,10 @@ members = [
 	"crates/core",
 	"crates/csc",
 	"crates/native-win32",
+	"crates/plugin",
+	"crates/plugin-sdk",
 	"crates/ui-app",
+	"examples/plugins/bibtexer",
 ]
 
 [workspace.package]

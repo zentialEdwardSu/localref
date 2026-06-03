@@ -78,6 +78,22 @@ pub fn body_app(initial_state: UiState) -> impl IntoView {
                                 {move || state.with(|state| {
                                     route_tab_button("Rules", "rules", state.clone(), set_state, set_events_open)
                                 })}
+                                {move || {
+                                    let tabs: Vec<_> = state.with(|s| {
+                                        s.plugin_tabs.iter().map(|t| {
+                                            (t.label.clone(), t.tab_key.clone(), s.clone())
+                                        }).collect::<Vec<_>>()
+                                    });
+                                    tabs.into_iter().map(|(label, tab_key, s)| {
+                                        route_tab_button(
+                                            label,
+                                            tab_key,
+                                            s,
+                                            set_state,
+                                            set_events_open,
+                                        )
+                                    }).collect::<Vec<_>>()
+                                }}
                             </nav>
                         </div>
                         <div class="detail-body">
@@ -154,6 +170,20 @@ fn render_topbar(
                     </form>
                     {move || state.with(|state| {
                         watcher_form(state.clone(), set_state, set_events_open)
+                    })}
+                    {move || state.with(|state| {
+                        state.plugin_buttons.iter().map(|btn| {
+                            let return_to = state.return_to.clone();
+                            let ids = state.selected_ids.join(",");
+                            view! {
+                                <form method="post" action=format!("/plugin/{}/action", btn.plugin_name)>
+                                    <input type="hidden" name="return_to" value=return_to/>
+                                    <input type="hidden" name="plugin_action" value=btn.action_id.clone()/>
+                                    <input type="hidden" name="item_ids" value=ids/>
+                                    <button class="button secondary" type="submit">{btn.label.clone()}</button>
+                                </form>
+                            }
+                        }).collect::<Vec<_>>()
                     })}
                 </div>
             </div>
@@ -435,12 +465,41 @@ fn render_item_context_menu(
                         submit_action(event, set_state, set_events_open);
                     }
                 >
-                    <input type="hidden" name="return_to" value=return_to/>
+                    <input type="hidden" name="return_to" value=return_to.clone()/>
                     <input type="hidden" name="action" value="delete_item"/>
                     <input type="hidden" name="item_id" value=item_id/>
                     <button class="context-menu-button danger" type="submit">"Delete Item"</button>
                 </form>
             </section>
+            {if !state.plugin_menu_items.is_empty() {
+                view! {
+                    <section>
+                        <h3>"Plugins"</h3>
+                        {state.plugin_menu_items.iter().map(|plugin_item| {
+                            let plugin_return_to = return_to.clone();
+                            let menu_item_id = menu.item_id.clone();
+                            view! {
+                                <form
+                                    method="post"
+                                    action=format!("/plugin/{}/action", plugin_item.plugin_name)
+                                    on:submit=move |event| {
+                                        event.prevent_default();
+                                        set_context_menu.set(None);
+                                        // Form submission with full page reload for plugin actions
+                                    }
+                                >
+                                    <input type="hidden" name="return_to" value=plugin_return_to/>
+                                    <input type="hidden" name="plugin_action" value=plugin_item.action_id.clone()/>
+                                    <input type="hidden" name="item_ids" value=menu_item_id/>
+                                    <button class="context-menu-button" type="submit">{plugin_item.label.clone()}</button>
+                                </form>
+                            }
+                        }).collect::<Vec<_>>()}
+                    </section>
+                }.into_any()
+            } else {
+                view! {}.into_any()
+            }}
         </aside>
     }
     .into_any()
@@ -448,25 +507,29 @@ fn render_item_context_menu(
 
 /// Render one right-pane route tab.
 fn route_tab_button(
-    label: &'static str,
-    tab: &'static str,
+    label: impl Into<String>,
+    tab: impl Into<String>,
     state: UiState,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
 ) -> impl IntoView {
+    let label: String = label.into();
+    let tab: String = tab.into();
     let route_state = state.clone();
     let mut route = RouteState::from_ui_state(&state);
-    route.tab = tab.to_string();
+    route.tab = tab.clone();
     let href = route.to_path();
+    let class_tab = tab.clone();
+    let data_tab = tab.clone();
     view! {
         <a
-            class=right_tab_class(&state.tab, tab)
+            class=right_tab_class(&state.tab, &class_tab)
             href=href
-            data-route-tab=tab
+            data-route-tab=data_tab
             on:click=move |event| {
                 event.prevent_default();
                 let mut route = RouteState::from_ui_state(&route_state);
-                route.tab = tab.to_string();
+                route.tab = tab.clone();
                 visit_route(route, set_state, set_events_open, true);
             }
         >
@@ -481,8 +544,26 @@ fn render_detail(
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
 ) -> AnyView {
-    if !state.selected_ids.is_empty() && state.tab != "rules" {
+    if !state.selected_ids.is_empty()
+        && state.tab != "rules"
+        && !state.tab.starts_with("plugin:")
+    {
         return render_metadata(state, set_state, set_events_open);
+    }
+    // Render plugin page content when a plugin tab is active.
+    if state.tab.starts_with("plugin:") && state.plugin_page_html.is_some() {
+        let srcdoc = plugin_frame_srcdoc(
+            &state.plugin_page_html.clone().unwrap_or_default(),
+        );
+        return view! {
+            <iframe
+                class="plugin-page"
+                title="Plugin page"
+                srcdoc=srcdoc
+                style="width: 100%; min-height: 640px; border: 0;"
+            ></iframe>
+        }
+        .into_any();
     }
     match state.tab.as_str() {
         "files" => render_files(&state, set_state, set_events_open).into_any(),
@@ -490,6 +571,12 @@ fn render_detail(
         "events" => render_events(state).into_any(),
         _ => render_metadata(state, set_state, set_events_open),
     }
+}
+
+fn plugin_frame_srcdoc(fragment: &str) -> String {
+    format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><base target="_top"><link rel="stylesheet" href="/assets/localref-ui.css"></head><body>{fragment}</body></html>"#
+    )
 }
 
 /// Render metadata and category controls for active or selected items.
@@ -501,7 +588,8 @@ fn render_metadata(
     if !state.selected_ids.is_empty() {
         return view! {
             <div class="metadata-layout">
-                {render_category_summary(state, set_state, set_events_open)}
+                {render_category_summary(state.clone(), set_state, set_events_open)}
+                {render_plugin_slots(&state, "selection_page")}
             </div>
         }
         .into_any();
@@ -535,9 +623,40 @@ fn render_metadata(
         <div class="metadata-layout">
             {render_category_summary(state.clone(), set_state, set_events_open)}
             {fields.unwrap_or_else(|| empty_metadata_form(&state).into_any())}
+            {render_plugin_slots(&state, "metadata_page")}
         </div>
     }
     .into_any()
+}
+
+/// Render plugin pages mounted into one fixed host page slot.
+fn render_plugin_slots(state: &UiState, mount: &'static str) -> impl IntoView {
+    let slots = state
+        .plugin_slots
+        .iter()
+        .filter(|slot| slot.mount == mount)
+        .cloned()
+        .collect::<Vec<_>>();
+    view! {
+        {slots.into_iter().map(|slot| {
+            let srcdoc = plugin_frame_srcdoc(&slot.html);
+            view! {
+                <section
+                    class="plugin-slot"
+                    data-plugin=slot.plugin_name
+                    data-plugin-page=slot.page_id
+                >
+                    <h3>{slot.label}</h3>
+                    <iframe
+                        class="plugin-page"
+                        title="Plugin page"
+                        srcdoc=srcdoc
+                        style="width: 100%; min-height: 360px; border: 0;"
+                    ></iframe>
+                </section>
+            }
+        }).collect::<Vec<_>>()}
+    }
 }
 
 /// Render the rules editor.
@@ -1129,12 +1248,97 @@ mod tests {
             files: Vec::new(),
             rules_text: String::new(),
             rules_notice: None,
+            plugin_tabs: Vec::new(),
+            plugin_buttons: Vec::new(),
+            plugin_menu_items: Vec::new(),
+            plugin_slots: Vec::new(),
+            plugin_page_html: None,
         };
 
         let html = document(state).into_view().to_html();
 
         assert!(html.contains(r#"id="localref-ui-state""#));
         assert!(html.contains("Localref"));
+    }
+
+    #[test]
+    fn plugin_page_renders_inside_srcdoc_frame() {
+        let state = UiState {
+            repo_name: "Localref".to_string(),
+            search: None,
+            category: None,
+            items: Vec::new(),
+            categories: Vec::new(),
+            events: Vec::new(),
+            pending_count: 0,
+            selected_ids: Vec::new(),
+            category_target_ids: Vec::new(),
+            active_id: None,
+            active_detail: None,
+            tab: "plugin:bibtexer:export_form".to_string(),
+            return_to: "/?tab=plugin:bibtexer:export_form".to_string(),
+            status_label: "Running".to_string(),
+            watcher_paused: false,
+            files: Vec::new(),
+            rules_text: String::new(),
+            rules_notice: None,
+            plugin_tabs: Vec::new(),
+            plugin_buttons: Vec::new(),
+            plugin_menu_items: Vec::new(),
+            plugin_slots: Vec::new(),
+            plugin_page_html: Some(
+                "<form><button>Export</button></form>".to_string(),
+            ),
+        };
+
+        let html = document(state).into_view().to_html();
+
+        assert!(html.contains(r#"<iframe"#));
+        assert!(html.contains(r#"srcdoc=""#));
+        assert!(html.contains(r#"base target=&quot;_top&quot;"#));
+        assert!(!html.contains(r#"inner_html"#));
+    }
+
+    #[test]
+    fn metadata_plugin_slot_renders_inside_srcdoc_frame() {
+        let state = UiState {
+            repo_name: "Localref".to_string(),
+            search: None,
+            category: None,
+            items: Vec::new(),
+            categories: Vec::new(),
+            events: Vec::new(),
+            pending_count: 0,
+            selected_ids: Vec::new(),
+            category_target_ids: Vec::new(),
+            active_id: None,
+            active_detail: None,
+            tab: "metadata".to_string(),
+            return_to: "/?tab=metadata".to_string(),
+            status_label: "Running".to_string(),
+            watcher_paused: false,
+            files: Vec::new(),
+            rules_text: String::new(),
+            rules_notice: None,
+            plugin_tabs: Vec::new(),
+            plugin_buttons: Vec::new(),
+            plugin_menu_items: Vec::new(),
+            plugin_slots: vec![crate::model::PluginSlotHtml {
+                mount: "metadata_page".to_string(),
+                plugin_name: "bibtexer".to_string(),
+                page_id: "metadata_export".to_string(),
+                label: "Citation Export".to_string(),
+                html: "<form><button>Export</button></form>".to_string(),
+            }],
+            plugin_page_html: None,
+        };
+
+        let html = document(state).into_view().to_html();
+
+        assert!(html.contains(r#"class="plugin-slot""#));
+        assert!(html.contains("Citation Export"));
+        assert!(html.contains(r#"srcdoc=""#));
+        assert!(html.contains(r#"data-plugin="bibtexer""#));
     }
 
     #[test]

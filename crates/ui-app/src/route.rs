@@ -15,6 +15,8 @@ pub struct RouteState {
     pub selected_ids: Vec<String>,
     /// Active right-pane tab.
     pub tab: String,
+    /// Active plugin name.
+    pub plugin: Option<String>,
 }
 
 impl RouteState {
@@ -26,6 +28,7 @@ impl RouteState {
             active_id: state.active_id.clone(),
             selected_ids: state.selected_ids.clone(),
             tab: state.tab.clone(),
+            plugin: state.plugin_tabs.first().map(|t| t.plugin_name.clone()),
         }
     }
 
@@ -49,6 +52,7 @@ impl RouteState {
                         route.tab = tab;
                     }
                 }
+                "plugin" => route.plugin = optional_text(value),
                 _ => {}
             }
         }
@@ -73,6 +77,9 @@ impl RouteState {
         }
         if self.tab != "metadata" {
             parts.push(format!("tab={}", encode_query(&self.tab)));
+        }
+        if let Some(plugin) = self.plugin.as_deref() {
+            parts.push(format!("plugin={}", encode_query(plugin)));
         }
         parts.join("&")
     }
@@ -127,6 +134,7 @@ mod tests {
             active_id: None,
             selected_ids: Vec::new(),
             tab: "metadata".to_string(),
+            plugin: None,
         };
 
         assert_eq!(route.to_query_string(), "");
@@ -141,6 +149,7 @@ mod tests {
             active_id: Some("lr:zotero:abc".to_string()),
             selected_ids: vec!["lr:zotero:def".to_string()],
             tab: "files".to_string(),
+            plugin: None,
         };
 
         assert_eq!(

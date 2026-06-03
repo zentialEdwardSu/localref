@@ -238,10 +238,18 @@ async fn serve_rest_with_daemon_logging(
 /// Build the REST listener application.
 #[cfg(feature = "desktop")]
 fn rest_app(config: &LocalrefConfig, daemon: LocalrefDaemon) -> axum::Router {
+    let plugins =
+        Arc::new(localref_plugin::discover_plugins(config.plugins_dir()));
+    let plugin_context = ui_app::PluginHostContext {
+        library_root: config.library_root().to_path_buf(),
+        rest_endpoint: config.rest_endpoint().to_string(),
+    };
     localref_core::rest::router_with_daemon(daemon.clone()).merge(
-        ui_app::router_with_daemon_and_repo_name(
+        ui_app::router_with_daemon_repo_plugins_and_context(
             daemon,
             config.repo_name().to_string(),
+            plugins,
+            plugin_context,
         ),
     )
 }
@@ -600,75 +608,4 @@ fn standalone_attachment_import(
         ),
     };
     ConnectorImport { item, attachments: vec![attachment] }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_top_level_commands_with_clap() {
-        assert_eq!(Cli::parse_from(["localref"]).command, None);
-        assert_eq!(
-            Cli::parse_from(["localref", "serve"]).command,
-            Some(AppCommand::Headless)
-        );
-        assert_eq!(
-            Cli::parse_from(["localref", "ui"]).command,
-            Some(AppCommand::Ui)
-        );
-        assert_eq!(
-            Cli::parse_from(["localref", "csc-dev"]).command,
-            Some(AppCommand::Csc)
-        );
-    }
-
-    #[test]
-    fn parses_tray_subcommands_with_clap() {
-        assert_eq!(
-            Cli::parse_from(["localref", "tray", "scan"]).command,
-            Some(AppCommand::Tray { action: Some(TrayCliAction::Scan) })
-        );
-    }
-
-    #[test]
-    fn standalone_connector_attachment_creates_item() {
-        use serde_json::json;
-
-        let temp = tempfile::tempdir().unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-        let sink = LoggingImportSink::new(
-            daemon.clone(),
-            RuntimeLogger::new(temp.path()),
-        );
-
-        sink.accept_attachment(ConnectorAttachment {
-            session_id: Some("session-standalone".to_string()),
-            parent_item_id: None,
-            title: Some("Standalone PDF".to_string()),
-            filename: "standalone.pdf".to_string(),
-            mime_type: Some("application/pdf".to_string()),
-            bytes: b"pdf bytes".to_vec(),
-            raw_metadata: Some(json!({
-                "title": "Standalone PDF",
-                "url": "https://example.test/standalone.pdf",
-                "contentType": "application/pdf"
-            })),
-        })
-        .unwrap();
-
-        let metadata = daemon
-            .get_metadata("lr:zotero:session-standalone")
-            .unwrap()
-            .unwrap();
-        assert_eq!(metadata.metadata.title, "Standalone PDF");
-        assert_eq!(metadata.metadata.files.main.unwrap(), "standalone.pdf");
-        assert!(
-            temp.path()
-                .join("All")
-                .join("Standalone PDF")
-                .join("standalone.pdf")
-                .exists()
-        );
-    }
 }

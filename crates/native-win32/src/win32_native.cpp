@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <commdlg.h>
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <propkey.h>
@@ -31,6 +32,9 @@ constexpr DWORD kUnsupported = 50;
 constexpr wchar_t kAppUserModelId[] = L"Localref.Desktop";
 constexpr wchar_t kShortcutName[] = L"Localref.lnk";
 
+DWORD hresult_code(HRESULT result);
+DWORD initialize_com();
+
 typedef struct {
     ULONG ReparseTag;
     USHORT ReparseDataLength;
@@ -57,6 +61,35 @@ std::wstring utf8_to_wide(const char* value) {
     return wide;
 }
 
+std::string wide_to_utf8(const std::wstring& value) {
+    if (value.empty()) {
+        return {};
+    }
+    const int needed = WideCharToMultiByte(
+        CP_UTF8,
+        WC_ERR_INVALID_CHARS,
+        value.c_str(),
+        static_cast<int>(value.size()),
+        nullptr,
+        0,
+        nullptr,
+        nullptr);
+    if (needed <= 0) {
+        return {};
+    }
+    std::string utf8(static_cast<size_t>(needed), '\0');
+    WideCharToMultiByte(
+        CP_UTF8,
+        WC_ERR_INVALID_CHARS,
+        value.c_str(),
+        static_cast<int>(value.size()),
+        utf8.data(),
+        needed,
+        nullptr,
+        nullptr);
+    return utf8;
+}
+
 DWORD shell_open(const char* value) {
     const std::wstring wide = utf8_to_wide(value);
     if (wide.empty()) {
@@ -73,6 +106,48 @@ DWORD shell_open(const char* value) {
     if (code <= 32) {
         return static_cast<DWORD>(code);
     }
+    return ERROR_SUCCESS;
+}
+
+DWORD save_file_dialog(
+    const char* suggested_filename,
+    char* out_path,
+    size_t out_path_len) {
+    if (out_path == nullptr || out_path_len == 0) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    out_path[0] = '\0';
+
+    std::vector<wchar_t> file_buffer(32768, L'\0');
+    const std::wstring suggested = utf8_to_wide(suggested_filename);
+    if (!suggested.empty()) {
+        const size_t max_length = file_buffer.size() - 1;
+        const size_t length =
+            suggested.size() < max_length ? suggested.size() : max_length;
+        memcpy(file_buffer.data(), suggested.data(), length * sizeof(wchar_t));
+    }
+
+    OPENFILENAMEW dialog = {};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.lpstrFile = file_buffer.data();
+    dialog.nMaxFile = static_cast<DWORD>(file_buffer.size());
+    dialog.lpstrTitle = L"Save Localref export";
+    dialog.lpstrFilter = L"All files\0*.*\0";
+    dialog.Flags = OFN_EXPLORER
+        | OFN_NOCHANGEDIR
+        | OFN_OVERWRITEPROMPT
+        | OFN_PATHMUSTEXIST;
+
+    if (!GetSaveFileNameW(&dialog)) {
+        const DWORD error = CommDlgExtendedError();
+        return error == 0 ? ERROR_CANCELLED : error;
+    }
+
+    const std::string path = wide_to_utf8(file_buffer.data());
+    if (path.empty() || path.size() + 1 > out_path_len) {
+        return ERROR_INSUFFICIENT_BUFFER;
+    }
+    memcpy(out_path, path.c_str(), path.size() + 1);
     return ERROR_SUCCESS;
 }
 
@@ -341,6 +416,13 @@ extern "C" DWORD native_open_path(const char* path) {
 
 extern "C" DWORD native_open_uri(const char* uri) {
     return shell_open(uri);
+}
+
+extern "C" DWORD native_save_file_dialog(
+    const char* suggested_filename,
+    char* out_path,
+    size_t out_path_len) {
+    return save_file_dialog(suggested_filename, out_path, out_path_len);
 }
 
 extern "C" DWORD native_create_directory_junction(const char* link, const char* target) {

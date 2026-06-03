@@ -33,6 +33,7 @@ pub struct LocalrefConfig {
     csc_addr: SocketAddr,
     desktop_start_hidden: bool,
     desktop_quiet_start: bool,
+    plugins_dir: PathBuf,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -126,6 +127,11 @@ impl LocalrefConfig {
         self.desktop_quiet_start
     }
 
+    /// Return the directory where plugins are discovered.
+    pub fn plugins_dir(&self) -> &Path {
+        &self.plugins_dir
+    }
+
     fn from_config_file(
         source_path: PathBuf,
         file: ConfigFile,
@@ -149,6 +155,7 @@ impl LocalrefConfig {
             csc.addr.as_deref().unwrap_or(DEFAULT_CSC_ADDR),
             "csc.addr",
         )?;
+        let plugins_dir = library_root.join(".localref").join("plugins");
         Ok(Self {
             source_path,
             repo_name,
@@ -158,6 +165,7 @@ impl LocalrefConfig {
             csc_addr,
             desktop_start_hidden: desktop.start_hidden.unwrap_or(true),
             desktop_quiet_start: desktop.quiet_start.unwrap_or(true),
+            plugins_dir,
         })
     }
 }
@@ -236,6 +244,14 @@ mod tests {
         assert_eq!(config.source_path(), temp.as_path());
         assert_eq!(config.repo_name(), "Localref");
         assert_eq!(config.library_root(), default_library_root().unwrap());
+        assert_eq!(
+            config.plugins_dir(),
+            default_library_root()
+                .unwrap()
+                .join(".localref")
+                .join("plugins")
+                .as_path()
+        );
         assert_eq!(config.rest_addr().to_string(), DEFAULT_REST_ADDR);
         assert_eq!(config.rest_endpoint(), "http://127.0.0.1:24817");
         assert_eq!(config.csc_addr().to_string(), DEFAULT_CSC_ADDR);
@@ -280,6 +296,10 @@ quiet_start = false
 
         assert_eq!(config.repo_name(), "Research Vault");
         assert_eq!(config.library_root(), Path::new("D:/LocalrefLibrary"));
+        assert_eq!(
+            config.plugins_dir(),
+            Path::new("D:/LocalrefLibrary/.localref/plugins")
+        );
         assert_eq!(config.rest_addr().to_string(), "127.0.0.1:3001");
         assert_eq!(config.rest_endpoint(), "http://localhost:3001");
         assert_eq!(config.csc_addr().to_string(), "127.0.0.1:3002");

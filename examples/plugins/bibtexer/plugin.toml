@@ -1,0 +1,31 @@
+name = "bibtexer"
+executable = "bibtexer"
+description = "Export citations in BibTeX and RIS formats"
+
+[[actions]]
+id = "export_bibtex"
+label = "BibTeX"
+mount = "action_button"
+
+[[actions]]
+id = "export_ris"
+label = "RIS"
+mount = "context_menu"
+
+[[pages]]
+id = "export_form"
+label = "Export"
+mount = "detail_tab"
+route = "export"
+
+[[pages]]
+id = "metadata_export"
+label = "Citation Export"
+mount = "metadata_page"
+route = "metadata-export"
+
+[[pages]]
+id = "selection_export"
+label = "Bulk Citation Export"
+mount = "selection_page"
+route = "selection-export"

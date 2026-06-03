@@ -6,7 +6,13 @@ use localref_core::model::{
 use localref_core::rules::{RuleSet, RuleSummary};
 use localref_core::storage::CategorySummary;
 use localref_core::{DaemonStatus, LocalrefDaemon, PauseMode};
+use localref_plugin::discovery::DiscoveredPlugin;
+use localref_plugin::manifest::{ActionMount, PageMount};
 use serde::Deserialize;
+
+use crate::model::{
+    PluginButtonDef, PluginMenuItemDef, PluginSlotHtml, PluginTabDef,
+};
 
 /// URL query state used by the browser UI.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -18,6 +24,8 @@ pub(crate) struct UiQuery {
     pub(crate) tab: Option<String>,
     pub(crate) rules_status: Option<String>,
     pub(crate) rules_error: Option<String>,
+    pub(crate) plugin: Option<String>,
+    pub(crate) plugin_error: Option<String>,
     #[serde(default)]
     pub(crate) item: Vec<String>,
 }
@@ -40,6 +48,11 @@ pub(crate) struct UiModel {
     pub(crate) tab: String,
     pub(crate) return_to: String,
     pub(crate) status: DaemonStatus,
+    pub(crate) plugin_tabs: Vec<PluginTabDef>,
+    pub(crate) plugin_buttons: Vec<PluginButtonDef>,
+    pub(crate) plugin_menu_items: Vec<PluginMenuItemDef>,
+    pub(crate) plugin_slots: Vec<PluginSlotHtml>,
+    pub(crate) plugin_page_html: Option<String>,
 }
 
 /// Floating feedback shown after saving automatic-classification rules.
@@ -56,6 +69,7 @@ impl UiModel {
     pub(crate) fn load(
         daemon: &LocalrefDaemon,
         mut query: UiQuery,
+        plugins: &[DiscoveredPlugin],
     ) -> localref_core::error::Result<Self> {
         let all_items = daemon.list_items()?;
         let items = filtered_items(
@@ -100,6 +114,12 @@ impl UiModel {
         let status = daemon.status();
         let category_target_ids =
             category_target_ids(&selected_ids, active_id.as_deref());
+
+        // Build plugin mount data from discovered plugins.
+        let plugin_tabs = build_plugin_tabs(plugins);
+        let plugin_buttons = build_plugin_buttons(plugins);
+        let plugin_menu_items = build_plugin_menu_items(plugins);
+
         Ok(Self {
             query,
             items,
@@ -116,6 +136,11 @@ impl UiModel {
             tab,
             return_to,
             status,
+            plugin_tabs,
+            plugin_buttons,
+            plugin_menu_items,
+            plugin_slots: Vec::new(),
+            plugin_page_html: None,
         })
     }
 
@@ -302,6 +327,67 @@ pub(crate) fn available_categories<'a>(
 /// Escape raw text for an HTML error page.
 pub(crate) fn escape_text(value: &str) -> String {
     value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Build plugin detail tab definitions from discovered plugins.
+fn build_plugin_tabs(plugins: &[DiscoveredPlugin]) -> Vec<PluginTabDef> {
+    plugins
+        .iter()
+        .flat_map(|plugin| {
+            plugin.manifest.pages.iter().filter_map(move |page| {
+                if page.mount != PageMount::DetailTab {
+                    return None;
+                }
+                Some(PluginTabDef {
+                    plugin_name: plugin.name().to_string(),
+                    page_id: page.id.clone(),
+                    label: page.label.clone(),
+                    route: page.route.clone(),
+                    tab_key: format!("plugin:{}:{}", plugin.name(), page.id),
+                })
+            })
+        })
+        .collect()
+}
+
+/// Build plugin action button definitions from discovered plugins.
+fn build_plugin_buttons(plugins: &[DiscoveredPlugin]) -> Vec<PluginButtonDef> {
+    plugins
+        .iter()
+        .flat_map(|plugin| {
+            plugin.manifest.actions.iter().filter_map(move |action| {
+                if action.mount != ActionMount::ActionButton {
+                    return None;
+                }
+                Some(PluginButtonDef {
+                    plugin_name: plugin.name().to_string(),
+                    action_id: action.id.clone(),
+                    label: action.label.clone(),
+                })
+            })
+        })
+        .collect()
+}
+
+/// Build plugin context menu item definitions from discovered plugins.
+fn build_plugin_menu_items(
+    plugins: &[DiscoveredPlugin],
+) -> Vec<PluginMenuItemDef> {
+    plugins
+        .iter()
+        .flat_map(|plugin| {
+            plugin.manifest.actions.iter().filter_map(move |action| {
+                if action.mount != ActionMount::ContextMenu {
+                    return None;
+                }
+                Some(PluginMenuItemDef {
+                    plugin_name: plugin.name().to_string(),
+                    action_id: action.id.clone(),
+                    label: action.label.clone(),
+                })
+            })
+        })
+        .collect()
 }
 
 fn encode_query(value: &str) -> String {

@@ -41,6 +41,21 @@ pub struct UiState {
     pub rules_text: String,
     /// Optional rules save result.
     pub rules_notice: Option<RulesNotice>,
+    /// Plugin detail tab definitions.
+    #[serde(default)]
+    pub plugin_tabs: Vec<PluginTabDef>,
+    /// Plugin action button definitions.
+    #[serde(default)]
+    pub plugin_buttons: Vec<PluginButtonDef>,
+    /// Plugin context menu items.
+    #[serde(default)]
+    pub plugin_menu_items: Vec<PluginMenuItemDef>,
+    /// Inline plugin pages mounted on fixed host pages.
+    #[serde(default)]
+    pub plugin_slots: Vec<PluginSlotHtml>,
+    /// Rendered HTML for the currently active plugin page.
+    #[serde(default)]
+    pub plugin_page_html: Option<String>,
 }
 
 /// Metadata fields for the active detail pane.
@@ -151,4 +166,56 @@ pub struct RuleSummary {
     pub target: String,
     /// Query expression.
     pub query: String,
+}
+
+/// Plugin detail tab displayed in the right-pane tab bar.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PluginTabDef {
+    /// Plugin machine name.
+    pub plugin_name: String,
+    /// Page identifier.
+    pub page_id: String,
+    /// Tab display label.
+    pub label: String,
+    /// URL route segment.
+    pub route: String,
+    /// Internal tab key (`plugin:<name>:<page_id>`).
+    pub tab_key: String,
+}
+
+/// Plugin action button shown in the topbar control row.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PluginButtonDef {
+    /// Plugin machine name.
+    pub plugin_name: String,
+    /// Action identifier.
+    pub action_id: String,
+    /// Button display label.
+    pub label: String,
+}
+
+/// Plugin right-click context menu item.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PluginMenuItemDef {
+    /// Plugin machine name.
+    pub plugin_name: String,
+    /// Action identifier.
+    pub action_id: String,
+    /// Menu item display label.
+    pub label: String,
+}
+
+/// Rendered plugin HTML mounted into a fixed host page slot.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PluginSlotHtml {
+    /// Fixed slot where this plugin HTML should be displayed.
+    pub mount: String,
+    /// Plugin machine name.
+    pub plugin_name: String,
+    /// Plugin page identifier.
+    pub page_id: String,
+    /// User-visible slot label.
+    pub label: String,
+    /// Rendered HTML fragment returned by the plugin CLI.
+    pub html: String,
 }

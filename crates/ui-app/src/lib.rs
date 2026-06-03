@@ -24,11 +24,15 @@ mod state;
 
 pub use model::{
     ActiveDetail, CategorySummary, EventSummary, FileEntry, ItemSummary,
+    PluginButtonDef, PluginMenuItemDef, PluginSlotHtml, PluginTabDef,
     RuleSummary, RulesNotice, UiState,
 };
 pub use route::RouteState;
 #[cfg(feature = "ssr")]
-pub use server::{router_with_daemon, router_with_daemon_and_repo_name};
+pub use server::{
+    PluginHostContext, router_with_daemon, router_with_daemon_and_repo_name,
+    router_with_daemon_repo_plugins_and_context,
+};
 
 /// Render the complete server-side HTML document for one UI state.
 #[cfg(feature = "ssr")]

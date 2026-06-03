@@ -12,6 +12,7 @@ fn main() {
         .compile("localref_win32_native");
 
     println!("cargo:rustc-link-lib=shell32");
+    println!("cargo:rustc-link-lib=comdlg32");
     println!("cargo:rustc-link-lib=ole32");
     println!("cargo:rustc-link-lib=propsys");
     println!("cargo:rustc-link-lib=runtimeobject");

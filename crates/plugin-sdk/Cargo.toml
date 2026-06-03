@@ -1,0 +1,10 @@
+[package]
+name = "localref-plugin-sdk"
+version = "0.1.0"
+edition = "2024"
+description = "SDK for building Localref plugins"
+
+[dependencies]
+localref-plugin = { path = "../plugin" }
+serde = { workspace = true }
+serde_json = { workspace = true }

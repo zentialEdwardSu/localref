@@ -7,6 +7,7 @@
 use std::ffi::CString;
 use std::fmt;
 use std::path::Path;
+use std::path::PathBuf;
 
 /// Native helper result type.
 pub type Result<T> = std::result::Result<T, NativeWin32Error>;
@@ -39,6 +40,8 @@ pub enum NativeWin32Error {
     Unsupported(&'static str),
     /// A Win32-style operation failed with a numeric code.
     Native { operation: &'static str, code: u32 },
+    /// The user cancelled a native picker.
+    Cancelled(&'static str),
     /// Input could not be passed across the native boundary.
     InvalidInput(String),
 }
@@ -54,6 +57,9 @@ impl fmt::Display for NativeWin32Error {
                     formatter,
                     "native operation failed: {operation}: {code}"
                 )
+            }
+            Self::Cancelled(operation) => {
+                write!(formatter, "native operation cancelled: {operation}")
             }
             Self::InvalidInput(message) => write!(formatter, "{message}"),
         }
@@ -71,6 +77,37 @@ pub fn open_path(path: &Path) -> Result<()> {
 /// Open a URI through the Windows shell.
 pub fn open_uri(uri: &str) -> Result<()> {
     call_utf8("open_uri", uri, native_open_uri)
+}
+
+/// Ask the user for a file path where Localref should save generated content.
+///
+/// `suggested_filename` is prefilled in the native dialog, but the user can
+/// edit the final file name and location before accepting.
+pub fn save_file_path(suggested_filename: &str) -> Result<Option<PathBuf>> {
+    let filename = c_string(suggested_filename)?;
+    let mut buffer = vec![0 as std::ffi::c_char; 32_768];
+    let code = unsafe {
+        native_save_file_dialog(
+            filename.as_ptr(),
+            buffer.as_mut_ptr(),
+            buffer.len(),
+        )
+    };
+    match code {
+        0 => {
+            let path = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }
+                .to_str()
+                .map_err(|error| {
+                    NativeWin32Error::InvalidInput(error.to_string())
+                })?;
+            Ok(Some(PathBuf::from(path)))
+        }
+        1223 => Ok(None),
+        50 => Err(NativeWin32Error::Unsupported("save_file_path")),
+        code => {
+            Err(NativeWin32Error::Native { operation: "save_file_path", code })
+        }
+    }
 }
 
 /// Create one NTFS directory junction.
@@ -177,6 +214,11 @@ fn native_result(operation: &'static str, code: u32) -> Result<()> {
 unsafe extern "C" {
     fn native_open_path(path: *const std::ffi::c_char) -> u32;
     fn native_open_uri(uri: *const std::ffi::c_char) -> u32;
+    fn native_save_file_dialog(
+        default_filename: *const std::ffi::c_char,
+        out_path: *mut std::ffi::c_char,
+        out_path_len: usize,
+    ) -> u32;
     fn native_create_directory_junction(
         link: *const std::ffi::c_char,
         target: *const std::ffi::c_char,
@@ -202,6 +244,15 @@ unsafe extern "C" fn native_open_path(_: *const std::ffi::c_char) -> u32 {
 
 #[cfg(not(windows))]
 unsafe extern "C" fn native_open_uri(_: *const std::ffi::c_char) -> u32 {
+    50
+}
+
+#[cfg(not(windows))]
+unsafe extern "C" fn native_save_file_dialog(
+    _: *const std::ffi::c_char,
+    _: *mut std::ffi::c_char,
+    _: usize,
+) -> u32 {
     50
 }
 
@@ -257,6 +308,10 @@ mod tests {
     fn rejects_nul_input_before_native_boundary() {
         assert!(matches!(
             open_uri("http://local\0ref"),
+            Err(NativeWin32Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            save_file_path("bad\0name.bib"),
             Err(NativeWin32Error::InvalidInput(_))
         ));
     }
