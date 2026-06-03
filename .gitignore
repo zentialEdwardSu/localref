@@ -13,3 +13,4 @@ cargo-lock/
 .vscode/
 # JetBrains IDEs (RustRover, CLion, etc.)
 __pycache__/
+output/
