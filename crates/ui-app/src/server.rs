@@ -4,7 +4,8 @@
 //! daemon facade. Browser forms post back to this router, then redirect to a
 //! URL-query state that can be bookmarked or opened from the tray.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -82,14 +83,19 @@ pub struct PluginHostContext {
 
 /// Shared application state for the server-rendered UI.
 #[derive(Clone)]
-struct ServerState {
+pub struct ServerState {
+    /// Stored daemon.
     daemon: LocalrefDaemon,
+    /// Stored repo name.
     repo_name: String,
+    /// Stored plugins.
     plugins: Arc<Vec<DiscoveredPlugin>>,
+    /// Stored plugin context.
     plugin_context: PluginHostContext,
 }
 
-async fn home(
+/// Internal helper for home.
+pub async fn home(
     State(state): State<ServerState>,
     Query(query): Query<UiQuery>,
 ) -> Response {
@@ -109,7 +115,8 @@ async fn home(
     }
 }
 
-async fn ui_state(
+/// Internal helper for ui state.
+pub async fn ui_state(
     State(state): State<ServerState>,
     Query(query): Query<UiQuery>,
 ) -> Response {
@@ -123,7 +130,8 @@ async fn ui_state(
     }
 }
 
-async fn action(
+/// Internal helper for action.
+pub async fn action(
     State(state): State<ServerState>,
     Form(form): Form<UiAction>,
 ) -> Redirect {
@@ -136,7 +144,8 @@ async fn action(
     Redirect::to(target.as_str())
 }
 
-async fn upload(
+/// Internal helper for upload.
+pub async fn upload(
     State(state): State<ServerState>,
     mut multipart: Multipart,
 ) -> Response {
@@ -163,8 +172,7 @@ async fn upload(
             "file" => {
                 let filename = field
                     .file_name()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| "upload".to_string());
+                    .map_or_else(|| "upload".to_string(), str::to_string);
                 match field.bytes().await {
                     Ok(bytes) => files.push((filename, bytes.to_vec())),
                     Err(error) => {
@@ -191,10 +199,10 @@ async fn upload(
 }
 
 /// Handle a plugin action submitted from the UI.
-async fn plugin_action(
+pub async fn plugin_action(
     State(state): State<ServerState>,
     Path(name): Path<String>,
-    Form(form): Form<HashMap<String, String>>,
+    Form(form): Form<BTreeMap<String, String>>,
 ) -> Response {
     let Some(plugin) = state.plugins.iter().find(|p| p.name() == name) else {
         return (StatusCode::NOT_FOUND, "plugin not found").into_response();
@@ -273,7 +281,10 @@ async fn load_model(
 }
 
 /// Render plugin pages mounted into fixed host UI slots.
-async fn render_fixed_plugin_slots(model: &mut UiModel, state: &ServerState) {
+pub async fn render_fixed_plugin_slots(
+    model: &mut UiModel,
+    state: &ServerState,
+) {
     let target_mount = if model.selected_ids.is_empty() {
         PageMount::MetadataPage
     } else {
@@ -315,7 +326,8 @@ async fn render_fixed_plugin_slots(model: &mut UiModel, state: &ServerState) {
 }
 
 /// Return the stable JSON name for a plugin page mount.
-fn page_mount_name(mount: &PageMount) -> &'static str {
+#[must_use]
+pub fn page_mount_name(mount: &PageMount) -> &'static str {
     match mount {
         PageMount::DetailTab => "detail_tab",
         PageMount::MetadataPage => "metadata_page",
@@ -324,14 +336,17 @@ fn page_mount_name(mount: &PageMount) -> &'static str {
 }
 
 /// Return the plugin and page id for the active plugin tab.
-fn active_plugin_page<'a>(
+#[must_use]
+pub fn active_plugin_page<'a>(
     model: &UiModel,
     plugins: &'a [DiscoveredPlugin],
 ) -> Option<(&'a DiscoveredPlugin, &'a str)> {
     plugin_page_from_tab(&model.tab, plugins)
 }
 
-fn plugin_page_from_tab<'a>(
+/// Internal helper for plugin page from tab.
+#[must_use]
+pub fn plugin_page_from_tab<'a>(
     tab: &str,
     plugins: &'a [DiscoveredPlugin],
 ) -> Option<(&'a DiscoveredPlugin, &'a str)> {
@@ -353,7 +368,8 @@ fn plugin_error_html(message: &str) -> String {
 }
 
 /// Convert a plugin action result into the redirect visible to the user.
-fn plugin_action_response(
+#[must_use]
+pub fn plugin_action_response(
     return_to: &str,
     action_name: &str,
     output: &RunOutput,
@@ -369,7 +385,8 @@ fn plugin_action_response(
     )
 }
 
-fn plugin_action_response_with_picker(
+/// Internal helper for plugin action response with picker.
+pub fn plugin_action_response_with_picker(
     return_to: &str,
     action_name: &str,
     output: &RunOutput,
@@ -391,18 +408,18 @@ fn plugin_action_response_with_picker(
     redirect_with_plugin_error(return_to, message)
 }
 
-fn plugin_save_response(
+/// Internal helper for plugin save response.
+pub fn plugin_save_response(
     return_to: &str,
     action_name: &str,
     output: &RunOutput,
     result: &str,
     save_path: impl FnOnce(&str) -> Result<Option<std::path::PathBuf>, String>,
 ) -> Response {
-    let filename = output
-        .filename
-        .as_deref()
-        .map(safe_download_filename)
-        .unwrap_or_else(|| default_download_filename(action_name));
+    let filename = output.filename.as_deref().map_or_else(
+        || default_download_filename(action_name),
+        safe_download_filename,
+    );
     let path = match save_path(&filename) {
         Ok(Some(path)) => path,
         Ok(None) => return Redirect::to(return_to).into_response(),
@@ -419,10 +436,13 @@ fn plugin_save_response(
     }
 }
 
-fn default_download_filename(action_name: &str) -> String {
+/// Internal helper for default download filename.
+#[must_use]
+pub fn default_download_filename(action_name: &str) -> String {
     format!("localref-{}.txt", safe_download_filename(action_name))
 }
 
+/// Internal helper for safe download filename.
 fn safe_download_filename(value: &str) -> String {
     let mut safe = String::new();
     for ch in value.chars() {
@@ -435,6 +455,7 @@ fn safe_download_filename(value: &str) -> String {
     if safe.is_empty() { "localref-export.txt".to_string() } else { safe }
 }
 
+/// Internal helper for redirect with plugin error.
 fn redirect_with_plugin_error(return_to: &str, message: &str) -> Response {
     let error_param = encode_query_component(message);
     Redirect::to(&append_query_param(
@@ -444,13 +465,15 @@ fn redirect_with_plugin_error(return_to: &str, message: &str) -> Response {
     .into_response()
 }
 
-fn append_query_param(path: &str, param: &str) -> String {
+/// Internal helper for append query param.
+#[must_use]
+pub fn append_query_param(path: &str, param: &str) -> String {
     let separator = if path.contains('?') { '&' } else { '?' };
     format!("{path}{separator}{param}")
 }
 
 /// Serve a static file from a plugin's `static/` directory.
-async fn plugin_static(
+pub async fn plugin_static(
     Path((name, path)): Path<(String, String)>,
     State(state): State<ServerState>,
 ) -> Response {
@@ -552,7 +575,8 @@ fn build_plugin_ui_state(
 }
 
 /// Parse URL query string into key-value pairs.
-fn parse_query_string(query: &str) -> UiQuery {
+#[must_use]
+pub fn parse_query_string(query: &str) -> UiQuery {
     let mut result = UiQuery::default();
     for part in query.split('&') {
         let Some((key, value)) = part.split_once('=') else {
@@ -573,7 +597,8 @@ fn parse_query_string(query: &str) -> UiQuery {
     result
 }
 
-fn decode_query_value(value: &str) -> Option<String> {
+/// Internal helper for decode query value.
+pub fn decode_query_value(value: &str) -> Option<String> {
     let mut bytes = Vec::with_capacity(value.len());
     let mut input = value.as_bytes().iter().copied();
     while let Some(byte) = input.next() {
@@ -590,6 +615,7 @@ fn decode_query_value(value: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// Internal helper for hex value.
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -599,7 +625,9 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn rules_action_return(result: &Result<(), String>) -> String {
+/// Internal helper for rules action return.
+#[must_use]
+pub fn rules_action_return(result: &Result<(), String>) -> String {
     match result {
         Ok(()) => "/?tab=rules&rules_status=saved".to_string(),
         Err(error) => {
@@ -608,7 +636,9 @@ fn rules_action_return(result: &Result<(), String>) -> String {
     }
 }
 
-fn encode_query(value: &str) -> String {
+/// Internal helper for encode query.
+#[must_use]
+pub fn encode_query(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric()
@@ -616,14 +646,15 @@ fn encode_query(value: &str) -> String {
         {
             encoded.push(byte as char);
         } else {
-            encoded.push_str(&format!("%{byte:02X}"));
+            let _ = write!(encoded, "%{byte:02X}");
         }
     }
     encoded
 }
 
 /// Percent-encode a string for use in a query parameter value.
-fn encode_query_component(value: &str) -> String {
+#[must_use]
+pub fn encode_query_component(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric()
@@ -631,7 +662,7 @@ fn encode_query_component(value: &str) -> String {
         {
             encoded.push(byte as char);
         } else {
-            encoded.push_str(&format!("%{byte:02X}"));
+            let _ = write!(encoded, "%{byte:02X}");
         }
     }
     encoded
@@ -947,7 +978,7 @@ mod tests {
         assert!(html.contains("hidden"));
         assert!(html.contains("data-primary-detail"));
         assert!(html.contains("data-primary-detail-head"));
-        assert!(!html.contains(r#">Events</a>"#));
+        assert!(!html.contains(r">Events</a>"));
     }
 
     #[tokio::test]

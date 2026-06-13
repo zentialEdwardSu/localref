@@ -21,6 +21,7 @@ impl ItemId {
     }
 
     /// Return the item id as a string slice.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -37,21 +38,25 @@ impl LibraryRoot {
     }
 
     /// Return the root path.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.0
     }
 
     /// Return the `All/` directory path.
+    #[must_use]
     pub fn all_dir(&self) -> PathBuf {
         self.0.join("All")
     }
 
     /// Return the `Cat/` directory path.
+    #[must_use]
     pub fn cat_dir(&self) -> PathBuf {
         self.0.join("Cat")
     }
 
     /// Return the `.localref/` internal state directory path.
+    #[must_use]
     pub fn state_dir(&self) -> PathBuf {
         self.0.join(".localref")
     }
@@ -76,6 +81,7 @@ impl CategoryPath {
     }
 
     /// Return the category as a string slice.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }

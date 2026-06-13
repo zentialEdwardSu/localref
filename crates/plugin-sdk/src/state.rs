@@ -51,6 +51,7 @@ pub const fn has_category(state: &PluginState) -> bool {
     state.category.is_some()
 }
 
+/// Percent-encode one query parameter value.
 fn encode_query(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {

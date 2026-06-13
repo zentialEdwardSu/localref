@@ -8,28 +8,48 @@ use serde::Deserialize;
 
 /// Form payload posted by UI controls.
 #[derive(Clone, Debug, Default, Deserialize)]
-pub(crate) struct UiAction {
+pub struct UiAction {
+    /// Stored action.
     pub(crate) action: String,
+    /// Stored return to.
     pub(crate) return_to: String,
+    /// Stored item id.
     pub(crate) item_id: Option<String>,
+    /// Stored category.
     pub(crate) category: Option<String>,
+    /// Stored mode.
     pub(crate) mode: Option<String>,
+    /// Stored expected revision.
     pub(crate) expected_revision: Option<String>,
+    /// Stored title.
     pub(crate) title: Option<String>,
+    /// Stored item type.
     pub(crate) item_type: Option<String>,
+    /// Stored authors.
     pub(crate) authors: Option<String>,
+    /// Stored doi.
     pub(crate) doi: Option<String>,
+    /// Stored venue.
     pub(crate) venue: Option<String>,
+    /// Stored year.
     pub(crate) year: Option<String>,
+    /// Stored language.
     pub(crate) language: Option<String>,
+    /// Stored uri.
     pub(crate) uri: Option<String>,
+    /// Stored abstract note.
     pub(crate) abstract_note: Option<String>,
+    /// Stored file path.
     pub(crate) file_path: Option<String>,
+    /// Stored rules text.
     pub(crate) rules_text: Option<String>,
 }
 
 /// Execute one posted UI action.
-pub(crate) fn run_action(
+/// # Errors
+///
+/// Returns an error when the requested UI operation cannot be completed.
+pub fn run_action(
     daemon: &LocalrefDaemon,
     form: &UiAction,
 ) -> Result<(), String> {
@@ -58,7 +78,11 @@ pub(crate) fn run_action(
     }
 }
 
-fn create_category(
+/// Internal helper for create category.
+/// # Errors
+///
+/// Returns an error when the requested UI operation cannot be completed.
+pub fn create_category(
     daemon: &LocalrefDaemon,
     form: &UiAction,
 ) -> Result<(), String> {
@@ -69,7 +93,11 @@ fn create_category(
     daemon.create_category(category).map(|_| ()).map_err(to_string)
 }
 
-fn add_category(
+/// Internal helper for add category.
+/// # Errors
+///
+/// Returns an error when the requested UI operation cannot be completed.
+pub fn add_category(
     daemon: &LocalrefDaemon,
     form: &UiAction,
 ) -> Result<(), String> {
@@ -86,7 +114,11 @@ fn add_category(
         .map_err(to_string)
 }
 
-fn remove_category(
+/// Internal helper for remove category.
+/// # Errors
+///
+/// Returns an error when the requested UI operation cannot be completed.
+pub fn remove_category(
     daemon: &LocalrefDaemon,
     form: &UiAction,
 ) -> Result<(), String> {
@@ -103,7 +135,11 @@ fn remove_category(
         .map_err(to_string)
 }
 
-fn open_folder(
+/// Internal helper for open folder.
+/// # Errors
+///
+/// Returns an error when the requested UI operation cannot be completed.
+pub fn open_folder(
     daemon: &LocalrefDaemon,
     form: &UiAction,
 ) -> Result<(), String> {
@@ -113,7 +149,14 @@ fn open_folder(
     daemon.open_item_folder(item_id).map(|_| ()).map_err(to_string)
 }
 
-fn open_file(daemon: &LocalrefDaemon, form: &UiAction) -> Result<(), String> {
+/// Internal helper for open file.
+/// # Errors
+///
+/// Returns an error when the requested UI operation cannot be completed.
+pub fn open_file(
+    daemon: &LocalrefDaemon,
+    form: &UiAction,
+) -> Result<(), String> {
     let Some(item_id) = form.item_id.as_deref() else {
         return Ok(());
     };
@@ -126,7 +169,14 @@ fn open_file(daemon: &LocalrefDaemon, form: &UiAction) -> Result<(), String> {
         .map_err(to_string)
 }
 
-fn add_file(daemon: &LocalrefDaemon, form: &UiAction) -> Result<(), String> {
+/// Internal helper for add file.
+/// # Errors
+///
+/// Returns an error when the requested UI operation cannot be completed.
+pub fn add_file(
+    daemon: &LocalrefDaemon,
+    form: &UiAction,
+) -> Result<(), String> {
     let Some(item_id) = form.item_id.as_deref() else {
         return Ok(());
     };
@@ -139,7 +189,11 @@ fn add_file(daemon: &LocalrefDaemon, form: &UiAction) -> Result<(), String> {
         .map_err(to_string)
 }
 
-fn import_file(
+/// Internal helper for import file.
+/// # Errors
+///
+/// Returns an error when the requested UI operation cannot be completed.
+pub fn import_file(
     daemon: &LocalrefDaemon,
     form: &UiAction,
 ) -> Result<(), String> {
@@ -149,7 +203,11 @@ fn import_file(
     daemon.import_file(PathBuf::from(path)).map(|_| ()).map_err(to_string)
 }
 
-fn set_main_file(
+/// Internal helper for set main file.
+/// # Errors
+///
+/// Returns an error when the requested UI operation cannot be completed.
+pub fn set_main_file(
     daemon: &LocalrefDaemon,
     form: &UiAction,
 ) -> Result<(), String> {
@@ -199,7 +257,11 @@ fn set_main_file(
         .map_err(to_string)
 }
 
-fn delete_item(
+/// Internal helper for delete item.
+/// # Errors
+///
+/// Returns an error when the requested UI operation cannot be completed.
+pub fn delete_item(
     daemon: &LocalrefDaemon,
     form: &UiAction,
 ) -> Result<(), String> {
@@ -209,7 +271,11 @@ fn delete_item(
     daemon.delete_item(item_id).map(|_| ()).map_err(to_string)
 }
 
-fn save_metadata(
+/// Internal helper for save metadata.
+/// # Errors
+///
+/// Returns an error when the requested UI operation cannot be completed.
+pub fn save_metadata(
     daemon: &LocalrefDaemon,
     form: &UiAction,
 ) -> Result<(), String> {
@@ -247,12 +313,20 @@ fn save_metadata(
         .map_err(to_string)
 }
 
-fn save_rules(daemon: &LocalrefDaemon, form: &UiAction) -> Result<(), String> {
+/// Internal helper for save rules.
+/// # Errors
+///
+/// Returns an error when the requested UI operation cannot be completed.
+pub fn save_rules(
+    daemon: &LocalrefDaemon,
+    form: &UiAction,
+) -> Result<(), String> {
     daemon
         .write_rules_text(form.rules_text.as_deref().unwrap_or_default())
         .map_err(to_string)
 }
 
+/// Internal helper for pause mode.
 fn pause_mode(value: Option<&str>) -> Result<PauseMode, String> {
     match value.unwrap_or("watcher") {
         "all" => Ok(PauseMode::All),
@@ -263,6 +337,7 @@ fn pause_mode(value: Option<&str>) -> Result<PauseMode, String> {
     }
 }
 
+/// Internal helper for category target ids from return.
 fn category_target_ids_from_return(path: &str) -> Vec<String> {
     let query = path.split('?').nth(1).unwrap_or_default();
     let selected = query
@@ -290,6 +365,7 @@ fn category_target_ids_from_return(path: &str) -> Vec<String> {
     }
 }
 
+/// Internal helper for decode query value.
 fn decode_query_value(value: &str) -> Option<String> {
     let mut bytes = Vec::with_capacity(value.len());
     let mut input = value.as_bytes().iter().copied();
@@ -307,6 +383,7 @@ fn decode_query_value(value: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// Internal helper for hex value.
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -316,6 +393,7 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
+/// Internal helper for optional text.
 fn optional_text(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -323,6 +401,7 @@ fn optional_text(value: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Internal helper for to string.
 fn to_string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }

@@ -36,6 +36,16 @@
 //! localref_plugin_main!(MyPlugin);
 //! ```
 
+#![warn(unreachable_pub)]
+#![deny(clippy::correctness)]
+#![deny(clippy::single_call_fn)]
+#![deny(clippy::complexity)]
+#![warn(clippy::pedantic)]
+#![warn(clippy::useless_attribute)]
+#![warn(clippy::redundant_pub_crate)]
+#![warn(clippy::excessive_precision)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 mod plugin;
 mod runtime;
 pub mod state;

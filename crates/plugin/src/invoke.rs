@@ -4,9 +4,6 @@
 //! stateless — the plugin receives the full state it needs and returns a
 //! single result.
 
-use std::collections::HashMap;
-use std::hash::BuildHasher;
-
 use tokio::process::Command;
 
 use crate::error::PluginError;
@@ -39,10 +36,10 @@ pub async fn invoke_render(
 ///
 /// Returns an error when the plugin cannot be spawned, times out, exits with a
 /// non-zero status, or emits invalid JSON.
-pub async fn invoke_run<S: BuildHasher + Sync>(
+pub async fn invoke_run<P: serde::Serialize + Sync + ?Sized>(
     executable: &std::path::Path,
     action: &str,
-    params: &HashMap<String, String, S>,
+    params: &P,
     state: &PluginUiState,
 ) -> Result<RunOutput, PluginError> {
     let input = serde_json::json!({
@@ -64,7 +61,17 @@ async fn run_plugin(
     let serialized = serde_json::to_string(input)
         .map_err(|error| PluginError::Parse(error.to_string()))?;
 
-    let mut child = plugin_command(executable).spawn().map_err(|error| {
+    let mut command = Command::new(executable);
+    command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command.spawn().map_err(|error| {
         PluginError::Subprocess(format!("failed to spawn plugin: {error}"))
     })?;
 
@@ -105,26 +112,6 @@ async fn run_plugin(
         PluginError::Parse(format!("non-UTF-8 output: {error}"))
     })
 }
-
-/// Create a plugin subprocess command with hidden-window Windows settings.
-fn plugin_command(executable: &std::path::Path) -> Command {
-    let mut command = Command::new(executable);
-    command
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    hide_plugin_window(&mut command);
-    command
-}
-
-#[cfg(windows)]
-fn hide_plugin_window(command: &mut Command) {
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn hide_plugin_window(_command: &mut Command) {}
 
 #[cfg(test)]
 mod tests {

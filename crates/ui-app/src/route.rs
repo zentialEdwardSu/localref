@@ -1,5 +1,7 @@
 //! URL route state shared by Localref SSR and hydration.
 
+use std::fmt::Write as _;
+
 use crate::UiState;
 
 /// Browser route state represented by Localref's query string.
@@ -21,6 +23,7 @@ pub struct RouteState {
 
 impl RouteState {
     /// Build route state from a rendered UI state.
+    #[must_use]
     pub fn from_ui_state(state: &UiState) -> Self {
         Self {
             search: state.search.clone(),
@@ -85,6 +88,7 @@ impl RouteState {
     }
 
     /// Return the application-local URL for this route.
+    #[must_use]
     pub fn to_path(&self) -> String {
         let query = self.to_query_string();
         if query.is_empty() { "/".to_string() } else { format!("/?{query}") }
@@ -103,11 +107,13 @@ pub fn state_url(route: &RouteState) -> String {
 }
 
 /// Return trimmed nonempty text.
+#[must_use]
 pub fn optional_text(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
+/// Internal helper for encode query.
 fn encode_query(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
@@ -116,7 +122,7 @@ fn encode_query(value: &str) -> String {
         {
             encoded.push(byte as char);
         } else {
-            encoded.push_str(&format!("%{byte:02X}"));
+            let _ = write!(encoded, "%{byte:02X}");
         }
     }
     encoded

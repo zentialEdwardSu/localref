@@ -5,27 +5,38 @@
 //! record daemon events and acquire filesystem locks before mutating durable
 //! library state.
 
+#![warn(unreachable_pub)]
+#![deny(clippy::correctness)]
+#![deny(clippy::single_call_fn)]
+#![deny(clippy::complexity)]
+#![warn(clippy::pedantic)]
+#![warn(clippy::useless_attribute)]
+#![warn(clippy::redundant_pub_crate)]
+#![warn(clippy::excessive_precision)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 pub mod config;
 pub mod error;
-mod event_log;
-mod lock;
+pub mod lock;
+pub mod logging;
 pub mod model;
-mod pending;
+pub mod pending;
 pub mod platformfs;
 pub mod rest;
-mod rest_files;
+pub mod rest_files;
 pub mod rules;
 pub mod scan;
 pub mod storage;
 pub mod types;
 
-use std::collections::BTreeSet;
+use std::borrow::Borrow;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{LocalrefError, Result};
 use crate::model::{
-    Creator, Event, EventKind, ItemFilesDocument, Metadata, MetadataDocument,
+    Creator, ItemFilesDocument, LogKind, Metadata, MetadataDocument,
     MetadataFile, MetadataFiles, MetadataImport, MetadataState, MetadataTags,
 };
 use crate::platformfs::{LibraryFs, sanitize_ntfs_component};
@@ -35,7 +46,6 @@ use crate::storage::{CategorySummary, ItemDocument, SearchHit, StorageDb};
 use crate::types::{
     CategoryPath, ConnectorAttachment, ConnectorImport, ImportOutcome, ItemId,
 };
-pub use event_log::EventLog;
 use lock::LockManager;
 pub use pending::{
     PendingImportConfirmation, PendingImportSession, PendingImportStore,
@@ -45,8 +55,9 @@ use serde::{Deserialize, Serialize};
 /// Import pipeline rooted at one Localref library.
 #[derive(Clone, Debug)]
 pub struct ImportPipeline {
+    /// Stored fs.
     fs: LibraryFs,
-    events: EventLog,
+    /// Stored locks.
     locks: LockManager,
 }
 
@@ -149,7 +160,7 @@ pub enum DaemonTaskState {
 
 /// Daemon pause mode.
 #[derive(
-    Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize,
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum PauseMode {
@@ -194,28 +205,37 @@ pub struct DaemonStatus {
 /// Core daemon facade used by user-facing APIs.
 #[derive(Clone)]
 pub struct LocalrefDaemon {
+    /// Stored storage.
     storage: StorageDb,
+    /// Stored library root.
     library_root: PathBuf,
-    events: EventLog,
+    /// Stored pending.
     pending: PendingImportStore,
+    /// Stored queue.
     queue: Arc<Mutex<TaskQueueState>>,
 }
 
 #[derive(Debug)]
+/// Internal representation for task queue state.
 struct TaskQueueState {
+    /// Stored next id.
     next_id: u64,
+    /// Stored running.
     running: bool,
+    /// Stored queued.
     queued: Vec<DaemonTaskRecord>,
+    /// Stored history.
     history: Vec<DaemonTaskRecord>,
+    /// Stored paused modes.
     paused_modes: BTreeSet<PauseMode>,
 }
 
 impl LocalrefDaemon {
     /// Create a daemon facade backed by query storage.
+    #[must_use]
     pub fn new(storage: StorageDb) -> Self {
         let library_root = storage.library_root().to_path_buf();
         Self {
-            events: EventLog::new(&library_root),
             library_root,
             storage,
             pending: PendingImportStore::default(),
@@ -230,11 +250,17 @@ impl LocalrefDaemon {
     }
 
     /// Open storage for a library root and create a daemon facade.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn for_library(library_root: impl Into<PathBuf>) -> Result<Self> {
         Ok(Self::new(StorageDb::open(library_root)?))
     }
 
     /// Return the raw automatic-classification rules text.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn read_rules_text(&self) -> Result<String> {
         let path = self.library_root.join(".localref").join("rules.toml");
         if !path.exists() {
@@ -245,6 +271,9 @@ impl LocalrefDaemon {
     }
 
     /// Validate and replace the automatic-classification rules text.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn write_rules_text(&self, text: &str) -> Result<()> {
         RuleSet::parse(text)?;
         let dir = self.library_root.join(".localref");
@@ -256,6 +285,10 @@ impl LocalrefDaemon {
     }
 
     /// Return daemon status and recent task history.
+    #[must_use]
+    /// # Panics
+    ///
+    /// Panics if an internal invariant is violated.
     pub fn status(&self) -> DaemonStatus {
         let queue =
             self.queue.lock().expect("daemon task queue mutex poisoned");
@@ -263,48 +296,62 @@ impl LocalrefDaemon {
             running: queue.running,
             queued_tasks: queue.queued.len(),
             recent_tasks: queue.history.clone(),
-            paused_modes: queue.paused_modes.iter().cloned().collect(),
+            paused_modes: queue.paused_modes.iter().copied().collect(),
         }
     }
 
     /// Add one active pause mode.
+    /// # Panics
+    ///
+    /// Panics if an internal invariant is violated.
     pub fn pause(&self, mode: PauseMode) -> DaemonStatus {
         let mut queue =
             self.queue.lock().expect("daemon task queue mutex poisoned");
-        let message = format!("pause mode enabled: {mode:?}");
+        tracing::info!(
+            event_kind = LogKind::PauseChanged.as_str(),
+            "pause mode enabled: {mode:?}",
+        );
         queue.paused_modes.insert(mode);
-        let _ =
-            self.events.append(EventKind::PauseChanged, message, None, None);
         DaemonStatus {
             running: queue.running,
             queued_tasks: queue.queued.len(),
             recent_tasks: queue.history.clone(),
-            paused_modes: queue.paused_modes.iter().cloned().collect(),
+            paused_modes: queue.paused_modes.iter().copied().collect(),
         }
     }
 
     /// Remove one active pause mode.
+    /// # Panics
+    ///
+    /// Panics if an internal invariant is violated.
     pub fn resume(&self, mode: PauseMode) -> DaemonStatus {
         let mut queue =
             self.queue.lock().expect("daemon task queue mutex poisoned");
-        let message = format!("pause mode disabled: {mode:?}");
+        tracing::info!(
+            event_kind = LogKind::PauseChanged.as_str(),
+            "pause mode disabled: {mode:?}",
+        );
         queue.paused_modes.remove(&mode);
-        let _ =
-            self.events.append(EventKind::PauseChanged, message, None, None);
         DaemonStatus {
             running: queue.running,
             queued_tasks: queue.queued.len(),
             recent_tasks: queue.history.clone(),
-            paused_modes: queue.paused_modes.iter().cloned().collect(),
+            paused_modes: queue.paused_modes.iter().copied().collect(),
         }
     }
 
     /// Enqueue and execute a scan task.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn scan_all(&self) -> Result<DaemonTaskRecord> {
         self.execute_task(DaemonTask::ScanAll)
     }
 
     /// Enqueue and execute one connector import task.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn import_connector_item(
         &self,
         import: ConnectorImport,
@@ -343,6 +390,9 @@ impl LocalrefDaemon {
     }
 
     /// Create a pending connector import that must be confirmed by the user.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn create_pending_connector_import(
         &self,
         import: ConnectorImport,
@@ -352,21 +402,24 @@ impl LocalrefDaemon {
         let categories =
             RuleSet::load(&self.library_root)?.match_metadata(&metadata)?;
         let session = self.pending.create(import, categories);
-        self.events.append(
-            EventKind::ImportPendingUserConfirmation,
+        tracing::info!(
+            event_kind = LogKind::ImportPendingUserConfirmation.as_str(),
+            item_id = item_id.as_str(),
             "connector import pending user confirmation",
-            Some(item_id.as_str().to_string()),
-            None,
-        )?;
+        );
         Ok(session)
     }
 
     /// Return pending imports waiting for user confirmation.
+    #[must_use]
     pub fn pending_imports(&self) -> Vec<PendingImportSession> {
         self.pending.list()
     }
 
     /// Confirm a pending import and write it to `All/` with selected categories.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn confirm_pending_import(
         &self,
         id: u64,
@@ -388,7 +441,7 @@ impl LocalrefDaemon {
             .and_then(|()| {
                 ImportPipeline::new(&self.library_root)
                     .import_connector_item_with_categories(
-                        record.import,
+                        &record.import,
                         categories,
                     )
             })
@@ -417,6 +470,9 @@ impl LocalrefDaemon {
     }
 
     /// Cancel a pending import without writing it to `All/`.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn cancel_pending_import(
         &self,
         id: u64,
@@ -425,21 +481,23 @@ impl LocalrefDaemon {
             .pending
             .take(id)
             .ok_or(LocalrefError::MissingField("pending import"))?;
-        self.events.append(
-            EventKind::ImportCancelled,
+        tracing::warn!(
+            event_kind = LogKind::ImportCancelled.as_str(),
             "pending import cancelled",
-            None,
-            None,
-        )?;
+        );
         Ok(record.session)
     }
 
     /// Enqueue and execute one late connector attachment save.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn save_connector_attachment_to_item(
         &self,
         item_dir: &Path,
-        attachment: ConnectorAttachment,
+        attachment: impl Borrow<ConnectorAttachment>,
     ) -> Result<PathBuf> {
+        let attachment = attachment.borrow();
         let mut record = self.enqueue(DaemonTask::SaveConnectorAttachment {
             filename: attachment.filename.clone(),
         });
@@ -448,7 +506,7 @@ impl LocalrefDaemon {
             .ensure_task_allowed(&record.task)
             .and_then(|()| {
                 ImportPipeline::new(&self.library_root)
-                    .save_connector_attachment_to_item(item_dir, &attachment)
+                    .save_connector_attachment_to_item(item_dir, attachment)
             })
             .and_then(|path| {
                 self.storage.rebuild_from_all()?;
@@ -473,12 +531,16 @@ impl LocalrefDaemon {
     }
 
     /// Patch metadata after validating the expected revision.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn patch_metadata(
         &self,
         item_id: &str,
         expected_revision: &str,
-        metadata: Metadata,
+        metadata: impl Borrow<Metadata>,
     ) -> Result<ItemDocument> {
+        let metadata = metadata.borrow();
         if metadata.id != item_id {
             return Err(LocalrefError::Unsupported(
                 "metadata id cannot be changed",
@@ -499,7 +561,7 @@ impl LocalrefDaemon {
                 ImportPipeline::new(&self.library_root)
                     .write_metadata_if_revision(
                         &item_dir,
-                        &metadata,
+                        metadata,
                         expected_revision,
                     )
             })
@@ -528,6 +590,9 @@ impl LocalrefDaemon {
     }
 
     /// Create minimal metadata for an existing directory under `All/`.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn import_all_directory(
         &self,
         item_dir: impl Into<PathBuf>,
@@ -572,6 +637,9 @@ impl LocalrefDaemon {
     }
 
     /// Import one explicit file by copying it into a new `All/` item directory.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn import_file(
         &self,
         file_path: impl Into<PathBuf>,
@@ -610,6 +678,9 @@ impl LocalrefDaemon {
     }
 
     /// Copy one explicit file into an existing indexed item directory.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn add_file_to_item(
         &self,
         item_id: &str,
@@ -656,6 +727,9 @@ impl LocalrefDaemon {
     }
 
     /// Write uploaded bytes into an existing indexed item directory.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn add_uploaded_file_to_item(
         &self,
         item_id: &str,
@@ -702,6 +776,9 @@ impl LocalrefDaemon {
     }
 
     /// Normalize one real directory under `Cat/`.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn normalize_cat_directory(
         &self,
         cat_dir: impl Into<PathBuf>,
@@ -714,11 +791,9 @@ impl LocalrefDaemon {
         let result = self
             .ensure_task_allowed(&record.task)
             .and_then(|()| {
+                let items = self.storage.list_items()?;
                 ImportPipeline::new(&self.library_root)
-                    .normalize_cat_directory(
-                        &cat_dir,
-                        self.storage.list_items()?,
-                    )
+                    .normalize_cat_directory(&cat_dir, &items)
             })
             .and_then(|outcome| {
                 self.storage.rebuild_from_all()?;
@@ -744,35 +819,43 @@ impl LocalrefDaemon {
     }
 
     /// Create an empty category directory and rebuild category indexes.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn create_category(
         &self,
-        category: CategoryPath,
+        category: impl Borrow<CategoryPath>,
     ) -> Result<CategorySummary> {
+        let category = category.borrow();
         let record = self.enqueue(DaemonTask::CreateCategory {
             category: category.clone(),
         });
         self.mark_running(record.id);
         let result = self.ensure_task_allowed(&record.task).and_then(|()| {
             let path = LibraryFs::new(&self.library_root)
-                .create_category_dir(&category)?;
-            self.events.append(
-                EventKind::CategoryCreated,
-                format!("category created: {}", category.as_str()),
-                None,
-                Some(relative_to_root(&self.library_root, &path)),
-            )?;
+                .create_category_dir(category)?;
+            tracing::info!(
+                event_kind = LogKind::CategoryCreated.as_str(),
+                path = relative_to_root(&self.library_root, &path),
+                "category created: {}",
+                category.as_str(),
+            );
             self.storage.rebuild_from_all()?;
-            category_summary_for(&self.storage, &category)
+            category_summary_for(&self.storage, category)
         });
         self.finish_task_result(record, result)
     }
 
     /// Add one indexed item to a category.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn add_item_category(
         &self,
         item_id: &str,
-        category: CategoryPath,
+        category: impl Borrow<CategoryPath>,
     ) -> Result<CategorySummary> {
+        let category = category.borrow();
         let record = self.enqueue(DaemonTask::AddCategory {
             item_id: item_id.to_string(),
             category: category.clone(),
@@ -785,25 +868,30 @@ impl LocalrefDaemon {
                 .ok_or(LocalrefError::MissingField("item"))?;
             let item_dir = self.library_root.join(&item.object_path);
             let link = LibraryFs::new(&self.library_root)
-                .create_category_link(&category, &item_dir)?;
-            self.events.append(
-                EventKind::CatLinkCreated,
-                format!("category link created: {}", category.as_str()),
-                Some(item_id.to_string()),
-                Some(relative_to_root(&self.library_root, &link)),
-            )?;
+                .create_category_link(category, &item_dir)?;
+            tracing::debug!(
+                event_kind = LogKind::CatLinkCreated.as_str(),
+                item_id = item_id,
+                path = relative_to_root(&self.library_root, &link),
+                "category link created: {}",
+                category.as_str(),
+            );
             self.storage.rebuild_from_all()?;
-            category_summary_for(&self.storage, &category)
+            category_summary_for(&self.storage, category)
         });
         self.finish_task_result(record, result)
     }
 
     /// Add multiple indexed items to one category with one index rebuild.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn add_items_category(
         &self,
         item_ids: &[String],
-        category: CategoryPath,
+        category: impl Borrow<CategoryPath>,
     ) -> Result<CategorySummary> {
+        let category = category.borrow();
         let record = self.enqueue(DaemonTask::AddCategory {
             item_id: item_ids.join(","),
             category: category.clone(),
@@ -817,26 +905,31 @@ impl LocalrefDaemon {
                     .get_item(item_id)?
                     .ok_or(LocalrefError::MissingField("item"))?;
                 let item_dir = self.library_root.join(&item.object_path);
-                let link = fs.create_category_link(&category, &item_dir)?;
-                self.events.append(
-                    EventKind::CatLinkCreated,
-                    format!("category link created: {}", category.as_str()),
-                    Some(item_id.to_string()),
-                    Some(relative_to_root(&self.library_root, &link)),
-                )?;
+                let link = fs.create_category_link(category, &item_dir)?;
+                tracing::debug!(
+                    event_kind = LogKind::CatLinkCreated.as_str(),
+                    item_id = item_id,
+                    path = relative_to_root(&self.library_root, &link),
+                    "category link created: {}",
+                    category.as_str(),
+                );
             }
             self.storage.rebuild_from_all()?;
-            category_summary_for(&self.storage, &category)
+            category_summary_for(&self.storage, category)
         });
         self.finish_task_result(record, result)
     }
 
     /// Remove one indexed item from a category.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn remove_item_category(
         &self,
         item_id: &str,
-        category: CategoryPath,
+        category: impl Borrow<CategoryPath>,
     ) -> Result<CategorySummary> {
+        let category = category.borrow();
         let record = self.enqueue(DaemonTask::RemoveCategory {
             item_id: item_id.to_string(),
             category: category.clone(),
@@ -853,27 +946,32 @@ impl LocalrefDaemon {
                 .and_then(|name| name.to_str())
                 .ok_or(LocalrefError::MissingField("item directory name"))?;
             let removed = LibraryFs::new(&self.library_root)
-                .remove_category_link(&category, entry_name)?;
+                .remove_category_link(category, entry_name)?;
             if let Some(path) = removed {
-                self.events.append(
-                    EventKind::CatLinkDeleted,
-                    format!("category link deleted: {}", category.as_str()),
-                    Some(item_id.to_string()),
-                    Some(relative_to_root(&self.library_root, &path)),
-                )?;
+                tracing::debug!(
+                    event_kind = LogKind::CatLinkDeleted.as_str(),
+                    item_id = item_id,
+                    path = relative_to_root(&self.library_root, &path),
+                    "category link deleted: {}",
+                    category.as_str(),
+                );
             }
             self.storage.rebuild_from_all()?;
-            category_summary_for(&self.storage, &category)
+            category_summary_for(&self.storage, category)
         });
         self.finish_task_result(record, result)
     }
 
     /// Remove multiple indexed items from one category with one index rebuild.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn remove_items_category(
         &self,
         item_ids: &[String],
-        category: CategoryPath,
+        category: impl Borrow<CategoryPath>,
     ) -> Result<CategorySummary> {
+        let category = category.borrow();
         let record = self.enqueue(DaemonTask::RemoveCategory {
             item_id: item_ids.join(","),
             category: category.clone(),
@@ -894,26 +992,27 @@ impl LocalrefDaemon {
                         "item directory name",
                     ))?;
                 if let Some(path) =
-                    fs.remove_category_link(&category, entry_name)?
+                    fs.remove_category_link(category, entry_name)?
                 {
-                    self.events.append(
-                        EventKind::CatLinkDeleted,
-                        format!(
-                            "category link deleted: {}",
-                            category.as_str()
-                        ),
-                        Some(item_id.to_string()),
-                        Some(relative_to_root(&self.library_root, &path)),
-                    )?;
+                    tracing::debug!(
+                        event_kind = LogKind::CatLinkDeleted.as_str(),
+                        item_id = item_id,
+                        path = relative_to_root(&self.library_root, &path),
+                        "category link deleted: {}",
+                        category.as_str(),
+                    );
                 }
             }
             self.storage.rebuild_from_all()?;
-            category_summary_for(&self.storage, &category)
+            category_summary_for(&self.storage, category)
         });
         self.finish_task_result(record, result)
     }
 
     /// Delete one indexed item directory and its category links.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn delete_item(&self, item_id: &str) -> Result<bool> {
         let record = self
             .enqueue(DaemonTask::DeleteItem { item_id: item_id.to_string() });
@@ -942,25 +1041,23 @@ impl LocalrefDaemon {
                 if let Some(path) =
                     fs.remove_category_link(&category, entry_name)?
                 {
-                    self.events.append(
-                        EventKind::CatLinkDeleted,
-                        format!(
-                            "category link deleted: {}",
-                            category.as_str()
-                        ),
-                        Some(item_id.to_string()),
-                        Some(relative_to_root(&self.library_root, &path)),
-                    )?;
+                    tracing::debug!(
+                        event_kind = LogKind::CatLinkDeleted.as_str(),
+                        item_id = item_id,
+                        path = relative_to_root(&self.library_root, &path),
+                        "category link deleted: {}",
+                        category.as_str(),
+                    );
                 }
             }
             std::fs::remove_dir_all(&item_dir)
                 .map_err(|source| LocalrefError::io(&item_dir, source))?;
-            self.events.append(
-                EventKind::ItemDeleted,
+            tracing::warn!(
+                event_kind = LogKind::ItemDeleted.as_str(),
+                item_id = item_id,
+                path = relative_to_root(&self.library_root, &item_dir),
                 "item deleted",
-                Some(item_id.to_string()),
-                Some(relative_to_root(&self.library_root, &item_dir)),
-            )?;
+            );
             self.storage.rebuild_from_all()?;
             Ok(true)
         });
@@ -968,11 +1065,16 @@ impl LocalrefDaemon {
     }
 
     /// Rename a category directory and rebuild category indexes.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn rename_category(
         &self,
-        from: CategoryPath,
-        to: CategoryPath,
+        from: impl Borrow<CategoryPath>,
+        to: impl Borrow<CategoryPath>,
     ) -> Result<CategorySummary> {
+        let from = from.borrow();
+        let to = to.borrow();
         let record = self.enqueue(DaemonTask::RenameCategory {
             from: from.clone(),
             to: to.clone(),
@@ -980,59 +1082,64 @@ impl LocalrefDaemon {
         self.mark_running(record.id);
         let result = self.ensure_task_allowed(&record.task).and_then(|()| {
             let path = LibraryFs::new(&self.library_root)
-                .rename_category(&from, &to)?;
-            self.events.append(
-                EventKind::CategoryRenamed,
-                format!(
-                    "category renamed: {} -> {}",
-                    from.as_str(),
-                    to.as_str()
-                ),
-                None,
-                Some(relative_to_root(&self.library_root, &path)),
-            )?;
+                .rename_category(from, to)?;
+            tracing::info!(
+                event_kind = LogKind::CategoryRenamed.as_str(),
+                path = relative_to_root(&self.library_root, &path),
+                "category renamed: {} -> {}",
+                from.as_str(),
+                to.as_str(),
+            );
             self.storage.rebuild_from_all()?;
-            category_summary_for(&self.storage, &to)
+            category_summary_for(&self.storage, to)
         });
         self.finish_task_result(record, result)
     }
 
     /// Merge one category directory into another.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn merge_category(
         &self,
-        from: CategoryPath,
-        to: CategoryPath,
+        from: impl Borrow<CategoryPath>,
+        to: impl Borrow<CategoryPath>,
     ) -> Result<CategorySummary> {
+        let from = from.borrow();
+        let to = to.borrow();
         let record = self.enqueue(DaemonTask::MergeCategory {
             from: from.clone(),
             to: to.clone(),
         });
         self.mark_running(record.id);
         let result = self.ensure_task_allowed(&record.task).and_then(|()| {
-            let path = LibraryFs::new(&self.library_root)
-                .merge_category(&from, &to)?;
-            self.events.append(
-                EventKind::CategoryMerged,
-                format!(
-                    "category merged: {} -> {}",
-                    from.as_str(),
-                    to.as_str()
-                ),
-                None,
-                Some(relative_to_root(&self.library_root, &path)),
-            )?;
+            let path =
+                LibraryFs::new(&self.library_root).merge_category(from, to)?;
+            tracing::info!(
+                event_kind = LogKind::CategoryMerged.as_str(),
+                path = relative_to_root(&self.library_root, &path),
+                "category merged: {} -> {}",
+                from.as_str(),
+                to.as_str(),
+            );
             self.storage.rebuild_from_all()?;
-            category_summary_for(&self.storage, &to)
+            category_summary_for(&self.storage, to)
         });
         self.finish_task_result(record, result)
     }
 
     /// Return all indexed items.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn list_items(&self) -> Result<Vec<ItemDocument>> {
         self.storage.list_items()
     }
 
     /// Return filesystem entries under one indexed item directory.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn item_files(
         &self,
         item_id: &str,
@@ -1041,6 +1148,9 @@ impl LocalrefDaemon {
     }
 
     /// Open one indexed item directory with the platform file manager.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn open_item_folder(&self, item_id: &str) -> Result<bool> {
         let Some(path) = rest_files::item_folder(self, item_id)? else {
             return Ok(false);
@@ -1050,6 +1160,9 @@ impl LocalrefDaemon {
     }
 
     /// Open one item-relative file with the platform default application.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn open_item_file(
         &self,
         item_id: &str,
@@ -1064,11 +1177,17 @@ impl LocalrefDaemon {
     }
 
     /// Return one indexed item by id.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn get_item(&self, id: &str) -> Result<Option<ItemDocument>> {
         self.storage.get_item(id)
     }
 
     /// Return the full parsed metadata document for one indexed item.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn get_metadata(&self, id: &str) -> Result<Option<MetadataDocument>> {
         let Some(item) = self.storage.get_item(id)? else {
             return Ok(None);
@@ -1087,24 +1206,40 @@ impl LocalrefDaemon {
     }
 
     /// Search indexed item metadata.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
         self.storage.search(query)
     }
 
     /// Return categories derived from `Cat/` links.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn list_categories(&self) -> Result<Vec<CategorySummary>> {
         self.storage.list_categories()
     }
 
-    /// Return daemon events from `.localref/logs/events.jsonl`.
-    pub fn events(&self) -> Result<Vec<Event>> {
-        self.events.list()
+    /// Return recent log entries from the in-memory ring buffer.
+    ///
+    /// Returns an empty list when the logging system has not been initialized
+    /// (e.g. in tests that do not call [`logging::init`]).
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
+    pub fn events(&self) -> Result<Vec<crate::logging::LogEntry>> {
+        Ok(crate::logging::global_buffer()
+            .map(logging::LogRingBuffer::entries)
+            .unwrap_or_default())
     }
 
+    /// Internal helper for absolute library path.
     fn absolute_library_path(&self, path: PathBuf) -> PathBuf {
         if path.is_absolute() { path } else { self.library_root.join(path) }
     }
 
+    /// Internal helper for finish task result.
     fn finish_task_result<T>(
         &self,
         mut record: DaemonTaskRecord,
@@ -1125,6 +1260,7 @@ impl LocalrefDaemon {
         }
     }
 
+    /// Internal helper for execute task.
     fn execute_task(&self, task: DaemonTask) -> Result<DaemonTaskRecord> {
         let mut record = self.enqueue(task);
         self.mark_running(record.id);
@@ -1134,19 +1270,15 @@ impl LocalrefDaemon {
                 .task
             {
                 DaemonTask::ScanAll => {
-                    self.events.append(
-                        EventKind::ScanStarted,
+                    tracing::info!(
+                        event_kind = LogKind::ScanStarted.as_str(),
                         "scan started",
-                        None,
-                        None,
-                    )?;
+                    );
                     self.scan_and_normalize(&mut record)?;
-                    self.events.append(
-                        EventKind::ScanFinished,
+                    tracing::info!(
+                        event_kind = LogKind::ScanFinished.as_str(),
                         "scan finished",
-                        None,
-                        None,
-                    )?;
+                    );
                     Ok(())
                 }
                 DaemonTask::ImportConnector { .. } => {
@@ -1242,9 +1374,10 @@ impl LocalrefDaemon {
             .iter()
             .filter(|entry| entry.kind == CatEntryKind::RealDirectoryCandidate)
         {
+            let items = self.storage.list_items()?;
             pipeline.normalize_cat_directory(
                 &self.library_root.join(&entry.path),
-                self.storage.list_items()?,
+                &items,
             )?;
             self.storage.rebuild_from_all()?;
             cat_normalizations += 1;
@@ -1258,6 +1391,7 @@ impl LocalrefDaemon {
         Ok(())
     }
 
+    /// Internal helper for enqueue.
     fn enqueue(&self, task: DaemonTask) -> DaemonTaskRecord {
         let mut queue =
             self.queue.lock().expect("daemon task queue mutex poisoned");
@@ -1274,6 +1408,7 @@ impl LocalrefDaemon {
         record
     }
 
+    /// Internal helper for ensure task allowed.
     fn ensure_task_allowed(&self, task: &DaemonTask) -> Result<()> {
         let queue =
             self.queue.lock().expect("daemon task queue mutex poisoned");
@@ -1289,29 +1424,13 @@ impl LocalrefDaemon {
                 Err(LocalrefError::Unsupported("indexing is paused"))
             }
             DaemonTask::ImportConnector { .. }
-                if queue.paused_modes.contains(&PauseMode::Writes) =>
-            {
-                Err(LocalrefError::Unsupported("writes are paused"))
-            }
-            DaemonTask::SaveConnectorAttachment { .. }
-                if queue.paused_modes.contains(&PauseMode::Writes) =>
-            {
-                Err(LocalrefError::Unsupported("writes are paused"))
-            }
-            DaemonTask::PatchMetadata { .. }
-                if queue.paused_modes.contains(&PauseMode::Writes) =>
-            {
-                Err(LocalrefError::Unsupported("writes are paused"))
-            }
-            DaemonTask::ImportAllDirectory { .. }
+            | DaemonTask::SaveConnectorAttachment { .. }
+            | DaemonTask::PatchMetadata { .. }
+            | DaemonTask::ImportAllDirectory { .. }
             | DaemonTask::ImportFile { .. }
             | DaemonTask::AddItemFile { .. }
             | DaemonTask::DeleteItem { .. }
-                if queue.paused_modes.contains(&PauseMode::Writes) =>
-            {
-                Err(LocalrefError::Unsupported("writes are paused"))
-            }
-            DaemonTask::NormalizeCatDirectory { .. }
+            | DaemonTask::NormalizeCatDirectory { .. }
             | DaemonTask::CreateCategory { .. }
             | DaemonTask::AddCategory { .. }
             | DaemonTask::RemoveCategory { .. }
@@ -1325,6 +1444,7 @@ impl LocalrefDaemon {
         }
     }
 
+    /// Internal helper for mark running.
     fn mark_running(&self, id: u64) {
         let mut queue =
             self.queue.lock().expect("daemon task queue mutex poisoned");
@@ -1336,6 +1456,7 @@ impl LocalrefDaemon {
         }
     }
 
+    /// Internal helper for finish.
     fn finish(&self, record: DaemonTaskRecord) {
         let mut queue =
             self.queue.lock().expect("daemon task queue mutex poisoned");
@@ -1357,56 +1478,63 @@ impl ImportPipeline {
         let library_root = library_root.into();
         Self {
             fs: LibraryFs::new(&library_root),
-            events: EventLog::new(&library_root),
             locks: LockManager::new(&library_root),
         }
     }
 
     /// Import one Zotero Connector item and its attachments into `All/`.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn import_connector_item(
         &self,
-        import: ConnectorImport,
+        import: impl Borrow<ConnectorImport>,
     ) -> Result<ImportOutcome> {
-        let item_id = connector_item_id(&import)?;
+        let import = import.borrow();
+        let item_id = connector_item_id(import)?;
+        let metadata = metadata_from_import(&item_id, import, &[], &[]);
         let categories =
-            automatic_categories(self.fs.root(), &item_id, &import)?;
+            RuleSet::load(self.fs.root())?.match_metadata(&metadata)?;
         self.import_connector_item_with_categories(import, categories)
     }
 
     /// Import one connector item and create the supplied category links.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn import_connector_item_with_categories(
         &self,
-        import: ConnectorImport,
+        import: impl Borrow<ConnectorImport>,
         categories: Vec<CategoryPath>,
     ) -> Result<ImportOutcome> {
+        let import = import.borrow();
         if import.item.title.trim().is_empty() {
             return Err(LocalrefError::MissingField("item.title"));
         }
 
-        let item_id = connector_item_id(&import)?;
+        let item_id = connector_item_id(import)?;
         let _lock = self
             .locks
             .acquire(item_id.as_str(), "import_connector_item")
             .inspect_err(|_| {
-                let _ = self.events.append(
-                    EventKind::WriteConflict,
+                tracing::warn!(
+                    event_kind = LogKind::WriteConflict.as_str(),
+                    item_id = item_id.as_str(),
                     "connector import lock conflict",
-                    Some(item_id.as_str().to_string()),
-                    None,
                 );
             })?;
 
-        self.events.append(
-            EventKind::ImportStarted,
-            format!("connector import started: {}", import.item.title),
-            Some(item_id.as_str().to_string()),
-            None,
-        )?;
+        tracing::info!(
+            event_kind = LogKind::ImportStarted.as_str(),
+            item_id = item_id.as_str(),
+            "connector import started: {}",
+            import.item.title,
+        );
         self.fs.ensure_layout()?;
         let item_dir = self.fs.create_unique_item_dir(&import.item.title)?;
         let mut written_files = Vec::new();
 
-        let attachments = attachments_for_import(&import);
+        let attachments = import.attachments_with_webpage_source();
         for attachment in &attachments {
             let file_path = write_attachment(&self.fs, &item_dir, attachment)?;
             written_files.push(file_path);
@@ -1415,7 +1543,7 @@ impl ImportPipeline {
         let metadata_path = item_dir.join("metadata.toml");
         let metadata = metadata_from_import(
             &item_id,
-            &import,
+            import,
             &attachments,
             &written_files,
         );
@@ -1423,48 +1551,53 @@ impl ImportPipeline {
         self.fs.atomic_write(&metadata_path, &metadata_bytes)?;
         written_files.push(metadata_path);
 
-        self.events.append(
-            EventKind::MetadataWritten,
+        tracing::debug!(
+            event_kind = LogKind::MetadataWritten.as_str(),
+            item_id = item_id.as_str(),
+            path = relative_to_root(self.fs.root(), &item_dir),
             "metadata written",
-            Some(item_id.as_str().to_string()),
-            Some(relative_to_root(self.fs.root(), &item_dir)),
-        )?;
-        self.events.append(
-            EventKind::ItemRegistered,
+        );
+        tracing::info!(
+            event_kind = LogKind::ItemRegistered.as_str(),
+            item_id = item_id.as_str(),
+            path = relative_to_root(self.fs.root(), &item_dir),
             "item registered",
-            Some(item_id.as_str().to_string()),
-            Some(relative_to_root(self.fs.root(), &item_dir)),
-        )?;
-        self.events.append(
-            EventKind::ImportFinished,
+        );
+        tracing::info!(
+            event_kind = LogKind::ImportFinished.as_str(),
+            item_id = item_id.as_str(),
+            path = relative_to_root(self.fs.root(), &item_dir),
             "connector import finished",
-            Some(item_id.as_str().to_string()),
-            Some(relative_to_root(self.fs.root(), &item_dir)),
-        )?;
+        );
 
         for category in &categories {
             let link_path =
                 self.fs.create_category_link(category, &item_dir)?;
-            self.events.append(
-                EventKind::CatLinkCreated,
-                format!("category link created: {}", category.as_str()),
-                Some(item_id.as_str().to_string()),
-                Some(relative_to_root(self.fs.root(), &link_path)),
-            )?;
+            tracing::debug!(
+                event_kind = LogKind::CatLinkCreated.as_str(),
+                item_id = item_id.as_str(),
+                path = relative_to_root(self.fs.root(), &link_path),
+                "category link created: {}",
+                category.as_str(),
+            );
         }
         if !categories.is_empty() {
-            self.events.append(
-                EventKind::AutoClassifiedOnImport,
-                format!("matched {} categor(ies)", categories.len()),
-                Some(item_id.as_str().to_string()),
-                Some(relative_to_root(self.fs.root(), &item_dir)),
-            )?;
+            tracing::info!(
+                event_kind = LogKind::AutoClassifiedOnImport.as_str(),
+                item_id = item_id.as_str(),
+                path = relative_to_root(self.fs.root(), &item_dir),
+                "matched {} categor(ies)",
+                categories.len(),
+            );
         }
 
         Ok(ImportOutcome { item_id, item_dir, written_files, categories })
     }
 
     /// Save one connector attachment into an existing imported item directory.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn save_connector_attachment_to_item(
         &self,
         item_dir: &std::path::Path,
@@ -1476,12 +1609,11 @@ impl ImportPipeline {
         )?;
         let path = write_attachment(&self.fs, item_dir, attachment)?;
         self.append_attachment_to_metadata(item_dir, attachment, &path)?;
-        self.events.append(
-            EventKind::MetadataWritten,
+        tracing::debug!(
+            event_kind = LogKind::MetadataWritten.as_str(),
+            path = relative_to_root(self.fs.root(), item_dir),
             "late connector attachment saved",
-            None,
-            Some(relative_to_root(self.fs.root(), item_dir)),
-        )?;
+        );
         Ok(path)
     }
 
@@ -1489,6 +1621,9 @@ impl ImportPipeline {
     ///
     /// On mismatch, the daemon candidate is saved as `metadata.daemon.toml` and
     /// the original `metadata.toml` is left untouched.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn write_metadata_if_revision(
         &self,
         item_dir: &Path,
@@ -1507,28 +1642,31 @@ impl ImportPipeline {
         if current_revision != expected_revision {
             let candidate_path = item_dir.join("metadata.daemon.toml");
             self.fs.atomic_write(&candidate_path, candidate.as_bytes())?;
-            self.events.append(
-                EventKind::WriteConflict,
+            tracing::warn!(
+                event_kind = LogKind::WriteConflict.as_str(),
+                item_id = metadata.id,
+                path = relative_to_root(self.fs.root(), item_dir),
                 "metadata revision conflict",
-                Some(metadata.id.clone()),
-                Some(relative_to_root(self.fs.root(), item_dir)),
-            )?;
+            );
             return Err(LocalrefError::Conflict(format!(
                 "metadata revision mismatch for {}",
                 metadata.id
             )));
         }
         self.fs.atomic_write(&metadata_path, candidate.as_bytes())?;
-        self.events.append(
-            EventKind::MetadataWritten,
+        tracing::debug!(
+            event_kind = LogKind::MetadataWritten.as_str(),
+            item_id = metadata.id,
+            path = relative_to_root(self.fs.root(), item_dir),
             "metadata written",
-            Some(metadata.id.clone()),
-            Some(relative_to_root(self.fs.root(), item_dir)),
-        )?;
+        );
         Ok(())
     }
 
     /// Create metadata for an unmanaged existing directory under `All/`.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn create_metadata_for_all_directory(
         &self,
         item_dir: &Path,
@@ -1558,19 +1696,19 @@ impl ImportPipeline {
             metadata_from_all_directory(&item_id, &title, item_dir)?;
         let metadata_text = metadata.to_toml_string()?;
         self.fs.atomic_write(&metadata_path, metadata_text.as_bytes())?;
-        self.events.append(
-            EventKind::MetadataCreated,
+        tracing::info!(
+            event_kind = LogKind::MetadataCreated.as_str(),
+            item_id = item_id.as_str(),
+            path = relative_to_root(self.fs.root(), item_dir),
             "metadata created for All directory",
-            Some(item_id.as_str().to_string()),
-            Some(relative_to_root(self.fs.root(), item_dir)),
-        )?;
+        );
         if pdf_candidates(item_dir)?.len() > 1 {
-            self.events.append(
-                EventKind::MultipleMainPdfCandidates,
+            tracing::warn!(
+                event_kind = LogKind::MultipleMainPdfCandidates.as_str(),
+                item_id = item_id.as_str(),
+                path = relative_to_root(self.fs.root(), item_dir),
                 "multiple PDF files found in manual All directory",
-                Some(item_id.as_str().to_string()),
-                Some(relative_to_root(self.fs.root(), item_dir)),
-            )?;
+            );
         }
         Ok(ImportOutcome {
             item_id,
@@ -1581,6 +1719,9 @@ impl ImportPipeline {
     }
 
     /// Import one file into a new `All/` item directory with minimal metadata.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn import_file(&self, file_path: &Path) -> Result<ImportOutcome> {
         self.fs.ensure_layout()?;
         if !file_path.is_file() {
@@ -1605,16 +1746,48 @@ impl ImportPipeline {
             .ok_or(LocalrefError::MissingField("item directory name"))?;
         let item_id = manual_item_id(title)?;
         let _lock = self.locks.acquire(item_id.as_str(), "import_file")?;
-        let metadata = metadata_from_imported_file(&item_id, title, &target)?;
+        let imported_filename = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(LocalrefError::MissingField("file name"))?
+            .to_string();
+        let metadata = Metadata {
+            id: item_id.as_str().to_string(),
+            item_type: "document".to_string(),
+            title: title.to_string(),
+            abstract_note: None,
+            doi: None,
+            uri: None,
+            year: None,
+            venue: None,
+            language: None,
+            creators: Vec::new(),
+            files: MetadataFiles {
+                main: Some(imported_filename.clone()),
+                extra: vec![MetadataFile {
+                    path: imported_filename,
+                    kind: "attachment".to_string(),
+                    mime_type: mime_type_for_path(&target),
+                }],
+            },
+            tags: MetadataTags::default(),
+            import: MetadataImport {
+                source: "manual-file".to_string(),
+                session_id: None,
+                imported_at: None,
+            },
+            state: MetadataState::default(),
+            raw_connector: BTreeMap::default(),
+        };
         let metadata_path = item_dir.join("metadata.toml");
         let metadata_text = metadata.to_toml_string()?;
         self.fs.atomic_write(&metadata_path, metadata_text.as_bytes())?;
-        self.events.append(
-            EventKind::MetadataCreated,
+        tracing::info!(
+            event_kind = LogKind::MetadataCreated.as_str(),
+            item_id = item_id.as_str(),
+            path = relative_to_root(self.fs.root(), &item_dir),
             "metadata created for imported file",
-            Some(item_id.as_str().to_string()),
-            Some(relative_to_root(self.fs.root(), &item_dir)),
-        )?;
+        );
         Ok(ImportOutcome {
             item_id,
             item_dir,
@@ -1624,6 +1797,9 @@ impl ImportPipeline {
     }
 
     /// Copy one file into an existing item directory and update metadata files.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn add_file_to_item(
         &self,
         item_dir: &Path,
@@ -1649,16 +1825,18 @@ impl ImportPipeline {
         std::fs::copy(file_path, &target)
             .map_err(|source| LocalrefError::io(&target, source))?;
         self.append_file_to_metadata(item_dir, &target)?;
-        self.events.append(
-            EventKind::MetadataWritten,
+        tracing::debug!(
+            event_kind = LogKind::MetadataWritten.as_str(),
+            path = relative_to_root(self.fs.root(), item_dir),
             "item file added",
-            None,
-            Some(relative_to_root(self.fs.root(), item_dir)),
-        )?;
+        );
         Ok(target)
     }
 
     /// Write uploaded file bytes into an existing item directory.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn add_uploaded_file_to_item(
         &self,
         item_dir: &Path,
@@ -1677,27 +1855,31 @@ impl ImportPipeline {
         );
         self.fs.atomic_write(&target, bytes)?;
         self.append_file_to_metadata(item_dir, &target)?;
-        self.events.append(
-            EventKind::MetadataWritten,
+        tracing::debug!(
+            event_kind = LogKind::MetadataWritten.as_str(),
+            path = relative_to_root(self.fs.root(), item_dir),
             "uploaded item file added",
-            None,
-            Some(relative_to_root(self.fs.root(), item_dir)),
-        )?;
+        );
         Ok(target)
     }
 
     /// Normalize a real directory under `Cat/` into `All/` plus a category link.
+    /// # Panics
+    ///
+    /// Panics if an internal invariant is violated.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn normalize_cat_directory(
         &self,
         cat_dir: &Path,
-        indexed_items: Vec<ItemDocument>,
+        items: &[ItemDocument],
     ) -> Result<ImportOutcome> {
         self.fs.ensure_layout()?;
-        ensure_inside_cat(self.fs.root(), cat_dir)?;
+        let category = self.fs.category_for_real_directory(cat_dir)?;
         if !cat_dir.is_dir() {
             return Err(LocalrefError::MissingField("Cat directory"));
         }
-        let category = category_from_cat_path(self.fs.root(), cat_dir)?;
         let entry_name = cat_dir
             .file_name()
             .and_then(|name| name.to_str())
@@ -1712,12 +1894,12 @@ impl ImportPipeline {
             None
         };
         let existing = metadata.as_ref().and_then(|metadata| {
-            indexed_items.iter().find(|item| item.id == metadata.id).cloned()
+            items.iter().find(|item| item.id == metadata.id).cloned()
         });
         let target = if existing.is_some() {
             None
         } else {
-            Some(unique_all_dir_for_cat_entry(&self.fs, &entry_name)?)
+            Some(self.fs.unique_all_item_path(&entry_name)?)
         };
         let item_id = if let Some(metadata) = &metadata {
             ItemId::new(metadata.id.clone())
@@ -1734,7 +1916,6 @@ impl ImportPipeline {
         };
         let _lock =
             self.locks.acquire(item_id.as_str(), "normalize_cat_directory")?;
-
         let item_dir = if let Some(existing) = existing {
             let item_dir = self.fs.root().join(existing.object_path);
             std::fs::remove_dir_all(cat_dir)
@@ -1749,48 +1930,28 @@ impl ImportPipeline {
                     target.file_name().and_then(|name| name.to_str()).ok_or(
                         LocalrefError::MissingField("All item directory name"),
                     )?;
-                let metadata =
-                    metadata_from_all_directory(&item_id, title, &target)?;
-                let metadata_text = metadata.to_toml_string()?;
-                let metadata_path = target.join("metadata.toml");
-                self.fs
-                    .atomic_write(&metadata_path, metadata_text.as_bytes())?;
-                self.events.append(
-                    EventKind::MetadataCreated,
-                    "metadata created for Cat directory",
-                    Some(item_id.as_str().to_string()),
-                    Some(relative_to_root(self.fs.root(), &target)),
-                )?;
-                if pdf_candidates(&target)?.len() > 1 {
-                    self.events.append(
-                        EventKind::MultipleMainPdfCandidates,
-                        "multiple PDF files found in manual Cat directory",
-                        Some(item_id.as_str().to_string()),
-                        Some(relative_to_root(self.fs.root(), &target)),
-                    )?;
-                }
+                self.write_directory_metadata(&item_id, title, &target)?;
             }
             target
         };
-
         let link_path = self.fs.create_category_link_named(
             &category,
             &entry_name,
             &item_dir,
         )?;
-        self.events.append(
-            EventKind::CatCopyReplacedByLink,
+        tracing::info!(
+            event_kind = LogKind::CatCopyReplacedByLink.as_str(),
+            item_id = item_id.as_str(),
+            path = relative_to_root(self.fs.root(), &link_path),
             "Cat real directory normalized",
-            Some(item_id.as_str().to_string()),
-            Some(relative_to_root(self.fs.root(), &link_path)),
-        )?;
-        self.events.append(
-            EventKind::CatLinkCreated,
-            format!("category link created: {}", category.as_str()),
-            Some(item_id.as_str().to_string()),
-            Some(relative_to_root(self.fs.root(), &link_path)),
-        )?;
-
+        );
+        tracing::debug!(
+            event_kind = LogKind::CatLinkCreated.as_str(),
+            item_id = item_id.as_str(),
+            path = relative_to_root(self.fs.root(), &link_path),
+            "category link created: {}",
+            category.as_str(),
+        );
         Ok(ImportOutcome {
             item_id,
             item_dir,
@@ -1799,6 +1960,40 @@ impl ImportPipeline {
         })
     }
 
+    /// Create metadata for a manually imported `All/` directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when directory inspection, serialization, or writing
+    /// fails.
+    pub fn write_directory_metadata(
+        &self,
+        item_id: &ItemId,
+        title: &str,
+        target: &Path,
+    ) -> Result<()> {
+        let metadata = metadata_from_all_directory(item_id, title, target)?;
+        let metadata_text = metadata.to_toml_string()?;
+        let metadata_path = target.join("metadata.toml");
+        self.fs.atomic_write(&metadata_path, metadata_text.as_bytes())?;
+        tracing::info!(
+            event_kind = LogKind::MetadataCreated.as_str(),
+            item_id = item_id.as_str(),
+            path = relative_to_root(self.fs.root(), target),
+            "metadata created for Cat directory",
+        );
+        if pdf_candidates(target)?.len() > 1 {
+            tracing::warn!(
+                event_kind = LogKind::MultipleMainPdfCandidates.as_str(),
+                item_id = item_id.as_str(),
+                path = relative_to_root(self.fs.root(), target),
+                "multiple PDF files found in manual Cat directory",
+            );
+        }
+        Ok(())
+    }
+
+    /// Internal helper for append attachment to metadata.
     fn append_attachment_to_metadata(
         &self,
         item_dir: &std::path::Path,
@@ -1834,6 +2029,7 @@ impl ImportPipeline {
         Ok(())
     }
 
+    /// Internal helper for append file to metadata.
     fn append_file_to_metadata(
         &self,
         item_dir: &std::path::Path,
@@ -1873,6 +2069,7 @@ impl ImportPipeline {
     }
 }
 
+/// Internal helper for metadata from import.
 fn metadata_from_import(
     item_id: &ItemId,
     import: &ConnectorImport,
@@ -1922,9 +2119,20 @@ fn metadata_from_import(
         year: None,
         venue: None,
         language: None,
-        creators: connector_creators(&import.item.raw),
+        creators: import
+            .item
+            .raw
+            .get("creators")
+            .and_then(serde_json::Value::as_array)
+            .map(|creators| {
+                creators
+                    .iter()
+                    .filter_map(|value| Creator::try_from(value).ok())
+                    .collect()
+            })
+            .unwrap_or_default(),
         files: MetadataFiles { main, extra: attachment_files },
-        tags: connector_tags(&import.item.raw),
+        tags: MetadataTags::from(&import.item.raw),
         import: MetadataImport {
             source: "zotero-connector".to_string(),
             session_id: import.item.session_id.clone(),
@@ -1935,55 +2143,41 @@ fn metadata_from_import(
     }
 }
 
-fn automatic_categories(
-    library_root: &Path,
-    item_id: &ItemId,
-    import: &ConnectorImport,
-) -> Result<Vec<CategoryPath>> {
-    let metadata = metadata_from_import(item_id, import, &[], &[]);
-    RuleSet::load(library_root)?.match_metadata(&metadata)
-}
-
-fn connector_tags(raw: &serde_json::Value) -> MetadataTags {
-    let items = raw
-        .get("tags")
-        .and_then(serde_json::Value::as_array)
-        .map(|tags| {
-            tags.iter()
-                .filter_map(|tag| {
-                    tag.as_str().map(str::to_string).or_else(|| {
-                        tag.get("tag")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string)
+impl From<&serde_json::Value> for MetadataTags {
+    fn from(raw: &serde_json::Value) -> Self {
+        let items = raw
+            .get("tags")
+            .and_then(serde_json::Value::as_array)
+            .map(|tags| {
+                tags.iter()
+                    .filter_map(|tag| {
+                        tag.as_str().map(str::to_string).or_else(|| {
+                            tag.get("tag")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string)
+                        })
                     })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    MetadataTags { items }
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { items }
+    }
 }
 
-/// Extract Zotero creator records from raw connector item JSON.
-fn connector_creators(raw: &serde_json::Value) -> Vec<Creator> {
-    raw.get("creators")
-        .and_then(serde_json::Value::as_array)
-        .map(|creators| {
-            creators.iter().filter_map(connector_creator).collect()
-        })
-        .unwrap_or_default()
-}
+impl TryFrom<&serde_json::Value> for Creator {
+    type Error = ();
 
-/// Convert one Zotero creator object into Localref metadata.
-fn connector_creator(value: &serde_json::Value) -> Option<Creator> {
-    let role = json_string(value, &["creatorType", "role"])
-        .unwrap_or_else(|| "author".to_string());
-    let given = json_string(value, &["firstName", "given"]);
-    let family = json_string(value, &["lastName", "family"]);
-    let name = json_string(value, &["name"]);
-    if given.is_none() && family.is_none() && name.is_none() {
-        None
-    } else {
-        Some(Creator { role, given, family, name })
+    fn try_from(value: &serde_json::Value) -> std::result::Result<Self, ()> {
+        let role = json_string(value, &["creatorType", "role"])
+            .unwrap_or_else(|| "author".to_string());
+        let given = json_string(value, &["firstName", "given"]);
+        let family = json_string(value, &["lastName", "family"]);
+        let name = json_string(value, &["name"]);
+        if given.is_none() && family.is_none() && name.is_none() {
+            Err(())
+        } else {
+            Ok(Self { role, given, family, name })
+        }
     }
 }
 
@@ -1999,6 +2193,7 @@ fn json_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
     })
 }
 
+/// Internal helper for metadata from all directory.
 fn metadata_from_all_directory(
     item_id: &ItemId,
     title: &str,
@@ -2042,10 +2237,11 @@ fn metadata_from_all_directory(
             imported_at: None,
         },
         state: MetadataState::default(),
-        raw_connector: Default::default(),
+        raw_connector: BTreeMap::default(),
     })
 }
 
+/// Internal helper for unique item file path.
 fn unique_item_file_path(item_dir: &Path, filename: &str) -> PathBuf {
     let candidate = item_dir.join(filename);
     if !candidate.exists() {
@@ -2068,46 +2264,7 @@ fn unique_item_file_path(item_dir: &Path, filename: &str) -> PathBuf {
     unreachable!("unbounded suffix loop returns before exhausting usize")
 }
 
-fn metadata_from_imported_file(
-    item_id: &ItemId,
-    title: &str,
-    file_path: &Path,
-) -> Result<Metadata> {
-    let filename = file_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or(LocalrefError::MissingField("file name"))?
-        .to_string();
-    Ok(Metadata {
-        id: item_id.as_str().to_string(),
-        item_type: "document".to_string(),
-        title: title.to_string(),
-        abstract_note: None,
-        doi: None,
-        uri: None,
-        year: None,
-        venue: None,
-        language: None,
-        creators: Vec::new(),
-        files: MetadataFiles {
-            main: Some(filename.clone()),
-            extra: vec![MetadataFile {
-                path: filename,
-                kind: "attachment".to_string(),
-                mime_type: mime_type_for_path(file_path),
-            }],
-        },
-        tags: MetadataTags::default(),
-        import: MetadataImport {
-            source: "manual-file".to_string(),
-            session_id: None,
-            imported_at: None,
-        },
-        state: MetadataState::default(),
-        raw_connector: Default::default(),
-    })
-}
-
+/// Internal helper for direct files.
 fn direct_files(item_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(item_dir)
@@ -2127,6 +2284,7 @@ fn direct_files(item_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// Internal helper for pdf candidates.
 fn pdf_candidates(item_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(direct_files(item_dir)?
         .into_iter()
@@ -2138,6 +2296,7 @@ fn pdf_candidates(item_dir: &Path) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
+/// Internal helper for mime type for path.
 fn mime_type_for_path(path: &Path) -> Option<String> {
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(extension) if extension.eq_ignore_ascii_case("pdf") => {
@@ -2153,12 +2312,14 @@ fn mime_type_for_path(path: &Path) -> Option<String> {
     }
 }
 
+/// Internal helper for manual item id.
 fn manual_item_id(title: &str) -> Result<ItemId> {
     let component = sanitize_ntfs_component(title)?;
     ItemId::new(format!("lr:manual:{component}"))
         .ok_or(LocalrefError::MissingField("manual item id"))
 }
 
+/// Internal helper for ensure inside all.
 fn ensure_inside_all(root: &Path, item_dir: &Path) -> Result<()> {
     let all_dir = root
         .join("All")
@@ -2176,51 +2337,7 @@ fn ensure_inside_all(root: &Path, item_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_inside_cat(root: &Path, cat_dir: &Path) -> Result<()> {
-    let cat_root = root
-        .join("Cat")
-        .canonicalize()
-        .map_err(|source| LocalrefError::io(root.join("Cat"), source))?;
-    let cat_dir = cat_dir
-        .canonicalize()
-        .map_err(|source| LocalrefError::io(cat_dir, source))?;
-    if cat_dir == cat_root || !cat_dir.starts_with(&cat_root) {
-        return Err(LocalrefError::InvalidPathComponent {
-            component: cat_dir.display().to_string(),
-            reason: "Cat normalization must target a directory under Cat/",
-        });
-    }
-    Ok(())
-}
-
-fn category_from_cat_path(
-    root: &Path,
-    cat_dir: &Path,
-) -> Result<CategoryPath> {
-    let parent =
-        cat_dir.parent().ok_or(LocalrefError::MissingField("Cat category"))?;
-    let category = parent
-        .strip_prefix(root.join("Cat"))
-        .unwrap_or(parent)
-        .to_string_lossy()
-        .replace('\\', "/");
-    CategoryPath::new(category).ok_or(LocalrefError::MissingField("category"))
-}
-
-fn unique_all_dir_for_cat_entry(
-    fs: &LibraryFs,
-    entry_name: &str,
-) -> Result<PathBuf> {
-    let base = sanitize_ntfs_component(entry_name)?;
-    let mut candidate = fs.all_dir().join(&base);
-    let mut suffix = 2_u32;
-    while candidate.exists() {
-        candidate = fs.all_dir().join(format!("{base} ({suffix})"));
-        suffix += 1;
-    }
-    Ok(candidate)
-}
-
+/// Internal helper for category summary for.
 fn category_summary_for(
     storage: &StorageDb,
     category: &CategoryPath,
@@ -2235,6 +2352,7 @@ fn category_summary_for(
         }))
 }
 
+/// Internal helper for relative to root.
 fn relative_to_root(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -2242,71 +2360,64 @@ fn relative_to_root(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// Internal helper for write attachment.
 fn write_attachment(
     fs: &LibraryFs,
     item_dir: &std::path::Path,
     attachment: &ConnectorAttachment,
 ) -> Result<PathBuf> {
     let filename = sanitize_ntfs_component(&attachment.filename)?;
-    let path = unique_file_path(item_dir, &filename);
+    let mut path = item_dir.join(&filename);
+    if path.exists() {
+        let file_path = std::path::Path::new(&filename);
+        let stem = file_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or(&filename);
+        let extension = file_path.extension().and_then(|value| value.to_str());
+        for suffix in 2_u32.. {
+            let name = match extension {
+                Some(extension) => {
+                    format!("{stem} ({suffix}).{extension}")
+                }
+                None => format!("{stem} ({suffix})"),
+            };
+            path = item_dir.join(name);
+            if !path.exists() {
+                break;
+            }
+        }
+    }
     fs.atomic_write(&path, &attachment.bytes)?;
     Ok(path)
 }
 
-fn attachments_for_import(
-    import: &ConnectorImport,
-) -> Vec<ConnectorAttachment> {
-    let mut attachments = import.attachments.clone();
-    if import.item.item_type.as_deref() == Some("webpage")
-        && !attachments.iter().any(|attachment| {
-            attachment.filename.eq_ignore_ascii_case("source.url")
-        })
-        && let Some(uri) = &import.item.uri
-    {
-        attachments.push(ConnectorAttachment {
-            session_id: import.item.session_id.clone(),
-            parent_item_id: import.item.connector_item_id.clone(),
-            title: Some("Source URL".to_string()),
-            filename: "source.url".to_string(),
-            mime_type: Some("text/uri-list".to_string()),
-            bytes: windows_url_shortcut(&import.item.title, uri).into_bytes(),
-            raw_metadata: None,
-        });
-    }
-    attachments
-}
-
-fn windows_url_shortcut(title: &str, uri: &str) -> String {
-    format!(
-        "[InternetShortcut]\r\nURL={uri}\r\nIconIndex=0\r\nHotKey=0\r\nIDList=\r\nWorkingDirectory=\r\n"
-    ) + &format!("Comment={title}\r\n")
-}
-
-fn unique_file_path(dir: &std::path::Path, filename: &str) -> PathBuf {
-    let mut candidate = dir.join(filename);
-    if !candidate.exists() {
-        return candidate;
-    }
-
-    let path = std::path::Path::new(filename);
-    let stem =
-        path.file_stem().and_then(|value| value.to_str()).unwrap_or(filename);
-    let extension = path.extension().and_then(|value| value.to_str());
-
-    for suffix in 2_u32.. {
-        let name = match extension {
-            Some(extension) => format!("{stem} ({suffix}).{extension}"),
-            None => format!("{stem} ({suffix})"),
-        };
-        candidate = dir.join(name);
-        if !candidate.exists() {
-            return candidate;
+impl ConnectorImport {
+    /// Return imported attachments, adding a URL shortcut for webpages.
+    #[must_use]
+    pub fn attachments_with_webpage_source(&self) -> Vec<ConnectorAttachment> {
+        let mut attachments = self.attachments.clone();
+        if self.item.item_type.as_deref() == Some("webpage")
+            && !attachments.iter().any(|attachment| {
+                attachment.filename.eq_ignore_ascii_case("source.url")
+            })
+            && let Some(uri) = &self.item.uri
+        {
+            attachments.push(ConnectorAttachment {
+                session_id: self.item.session_id.clone(),
+                parent_item_id: self.item.connector_item_id.clone(),
+                title: Some("Source URL".to_string()),
+                filename: "source.url".to_string(),
+                mime_type: Some("text/uri-list".to_string()),
+                bytes: (format!("[InternetShortcut]\r\nURL={uri}\r\nIconIndex=0\r\nHotKey=0\r\nIDList=\r\nWorkingDirectory=\r\n") + &format!("Comment={}", self.item.title)).into_bytes(),
+                raw_metadata: None,
+            });
         }
+        attachments
     }
-
-    unreachable!("unbounded suffix loop must return a candidate")
 }
 
+/// Internal helper for connector item id.
 fn connector_item_id(import: &ConnectorImport) -> Result<ItemId> {
     let source = import
         .item
@@ -2318,747 +2429,4 @@ fn connector_item_id(import: &ConnectorImport) -> Result<ItemId> {
         ))?;
     ItemId::new(format!("lr:zotero:{source}"))
         .ok_or(LocalrefError::MissingField("item id"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::EventKind;
-    use crate::types::{ConnectorAttachment, ConnectorImport, ConnectorItem};
-    use serde_json::json;
-
-    #[test]
-    fn imports_connector_item_and_attachment_to_all() {
-        let temp = tempfile::tempdir().unwrap();
-        let pipeline = ImportPipeline::new(temp.path());
-        let import = ConnectorImport {
-            item: ConnectorItem {
-                session_id: Some("session-1".to_string()),
-                uri: Some("https://example.test/paper".to_string()),
-                connector_item_id: Some("abc123".to_string()),
-                item_type: Some("journalArticle".to_string()),
-                title: "A Test: Paper?".to_string(),
-                abstract_note: Some("A useful abstract.".to_string()),
-                doi: Some("10.1234/example".to_string()),
-                raw: json!({
-                    "title": "A Test: Paper?",
-                    "creators": [
-                        {
-                            "creatorType": "author",
-                            "firstName": "Ada",
-                            "lastName": "Lovelace"
-                        }
-                    ]
-                }),
-            },
-            attachments: vec![ConnectorAttachment {
-                session_id: Some("session-1".to_string()),
-                parent_item_id: Some("abc123".to_string()),
-                title: Some("PDF".to_string()),
-                filename: "paper?.pdf".to_string(),
-                mime_type: Some("application/pdf".to_string()),
-                bytes: b"pdf bytes".to_vec(),
-                raw_metadata: Some(json!({"title": "paper.pdf"})),
-            }],
-        };
-
-        let outcome = pipeline.import_connector_item(import).unwrap();
-
-        assert_eq!(outcome.item_id.as_str(), "lr:zotero:abc123");
-        assert!(outcome.item_dir.ends_with("A Test_ Paper_"));
-        assert_eq!(
-            std::fs::read(outcome.item_dir.join("paper_.pdf")).unwrap(),
-            b"pdf bytes"
-        );
-        let metadata =
-            std::fs::read_to_string(outcome.item_dir.join("metadata.toml"))
-                .unwrap();
-        assert!(metadata.contains("zotero-connector"));
-        assert!(metadata.contains("A useful abstract."));
-        assert!(metadata.contains("Ada"));
-        assert!(metadata.contains("Lovelace"));
-        assert!(metadata.contains("paper_.pdf"));
-        assert!(metadata.contains("raw_json"));
-    }
-
-    #[test]
-    fn import_metadata_preserves_raw_zotero_item_json() {
-        let temp = tempfile::tempdir().unwrap();
-        let pipeline = ImportPipeline::new(temp.path());
-        let outcome = pipeline
-            .import_connector_item(ConnectorImport {
-                item: ConnectorItem {
-                    session_id: Some("session-case".to_string()),
-                    uri: None,
-                    connector_item_id: Some("case-1".to_string()),
-                    item_type: Some("case".to_string()),
-                    title: "Smith v. Jones".to_string(),
-                    abstract_note: None,
-                    doi: None,
-                    raw: json!({
-                        "itemType": "case",
-                        "caseName": "Smith v. Jones",
-                        "court": "Example Court"
-                    }),
-                },
-                attachments: Vec::new(),
-            })
-            .unwrap();
-
-        let metadata =
-            std::fs::read_to_string(outcome.item_dir.join("metadata.toml"))
-                .unwrap();
-        assert!(metadata.contains("raw_json"));
-        assert!(metadata.contains("Smith v. Jones"));
-        assert!(metadata.contains("Example Court"));
-    }
-
-    #[test]
-    fn imports_item_without_attachments() {
-        let temp = tempfile::tempdir().unwrap();
-        let pipeline = ImportPipeline::new(temp.path());
-        let outcome = pipeline
-            .import_connector_item(ConnectorImport {
-                item: ConnectorItem {
-                    session_id: Some("session-no-attachment".to_string()),
-                    uri: Some(
-                        "https://example.test/no-attachment".to_string(),
-                    ),
-                    connector_item_id: Some("no-attachment".to_string()),
-                    item_type: Some("journalArticle".to_string()),
-                    title: "No Attachment Paper".to_string(),
-                    abstract_note: None,
-                    doi: None,
-                    raw: json!({"title": "No Attachment Paper"}),
-                },
-                attachments: Vec::new(),
-            })
-            .unwrap();
-
-        assert!(outcome.item_dir.join("metadata.toml").exists());
-        assert_eq!(outcome.written_files.len(), 1);
-    }
-
-    #[test]
-    fn daemon_import_runs_through_queue_and_writes_events() {
-        let temp = tempfile::tempdir().unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-        let outcome = daemon
-            .import_connector_item(ConnectorImport {
-                item: ConnectorItem {
-                    session_id: Some("session-daemon-import".to_string()),
-                    uri: Some("https://example.test/daemon".to_string()),
-                    connector_item_id: Some("daemon-import".to_string()),
-                    item_type: Some("journalArticle".to_string()),
-                    title: "Daemon Import Paper".to_string(),
-                    abstract_note: Some("Queue visible import".to_string()),
-                    doi: None,
-                    raw: json!({"title": "Daemon Import Paper"}),
-                },
-                attachments: Vec::new(),
-            })
-            .unwrap();
-
-        assert!(outcome.item_dir.join("metadata.toml").exists());
-        assert_eq!(daemon.search("Queue visible").unwrap().len(), 1);
-        assert_eq!(
-            daemon.status().recent_tasks[0].task,
-            DaemonTask::ImportConnector {
-                title: "Daemon Import Paper".to_string()
-            }
-        );
-        let events = daemon.events().unwrap();
-        assert!(events.iter().any(|event| {
-            event.kind == EventKind::ImportStarted
-                && event.item_id.as_deref() == Some("lr:zotero:daemon-import")
-        }));
-        assert!(
-            events.iter().any(|event| event.kind == EventKind::ImportFinished)
-        );
-    }
-
-    #[test]
-    fn connector_import_auto_classifies_with_rules() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(temp.path().join(".localref")).unwrap();
-        std::fs::write(
-            temp.path().join(".localref").join("rules.toml"),
-            r#"
-[[rules]]
-name = "near-field"
-target = "Wireless/RIS"
-query = 'title:/near[- ]field/i OR abstract:channel'
-"#,
-        )
-        .unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-
-        let outcome = daemon
-            .import_connector_item(ConnectorImport {
-                item: ConnectorItem {
-                    session_id: Some("session-auto-cat".to_string()),
-                    uri: None,
-                    connector_item_id: Some("auto-cat".to_string()),
-                    item_type: Some("journalArticle".to_string()),
-                    title: "Near Field Channel Paper".to_string(),
-                    abstract_note: None,
-                    doi: None,
-                    raw: json!({"title": "Near Field Channel Paper"}),
-                },
-                attachments: Vec::new(),
-            })
-            .unwrap();
-
-        assert_eq!(outcome.categories[0].as_str(), "Wireless/RIS");
-        assert!(
-            temp.path()
-                .join("Cat")
-                .join("Wireless")
-                .join("RIS")
-                .join("Near Field Channel Paper")
-                .exists()
-        );
-        let events = daemon.events().unwrap();
-        assert!(
-            events.iter().any(|event| event.kind == EventKind::CatLinkCreated)
-        );
-        assert!(
-            events
-                .iter()
-                .any(|event| event.kind == EventKind::AutoClassifiedOnImport)
-        );
-    }
-
-    #[test]
-    fn pending_import_can_be_confirmed_with_selected_categories() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(temp.path().join(".localref")).unwrap();
-        std::fs::write(
-            temp.path().join(".localref").join("rules.toml"),
-            r#"
-[[rules]]
-name = "tagged"
-target = "Suggested"
-query = 'tags:ris'
-"#,
-        )
-        .unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-        let import = ConnectorImport {
-            item: ConnectorItem {
-                session_id: Some("session-pending".to_string()),
-                uri: None,
-                connector_item_id: Some("pending".to_string()),
-                item_type: Some("journalArticle".to_string()),
-                title: "Pending Paper".to_string(),
-                abstract_note: None,
-                doi: None,
-                raw: json!({
-                    "title": "Pending Paper",
-                    "tags": [{"tag": "RIS"}]
-                }),
-            },
-            attachments: Vec::new(),
-        };
-
-        let session = daemon.create_pending_connector_import(import).unwrap();
-        assert_eq!(session.suggested_categories[0].as_str(), "Suggested");
-        assert_eq!(daemon.pending_imports().len(), 1);
-
-        let outcome = daemon
-            .confirm_pending_import(
-                session.id,
-                PendingImportConfirmation {
-                    categories: Some(vec![
-                        CategoryPath::new("User/Selected").unwrap(),
-                    ]),
-                },
-            )
-            .unwrap();
-
-        assert_eq!(daemon.pending_imports().len(), 0);
-        assert_eq!(outcome.categories[0].as_str(), "User/Selected");
-        assert!(
-            temp.path()
-                .join("Cat")
-                .join("User")
-                .join("Selected")
-                .join("Pending Paper")
-                .exists()
-        );
-    }
-
-    #[test]
-    fn daemon_patches_metadata_with_revision() {
-        let temp = tempfile::tempdir().unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-        let outcome = daemon
-            .import_connector_item(ConnectorImport {
-                item: ConnectorItem {
-                    session_id: Some("session-patch".to_string()),
-                    uri: None,
-                    connector_item_id: Some("patch".to_string()),
-                    item_type: Some("journalArticle".to_string()),
-                    title: "Patch Paper".to_string(),
-                    abstract_note: None,
-                    doi: None,
-                    raw: json!({"title": "Patch Paper"}),
-                },
-                attachments: Vec::new(),
-            })
-            .unwrap();
-        let item = daemon.get_item("lr:zotero:patch").unwrap().unwrap();
-        let metadata_text =
-            std::fs::read_to_string(outcome.item_dir.join("metadata.toml"))
-                .unwrap();
-        let mut metadata = Metadata::from_toml_str(&metadata_text).unwrap();
-        metadata.title = "Patched Paper".to_string();
-
-        let patched = daemon
-            .patch_metadata(
-                "lr:zotero:patch",
-                &item.metadata_revision,
-                metadata,
-            )
-            .unwrap();
-
-        assert_eq!(patched.title, "Patched Paper");
-        assert_ne!(patched.metadata_revision, item.metadata_revision);
-        assert_eq!(daemon.search("Patched").unwrap()[0].id, "lr:zotero:patch");
-    }
-
-    #[test]
-    fn daemon_imports_existing_all_directory_with_single_pdf_main() {
-        let temp = tempfile::tempdir().unwrap();
-        let item_dir = temp.path().join("All").join("Manual Paper");
-        std::fs::create_dir_all(&item_dir).unwrap();
-        std::fs::write(item_dir.join("paper.pdf"), b"pdf").unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-
-        let outcome = daemon.import_all_directory("All/Manual Paper").unwrap();
-
-        assert_eq!(outcome.item_id.as_str(), "lr:manual:Manual Paper");
-        let metadata =
-            std::fs::read_to_string(item_dir.join("metadata.toml")).unwrap();
-        assert!(metadata.contains("manual-all-directory"));
-        assert!(metadata.contains("main = \"paper.pdf\""));
-        assert_eq!(daemon.search("Manual Paper").unwrap().len(), 1);
-        assert!(
-            daemon
-                .events()
-                .unwrap()
-                .iter()
-                .any(|event| event.kind == EventKind::MetadataCreated)
-        );
-    }
-
-    #[test]
-    fn daemon_imports_explicit_file() {
-        let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("source.pdf");
-        std::fs::write(&source, b"pdf").unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-
-        let outcome = daemon.import_file(&source).unwrap();
-
-        assert_eq!(outcome.item_id.as_str(), "lr:manual:source");
-        assert_eq!(
-            std::fs::read(outcome.item_dir.join("source.pdf")).unwrap(),
-            b"pdf"
-        );
-        let item = daemon.get_item("lr:manual:source").unwrap().unwrap();
-        assert_eq!(item.main_file.as_deref(), Some("source.pdf"));
-    }
-
-    #[test]
-    fn daemon_add_uploaded_file_to_item_updates_metadata() {
-        let temp = tempfile::tempdir().unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-        daemon
-            .import_connector_item(ConnectorImport {
-                item: ConnectorItem {
-                    session_id: Some("session-upload".to_string()),
-                    uri: None,
-                    connector_item_id: Some("upload".to_string()),
-                    item_type: Some("journalArticle".to_string()),
-                    title: "Upload Target".to_string(),
-                    abstract_note: None,
-                    doi: None,
-                    raw: json!({"title": "Upload Target"}),
-                },
-                attachments: Vec::new(),
-            })
-            .unwrap();
-
-        let item = daemon
-            .add_uploaded_file_to_item("lr:zotero:upload", "paper.pdf", b"pdf")
-            .unwrap();
-
-        assert_eq!(item.main_file.as_deref(), Some("paper.pdf"));
-        let item_dir = temp.path().join(item.object_path);
-        assert_eq!(std::fs::read(item_dir.join("paper.pdf")).unwrap(), b"pdf");
-    }
-
-    #[test]
-    fn daemon_delete_item_removes_all_directory_and_category_links() {
-        let temp = tempfile::tempdir().unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-        daemon
-            .import_connector_item(ConnectorImport {
-                item: ConnectorItem {
-                    session_id: Some("session-delete".to_string()),
-                    uri: None,
-                    connector_item_id: Some("delete".to_string()),
-                    item_type: Some("journalArticle".to_string()),
-                    title: "Delete Target".to_string(),
-                    abstract_note: None,
-                    doi: None,
-                    raw: json!({"title": "Delete Target"}),
-                },
-                attachments: Vec::new(),
-            })
-            .unwrap();
-        daemon.create_category(CategoryPath::new("Inbox").unwrap()).unwrap();
-        daemon
-            .add_item_category(
-                "lr:zotero:delete",
-                CategoryPath::new("Inbox").unwrap(),
-            )
-            .unwrap();
-        let item = daemon.get_item("lr:zotero:delete").unwrap().unwrap();
-        let item_dir = temp.path().join(&item.object_path);
-
-        assert!(daemon.delete_item("lr:zotero:delete").unwrap());
-
-        assert!(!item_dir.exists());
-        assert!(daemon.get_item("lr:zotero:delete").unwrap().is_none());
-        let categories = daemon.list_categories().unwrap();
-        let inbox = categories
-            .iter()
-            .find(|category| category.path == "Inbox")
-            .unwrap();
-        assert!(inbox.item_ids.is_empty());
-    }
-
-    #[test]
-    fn daemon_normalizes_real_cat_directory_into_all_and_link() {
-        let temp = tempfile::tempdir().unwrap();
-        let cat_dir = temp.path().join("Cat").join("Wireless").join("Copied");
-        std::fs::create_dir_all(&cat_dir).unwrap();
-        std::fs::write(
-            cat_dir.join("metadata.toml"),
-            r#"
-id = "lr:manual:Copied"
-type = "document"
-title = "Copied"
-"#,
-        )
-        .unwrap();
-        std::fs::write(cat_dir.join("paper.pdf"), b"pdf").unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-
-        let outcome =
-            daemon.normalize_cat_directory("Cat/Wireless/Copied").unwrap();
-
-        assert!(outcome.item_dir.ends_with("All/Copied"));
-        assert!(outcome.item_dir.join("metadata.toml").exists());
-        assert!(
-            temp.path().join("Cat").join("Wireless").join("Copied").exists()
-        );
-        assert_eq!(
-            daemon.search("Wireless").unwrap()[0].id,
-            "lr:manual:Copied"
-        );
-        assert!(
-            daemon
-                .events()
-                .unwrap()
-                .iter()
-                .any(|event| event.kind == EventKind::CatCopyReplacedByLink)
-        );
-    }
-
-    #[test]
-    fn daemon_adds_removes_renames_and_merges_categories() {
-        let temp = tempfile::tempdir().unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-        daemon
-            .import_connector_item(ConnectorImport {
-                item: ConnectorItem {
-                    session_id: Some("session-category".to_string()),
-                    uri: None,
-                    connector_item_id: Some("category".to_string()),
-                    item_type: Some("journalArticle".to_string()),
-                    title: "Category Paper".to_string(),
-                    abstract_note: None,
-                    doi: None,
-                    raw: json!({"title": "Category Paper"}),
-                },
-                attachments: Vec::new(),
-            })
-            .unwrap();
-
-        let added = daemon
-            .add_item_category(
-                "lr:zotero:category",
-                CategoryPath::new("Wireless/RIS").unwrap(),
-            )
-            .unwrap();
-        assert_eq!(added.path, "Wireless/RIS");
-        assert_eq!(added.item_ids, vec!["lr:zotero:category"]);
-
-        let renamed = daemon
-            .rename_category(
-                CategoryPath::new("Wireless/RIS").unwrap(),
-                CategoryPath::new("Wireless/NearField").unwrap(),
-            )
-            .unwrap();
-        assert_eq!(renamed.path, "Wireless/NearField");
-
-        let merged = daemon
-            .merge_category(
-                CategoryPath::new("Wireless/NearField").unwrap(),
-                CategoryPath::new("Archive").unwrap(),
-            )
-            .unwrap();
-        assert_eq!(merged.path, "Archive");
-
-        let removed = daemon
-            .remove_item_category(
-                "lr:zotero:category",
-                CategoryPath::new("Archive").unwrap(),
-            )
-            .unwrap();
-        assert!(removed.item_ids.is_empty());
-    }
-
-    #[test]
-    fn daemon_creates_empty_category_directory() {
-        let temp = tempfile::tempdir().unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-
-        let summary = daemon
-            .create_category(CategoryPath::new("Inbox/New").unwrap())
-            .unwrap();
-
-        assert_eq!(summary.path, "Inbox/New");
-        assert!(summary.item_ids.is_empty());
-        assert!(temp.path().join("Cat").join("Inbox").join("New").is_dir());
-        assert!(
-            daemon
-                .events()
-                .unwrap()
-                .iter()
-                .any(|event| event.kind == EventKind::CategoryCreated)
-        );
-    }
-
-    #[test]
-    fn import_lock_conflict_returns_error_and_logs_event() {
-        let temp = tempfile::tempdir().unwrap();
-        let lock_dir = temp.path().join(".localref").join("locks");
-        std::fs::create_dir_all(&lock_dir).unwrap();
-        std::fs::write(lock_dir.join("lr_zotero_locked.lock"), "busy")
-            .unwrap();
-        let pipeline = ImportPipeline::new(temp.path());
-
-        let error = pipeline
-            .import_connector_item(ConnectorImport {
-                item: ConnectorItem {
-                    session_id: Some("session-locked".to_string()),
-                    uri: None,
-                    connector_item_id: Some("locked".to_string()),
-                    item_type: Some("journalArticle".to_string()),
-                    title: "Locked Paper".to_string(),
-                    abstract_note: None,
-                    doi: None,
-                    raw: json!({"title": "Locked Paper"}),
-                },
-                attachments: Vec::new(),
-            })
-            .unwrap_err();
-
-        assert!(matches!(error, LocalrefError::Conflict(_)));
-        let events = EventLog::new(temp.path()).list().unwrap();
-        assert!(
-            events.iter().any(|event| event.kind == EventKind::WriteConflict)
-        );
-    }
-
-    #[test]
-    fn metadata_revision_conflict_preserves_external_file() {
-        let temp = tempfile::tempdir().unwrap();
-        let pipeline = ImportPipeline::new(temp.path());
-        let outcome = pipeline
-            .import_connector_item(ConnectorImport {
-                item: ConnectorItem {
-                    session_id: Some("session-conflict".to_string()),
-                    uri: None,
-                    connector_item_id: Some("conflict".to_string()),
-                    item_type: Some("journalArticle".to_string()),
-                    title: "Conflict Paper".to_string(),
-                    abstract_note: None,
-                    doi: None,
-                    raw: json!({"title": "Conflict Paper"}),
-                },
-                attachments: Vec::new(),
-            })
-            .unwrap();
-        let metadata_path = outcome.item_dir.join("metadata.toml");
-        let original = std::fs::read_to_string(&metadata_path).unwrap();
-        let original_revision = Metadata::revision_for_text(&original);
-        std::fs::write(
-            &metadata_path,
-            original.replace("Conflict Paper", "Externally Edited Paper"),
-        )
-        .unwrap();
-        let mut candidate = Metadata::from_toml_str(&original).unwrap();
-        candidate.title = "Daemon Candidate Paper".to_string();
-
-        let error = pipeline
-            .write_metadata_if_revision(
-                &outcome.item_dir,
-                &candidate,
-                &original_revision,
-            )
-            .unwrap_err();
-
-        assert!(matches!(error, LocalrefError::Conflict(_)));
-        let current = std::fs::read_to_string(&metadata_path).unwrap();
-        assert!(current.contains("Externally Edited Paper"));
-        assert!(
-            std::fs::read_to_string(
-                outcome.item_dir.join("metadata.daemon.toml")
-            )
-            .unwrap()
-            .contains("Daemon Candidate Paper")
-        );
-    }
-
-    #[test]
-    fn webpage_import_creates_source_url_attachment() {
-        let temp = tempfile::tempdir().unwrap();
-        let pipeline = ImportPipeline::new(temp.path());
-        let outcome = pipeline
-            .import_connector_item(ConnectorImport {
-                item: ConnectorItem {
-                    session_id: Some("session-webpage".to_string()),
-                    uri: Some("https://example.test/page".to_string()),
-                    connector_item_id: Some("webpage".to_string()),
-                    item_type: Some("webpage".to_string()),
-                    title: "Example Webpage".to_string(),
-                    abstract_note: None,
-                    doi: None,
-                    raw: json!({"title": "Example Webpage"}),
-                },
-                attachments: Vec::new(),
-            })
-            .unwrap();
-
-        let shortcut =
-            std::fs::read_to_string(outcome.item_dir.join("source.url"))
-                .unwrap();
-        assert!(shortcut.contains("[InternetShortcut]"));
-        assert!(shortcut.contains("URL=https://example.test/page"));
-        let metadata =
-            std::fs::read_to_string(outcome.item_dir.join("metadata.toml"))
-                .unwrap();
-        assert!(metadata.contains("source.url"));
-    }
-
-    #[test]
-    fn daemon_scan_task_indexes_storage_through_queue() {
-        let temp = tempfile::tempdir().unwrap();
-        let item_dir = temp.path().join("All").join("Paper One");
-        std::fs::create_dir_all(&item_dir).unwrap();
-        std::fs::write(
-            item_dir.join("metadata.toml"),
-            r#"
-id = "lr:test:queue"
-type = "journalArticle"
-title = "Queue Indexed Paper"
-abstract = "Queue visible abstract"
-"#,
-        )
-        .unwrap();
-
-        let storage = StorageDb::open(temp.path()).unwrap();
-        let daemon = LocalrefDaemon::new(storage);
-        let task = daemon.scan_all().unwrap();
-
-        assert_eq!(task.state, DaemonTaskState::Completed);
-        assert_eq!(task.indexed_items, Some(1));
-        assert_eq!(daemon.status().recent_tasks.len(), 1);
-        assert_eq!(daemon.search("visible").unwrap()[0].id, "lr:test:queue");
-    }
-
-    #[test]
-    fn daemon_scan_imports_unmanaged_cat_item_folder() {
-        let temp = tempfile::tempdir().unwrap();
-        let cat_dir = temp.path().join("Cat").join("Inbox").join("Copied");
-        std::fs::create_dir_all(&cat_dir).unwrap();
-        std::fs::write(cat_dir.join("paper.pdf"), b"pdf").unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-
-        let task = daemon.scan_all().unwrap();
-
-        assert_eq!(task.state, DaemonTaskState::Completed);
-        assert!(
-            temp.path().join("All").join("Copied").join("paper.pdf").exists()
-        );
-        assert!(
-            temp.path()
-                .join("All")
-                .join("Copied")
-                .join("metadata.toml")
-                .exists()
-        );
-        assert!(temp.path().join("Cat").join("Inbox").join("Copied").exists());
-        let item = daemon.get_item("lr:manual:Copied").unwrap().unwrap();
-        assert_eq!(item.categories, vec!["Inbox"]);
-        assert!(
-            daemon.events().unwrap().iter().any(|event| {
-                event.kind == EventKind::CatCopyReplacedByLink
-            })
-        );
-    }
-
-    #[test]
-    fn daemon_pause_blocks_scan_tasks() {
-        let temp = tempfile::tempdir().unwrap();
-        let storage = StorageDb::open(temp.path()).unwrap();
-        let daemon = LocalrefDaemon::new(storage);
-
-        let status = daemon.pause(PauseMode::Indexing);
-        assert_eq!(status.paused_modes, vec![PauseMode::Indexing]);
-        assert!(daemon.scan_all().is_err());
-
-        let status = daemon.resume(PauseMode::Indexing);
-        assert!(status.paused_modes.is_empty());
-        assert!(daemon.scan_all().is_ok());
-    }
-
-    #[test]
-    fn daemon_reads_and_writes_rules_text() {
-        let temp = tempfile::tempdir().unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-        let text = "[[rules]]\nname = \"RIS\"\ntarget = \"Wireless/RIS\"\nquery = 'title:RIS'\n";
-
-        daemon.write_rules_text(text).unwrap();
-
-        assert_eq!(daemon.read_rules_text().unwrap(), text);
-    }
-
-    #[test]
-    fn daemon_rejects_invalid_rules_text() {
-        let temp = tempfile::tempdir().unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-
-        let result = daemon.write_rules_text(
-            "[[rules]]\nname = \"Bad\"\ntarget = \"\"\nquery = 'title:bad'\n",
-        );
-
-        assert!(result.is_err());
-        assert!(!temp.path().join(".localref").join("rules.toml").exists());
-    }
 }

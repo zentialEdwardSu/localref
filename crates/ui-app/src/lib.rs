@@ -6,21 +6,31 @@
 //! and the browser WASM entry point. Server-side code supplies a serializable
 //! [`UiState`], and the hydrated browser reuses the same tree for navigation.
 
+#![warn(unreachable_pub)]
+#![deny(clippy::correctness)]
+#![deny(clippy::single_call_fn)]
+#![deny(clippy::complexity)]
+#![warn(clippy::pedantic)]
+#![warn(clippy::useless_attribute)]
+#![warn(clippy::redundant_pub_crate)]
+#![warn(clippy::excessive_precision)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 #[cfg(feature = "ssr")]
-mod actions;
-mod app;
+pub mod actions;
+pub mod app;
 #[cfg(feature = "ssr")]
-mod assets;
+pub mod assets;
 #[cfg(feature = "hydrate")]
-mod client;
+pub mod client;
 #[cfg(feature = "ssr")]
-mod dto;
-mod model;
-mod route;
+pub mod dto;
+pub mod model;
+pub mod route;
 #[cfg(feature = "ssr")]
-mod server;
+pub mod server;
 #[cfg(feature = "ssr")]
-mod state;
+pub mod state;
 
 pub use model::{
     ActiveDetail, CategorySummary, EventSummary, FileEntry, ItemSummary,
@@ -36,6 +46,7 @@ pub use server::{
 
 /// Render the complete server-side HTML document for one UI state.
 #[cfg(feature = "ssr")]
+#[must_use]
 pub fn render_page(state: UiState) -> String {
     use leptos::prelude::*;
 

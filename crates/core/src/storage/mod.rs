@@ -15,18 +15,24 @@ pub use crate::model::{ItemDocument, SearchHit};
 use crate::scan::{CatEntryKind, scan_cat};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
+/// Internal helper for items table.
 const ITEMS_TABLE: TableDefinition<&str, &[u8]> =
     TableDefinition::new("items");
 
 /// Rebuildable query database for one Localref library.
 #[derive(Clone)]
 pub struct StorageDb {
+    /// Stored library root.
     library_root: PathBuf,
+    /// Stored database.
     database: Arc<Database>,
 }
 
 impl StorageDb {
     /// Open or create the query database rooted at `library/.localref/db`.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn open(library_root: impl Into<PathBuf>) -> Result<Self> {
         let library_root = library_root.into();
         let db_dir = library_root.join(".localref").join("db");
@@ -41,11 +47,15 @@ impl StorageDb {
     }
 
     /// Return the library root this database indexes.
+    #[must_use]
     pub fn library_root(&self) -> &Path {
         &self.library_root
     }
 
     /// Rebuild item records from `All/*/metadata.toml`.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn rebuild_from_all(&self) -> Result<usize> {
         let documents = scan_all_documents(&self.library_root)?;
         let write = self
@@ -71,6 +81,9 @@ impl StorageDb {
     }
 
     /// Return all indexed item documents.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn list_items(&self) -> Result<Vec<ItemDocument>> {
         let read = self
             .database
@@ -102,6 +115,9 @@ impl StorageDb {
     }
 
     /// Return one indexed item document by id.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn get_item(&self, id: &str) -> Result<Option<ItemDocument>> {
         let read = self
             .database
@@ -124,6 +140,9 @@ impl StorageDb {
     }
 
     /// Search indexed metadata with a simple case-insensitive substring query.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
         let needle = query.trim().to_lowercase();
         if needle.is_empty() {
@@ -147,6 +166,9 @@ impl StorageDb {
     }
 
     /// Return category paths derived from indexed item documents.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn list_categories(&self) -> Result<Vec<CategorySummary>> {
         let mut categories = Vec::<CategorySummary>::new();
         for category in scan_category_directories(&self.library_root)? {
@@ -189,7 +211,12 @@ pub struct CategorySummary {
     pub item_ids: Vec<String>,
 }
 
-fn scan_all_documents(library_root: &Path) -> Result<Vec<ItemDocument>> {
+/// Scan all metadata documents stored under `All/`.
+///
+/// # Errors
+///
+/// Returns an error when directories or metadata files cannot be read.
+pub fn scan_all_documents(library_root: &Path) -> Result<Vec<ItemDocument>> {
     let all_dir = library_root.join("All");
     if !all_dir.exists() {
         return Ok(Vec::new());
@@ -224,7 +251,9 @@ fn scan_all_documents(library_root: &Path) -> Result<Vec<ItemDocument>> {
     Ok(documents)
 }
 
-fn document_from_metadata(
+/// Convert metadata and its item directory into an indexed document.
+#[must_use]
+pub fn document_from_metadata(
     library_root: &Path,
     item_dir: &Path,
     metadata: Metadata,
@@ -257,7 +286,12 @@ fn document_from_metadata(
     }
 }
 
-fn attach_categories(
+/// Attach categories discovered from `Cat/` links to indexed documents.
+///
+/// # Errors
+///
+/// Returns an error when category links cannot be scanned.
+pub fn attach_categories(
     library_root: &Path,
     documents: &mut [ItemDocument],
 ) -> Result<()> {
@@ -304,7 +338,12 @@ fn attach_categories(
     Ok(())
 }
 
-fn scan_category_directories(library_root: &Path) -> Result<Vec<String>> {
+/// Scan empty category directories that are not represented by item links.
+///
+/// # Errors
+///
+/// Returns an error when the category tree cannot be scanned.
+pub fn scan_category_directories(library_root: &Path) -> Result<Vec<String>> {
     let mut categories = scan_cat(library_root)?
         .into_iter()
         .filter(|entry| entry.kind == CatEntryKind::CategoryDirectory)
@@ -322,12 +361,19 @@ fn scan_category_directories(library_root: &Path) -> Result<Vec<String>> {
     Ok(categories)
 }
 
-fn path_from_scan_target(library_root: &Path, target_path: &str) -> PathBuf {
+/// Resolve a scan target against a library root when it is relative.
+#[must_use]
+pub fn path_from_scan_target(
+    library_root: &Path,
+    target_path: &str,
+) -> PathBuf {
     let target = PathBuf::from(target_path);
     if target.is_absolute() { target } else { library_root.join(target) }
 }
 
-fn item_matches(item: &ItemDocument, needle: &str) -> bool {
+/// Return whether an indexed item contains a normalized search term.
+#[must_use]
+pub fn item_matches(item: &ItemDocument, needle: &str) -> bool {
     item.id.to_lowercase().contains(needle)
         || item.title.to_lowercase().contains(needle)
         || item

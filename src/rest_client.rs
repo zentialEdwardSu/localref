@@ -8,9 +8,9 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use localref_core::config::LocalrefConfig;
+use localref_core::logging::LogEntry;
 use localref_core::model::{
-    Event, ItemDocument, ItemFilesDocument, Metadata, MetadataDocument,
-    SearchHit,
+    ItemDocument, ItemFilesDocument, Metadata, MetadataDocument, SearchHit,
 };
 pub use localref_core::storage::CategorySummary;
 use serde::{Deserialize, Serialize};
@@ -25,8 +25,8 @@ pub struct DashboardSnapshot {
     pub category_count: usize,
     /// Pending import count.
     pub pending_count: usize,
-    /// Recent event count.
-    pub event_count: usize,
+    /// Recent log entry count.
+    pub log_count: usize,
 }
 
 /// Pending import summary returned by the REST API.
@@ -126,7 +126,7 @@ impl RestClient {
             item_count: self.list_items()?.len(),
             category_count: self.list_categories()?.len(),
             pending_count: self.list_pending_imports()?.len(),
-            event_count: self.list_events()?.len(),
+            log_count: self.list_logs()?.len(),
         })
     }
 
@@ -257,9 +257,9 @@ impl RestClient {
         self.get_json("/api/import/pending")
     }
 
-    /// Return recent daemon events.
-    pub fn list_events(&self) -> Result<Vec<Event>, String> {
-        self.get_json("/api/events")
+    /// Return recent log entries from the ring buffer.
+    pub fn list_logs(&self) -> Result<Vec<LogEntry>, String> {
+        self.get_json("/api/logs")
     }
 
     /// Search indexed items.

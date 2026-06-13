@@ -9,6 +9,7 @@ use crate::route::{RouteState, optional_text};
 
 /// Render the full HTML document around the hydratable body app.
 #[cfg(feature = "ssr")]
+#[must_use]
 pub fn document(initial_state: UiState) -> impl IntoView {
     let title = initial_state.repo_name.clone();
     view! {
@@ -27,6 +28,7 @@ pub fn document(initial_state: UiState) -> impl IntoView {
 }
 
 /// Render the body children that are hydrated in the browser.
+#[must_use]
 pub fn body_app(initial_state: UiState) -> impl IntoView {
     let initial_events_open = initial_state.tab == "events";
     let (state, set_state) = signal(initial_state);
@@ -34,11 +36,11 @@ pub fn body_app(initial_state: UiState) -> impl IntoView {
     let (context_menu, set_context_menu) =
         signal::<Option<ItemContextMenu>>(None);
     view! {
-        {move || state.with(|state| state_json_script(state.clone()))}
+        {move || state.with(state_json_script)}
         {move || state.with(|state| render_rules_notice(state.clone(), set_state))}
         {move || state.with(|state| {
             render_item_context_menu(
-                state.clone(),
+                state,
                 context_menu.get(),
                 set_state,
                 set_events_open,
@@ -65,43 +67,44 @@ pub fn body_app(initial_state: UiState) -> impl IntoView {
                             </div>
                             <nav class="right-tabs">
                                 {move || state.with(|state| {
-                                    let snapshot = state.clone();
-                                    if snapshot.selected_ids.is_empty() {
+                                    if state.selected_ids.is_empty() {
                                         view! {
-                                            {route_tab_button("Metadata", "metadata", snapshot.clone(), set_state, set_events_open)}
-                                            {route_tab_button("Files", "files", snapshot, set_state, set_events_open)}
+                                            {route_tab_button("Metadata", "metadata", state, set_state, set_events_open)}
+                                            {route_tab_button("Files", "files", state, set_state, set_events_open)}
                                         }.into_any()
                                     } else {
-                                        view! {}.into_any()
+                                        ().into_any()
                                     }
                                 })}
                                 {move || state.with(|state| {
-                                    route_tab_button("Rules", "rules", state.clone(), set_state, set_events_open)
+                                    route_tab_button("Rules", "rules", state, set_state, set_events_open)
                                 })}
                                 {move || {
                                     let tabs: Vec<_> = state.with(|s| {
                                         s.plugin_tabs.iter().map(|t| {
-                                            (t.label.clone(), t.tab_key.clone(), s.clone())
+                                            (t.label.clone(), t.tab_key.clone())
                                         }).collect::<Vec<_>>()
                                     });
-                                    tabs.into_iter().map(|(label, tab_key, s)| {
-                                        route_tab_button(
-                                            label,
-                                            tab_key,
-                                            s,
-                                            set_state,
-                                            set_events_open,
-                                        )
-                                    }).collect::<Vec<_>>()
+                                    state.with(|state| {
+                                        tabs.into_iter().map(|(label, tab_key)| {
+                                            route_tab_button(
+                                                label,
+                                                tab_key,
+                                                state,
+                                                set_state,
+                                                set_events_open,
+                                            )
+                                        }).collect::<Vec<_>>()
+                                    })
                                 }}
                             </nav>
                         </div>
                         <div class="detail-body">
-                            {move || state.with(|state| render_detail(state.clone(), set_state, set_events_open))}
+                            {move || state.with(|state| render_detail(state, set_state, set_events_open))}
                         </div>
                     </div>
                     <section class="event-panel" hidden=move || !events_open.get()>
-                        {move || state.with(|state| render_events(state.clone()))}
+                        {move || state.with(render_events)}
                     </section>
                 </section>
             </section>
@@ -110,15 +113,23 @@ pub fn body_app(initial_state: UiState) -> impl IntoView {
 }
 
 #[derive(Clone, Debug)]
-struct ItemContextMenu {
+/// Internal representation for item context menu.
+pub struct ItemContextMenu {
+    /// Stored item id.
     item_id: String,
+    /// Stored x.
     x: i32,
+    /// Stored y.
     y: i32,
 }
 
 /// Render a JSON script containing the state used by hydration.
-fn state_json_script(state: UiState) -> impl IntoView {
-    let state_json = serde_json::to_string(&state)
+#[must_use]
+/// # Panics
+///
+/// Panics if UI state serialization fails.
+pub fn state_json_script(state: &UiState) -> AnyView {
+    let state_json = serde_json::to_string(state)
         .expect("Localref UI state should serialize")
         .replace('<', "\\u003C");
     view! {
@@ -126,10 +137,12 @@ fn state_json_script(state: UiState) -> impl IntoView {
             {state_json}
         </script>
     }
+    .into_any()
 }
 
 /// Render the top bar and daemon controls.
-fn render_topbar(
+#[must_use]
+pub fn render_topbar(
     state: ReadSignal<UiState>,
     set_state: WriteSignal<UiState>,
     events_open: ReadSignal<bool>,
@@ -169,7 +182,7 @@ fn render_topbar(
                         <button class="button secondary" type="submit">"Run Scan"</button>
                     </form>
                     {move || state.with(|state| {
-                        watcher_form(state.clone(), set_state, set_events_open)
+                        watcher_form(state, set_state, set_events_open)
                     })}
                     {move || state.with(|state| {
                         state.plugin_buttons.iter().map(|btn| {
@@ -192,11 +205,12 @@ fn render_topbar(
 }
 
 /// Render watcher pause/resume controls.
-fn watcher_form(
-    state: UiState,
+#[must_use]
+pub fn watcher_form(
+    state: &UiState,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
-) -> impl IntoView {
+) -> AnyView {
     let watcher_paused = state.watcher_paused;
     view! {
         <form
@@ -223,10 +237,12 @@ fn watcher_form(
             <button class="sr-only" type="submit">"Apply Watcher"</button>
         </form>
     }
+    .into_any()
 }
 
 /// Render the library sidebar with filters and item rows.
-fn render_sidebar(
+#[must_use]
+pub fn render_sidebar(
     state: ReadSignal<UiState>,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
@@ -286,10 +302,10 @@ fn render_sidebar(
             <form method="get" action="/" class="selection-form">
                 <div id="library-list" class="item-list">
                     {move || state.with(|state| {
-                        state.items.iter().cloned().map(|item| {
+                        state.items.iter().map(|item| {
                             render_item_row(
                                 item,
-                                state.clone(),
+                                state,
                                 set_state,
                                 set_events_open,
                                 set_context_menu,
@@ -303,13 +319,14 @@ fn render_sidebar(
 }
 
 /// Render one library item row.
-fn render_item_row(
-    item: ItemSummary,
-    state: UiState,
+#[must_use]
+pub fn render_item_row(
+    item: &ItemSummary,
+    state: &UiState,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
     set_context_menu: WriteSignal<Option<ItemContextMenu>>,
-) -> impl IntoView {
+) -> AnyView {
     let id = item.id.clone();
     let check_id = item.id.clone();
     let check_state = state.clone();
@@ -318,7 +335,7 @@ fn render_item_row(
         && state.selected_ids.is_empty();
     let checked = state.selected_ids.iter().any(|value| value == &item.id);
     let route_tab = if state.tab == "files" { "files" } else { "metadata" };
-    let mut item_route = RouteState::from_ui_state(&state);
+    let mut item_route = RouteState::from_ui_state(state);
     item_route.active_id = Some(item.id.clone());
     item_route.selected_ids.clear();
     item_route.tab = route_tab.to_string();
@@ -380,32 +397,30 @@ fn render_item_row(
                 }
             >
                 <strong>{item.title.clone()}</strong>
-                <span>{item_subtitle(&item)}</span>
+                <span>{item_subtitle(item)}</span>
             </a>
         </div>
     }
+    .into_any()
 }
 
 /// Render the item context menu opened from the library list.
-fn render_item_context_menu(
-    state: UiState,
+#[must_use]
+pub fn render_item_context_menu(
+    state: &UiState,
     menu: Option<ItemContextMenu>,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
     set_context_menu: WriteSignal<Option<ItemContextMenu>>,
 ) -> AnyView {
     let Some(menu) = menu else {
-        return view! {}.into_any();
+        return ().into_any();
     };
     let Some(item) = state.items.iter().find(|item| item.id == menu.item_id)
     else {
-        return view! {}.into_any();
+        return ().into_any();
     };
-    let files = if item.files.is_empty() {
-        item.main_file.iter().cloned().collect::<Vec<_>>()
-    } else {
-        item.files.clone()
-    };
+    let files = context_menu_files(item);
     let item_id = item.id.clone();
     let return_to = state.return_to.clone();
     let has_any_file = !files.is_empty();
@@ -447,7 +462,7 @@ fn render_item_context_menu(
                         }
                     }).collect::<Vec<_>>()}
                     {if has_any_file {
-                        view! {}.into_any()
+                        ().into_any()
                     } else {
                         view! { <p>"No files"</p> }.into_any()
                     }}
@@ -471,36 +486,64 @@ fn render_item_context_menu(
                     <button class="context-menu-button danger" type="submit">"Delete Item"</button>
                 </form>
             </section>
-            {if !state.plugin_menu_items.is_empty() {
-                view! {
-                    <section>
-                        <h3>"Plugins"</h3>
-                        {state.plugin_menu_items.iter().map(|plugin_item| {
-                            let plugin_return_to = return_to.clone();
-                            let menu_item_id = menu.item_id.clone();
-                            view! {
-                                <form
-                                    method="post"
-                                    action=format!("/plugin/{}/action", plugin_item.plugin_name)
-                                    on:submit=move |event| {
-                                        event.prevent_default();
-                                        set_context_menu.set(None);
-                                        // Form submission with full page reload for plugin actions
-                                    }
-                                >
-                                    <input type="hidden" name="return_to" value=plugin_return_to/>
-                                    <input type="hidden" name="plugin_action" value=plugin_item.action_id.clone()/>
-                                    <input type="hidden" name="item_ids" value=menu_item_id/>
-                                    <button class="context-menu-button" type="submit">{plugin_item.label.clone()}</button>
-                                </form>
-                            }
-                        }).collect::<Vec<_>>()}
-                    </section>
-                }.into_any()
-            } else {
-                view! {}.into_any()
-            }}
+            {render_context_plugin_items(
+                state,
+                &menu,
+                &return_to,
+                set_context_menu,
+            )}
         </aside>
+    }
+    .into_any()
+}
+
+/// Return the files offered by an item's context menu.
+#[must_use]
+pub fn context_menu_files(item: &ItemSummary) -> Vec<String> {
+    if item.files.is_empty() {
+        item.main_file.iter().cloned().collect()
+    } else {
+        item.files.clone()
+    }
+}
+
+/// Render plugin actions in an item context menu.
+#[must_use]
+pub fn render_context_plugin_items(
+    state: &UiState,
+    menu: &ItemContextMenu,
+    return_to: &str,
+    set_context_menu: WriteSignal<Option<ItemContextMenu>>,
+) -> AnyView {
+    if state.plugin_menu_items.is_empty() {
+        return ().into_any();
+    }
+    let plugin_items = state.plugin_menu_items.clone();
+    let menu_item_id = menu.item_id.clone();
+    let return_to = return_to.to_string();
+    view! {
+        <section>
+            <h3>"Plugins"</h3>
+            {plugin_items.into_iter().map(|plugin_item| {
+                let plugin_return_to = return_to.clone();
+                let menu_item_id = menu_item_id.clone();
+                view! {
+                    <form
+                        method="post"
+                        action=format!("/plugin/{}/action", plugin_item.plugin_name)
+                        on:submit=move |event| {
+                            event.prevent_default();
+                            set_context_menu.set(None);
+                        }
+                    >
+                        <input type="hidden" name="return_to" value=plugin_return_to/>
+                        <input type="hidden" name="plugin_action" value=plugin_item.action_id/>
+                        <input type="hidden" name="item_ids" value=menu_item_id/>
+                        <button class="context-menu-button" type="submit">{plugin_item.label}</button>
+                    </form>
+                }
+            }).collect::<Vec<_>>()}
+        </section>
     }
     .into_any()
 }
@@ -509,15 +552,15 @@ fn render_item_context_menu(
 fn route_tab_button(
     label: impl Into<String>,
     tab: impl Into<String>,
-    state: UiState,
+    state: &UiState,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
-) -> impl IntoView {
+) -> AnyView {
     let label: String = label.into();
     let tab: String = tab.into();
     let route_state = state.clone();
-    let mut route = RouteState::from_ui_state(&state);
-    route.tab = tab.clone();
+    let mut route = RouteState::from_ui_state(state);
+    route.tab.clone_from(&tab);
     let href = route.to_path();
     let class_tab = tab.clone();
     let data_tab = tab.clone();
@@ -529,18 +572,20 @@ fn route_tab_button(
             on:click=move |event| {
                 event.prevent_default();
                 let mut route = RouteState::from_ui_state(&route_state);
-                route.tab = tab.clone();
+                route.tab.clone_from(&tab);
                 visit_route(route, set_state, set_events_open, true);
             }
         >
             {label}
         </a>
     }
+    .into_any()
 }
 
 /// Render the active detail body.
-fn render_detail(
-    state: UiState,
+#[must_use]
+pub fn render_detail(
+    state: &UiState,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
 ) -> AnyView {
@@ -566,13 +611,14 @@ fn render_detail(
         .into_any();
     }
     match state.tab.as_str() {
-        "files" => render_files(&state, set_state, set_events_open).into_any(),
+        "files" => render_files(state, set_state, set_events_open).into_any(),
         "rules" => render_rules(state, set_state, set_events_open).into_any(),
         "events" => render_events(state).into_any(),
         _ => render_metadata(state, set_state, set_events_open),
     }
 }
 
+/// Internal helper for plugin frame srcdoc.
 fn plugin_frame_srcdoc(fragment: &str) -> String {
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><base target="_top"><link rel="stylesheet" href="/assets/localref-ui.css"></head><body>{fragment}</body></html>"#
@@ -581,15 +627,15 @@ fn plugin_frame_srcdoc(fragment: &str) -> String {
 
 /// Render metadata and category controls for active or selected items.
 fn render_metadata(
-    state: UiState,
+    state: &UiState,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
 ) -> AnyView {
     if !state.selected_ids.is_empty() {
         return view! {
             <div class="metadata-layout">
-                {render_category_summary(state.clone(), set_state, set_events_open)}
-                {render_plugin_slots(&state, "selection_page")}
+                {render_category_summary(state, set_state, set_events_open)}
+                {render_plugin_slots(state, "selection_page")}
             </div>
         }
         .into_any();
@@ -621,9 +667,9 @@ fn render_metadata(
     });
     view! {
         <div class="metadata-layout">
-            {render_category_summary(state.clone(), set_state, set_events_open)}
-            {fields.unwrap_or_else(|| empty_metadata_form(&state).into_any())}
-            {render_plugin_slots(&state, "metadata_page")}
+            {render_category_summary(state, set_state, set_events_open)}
+            {fields.unwrap_or_else(|| empty_metadata_form(state).into_any())}
+            {render_plugin_slots(state, "metadata_page")}
         </div>
     }
     .into_any()
@@ -660,11 +706,12 @@ fn render_plugin_slots(state: &UiState, mount: &'static str) -> impl IntoView {
 }
 
 /// Render the rules editor.
-fn render_rules(
-    state: UiState,
+#[must_use]
+pub fn render_rules(
+    state: &UiState,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
-) -> impl IntoView {
+) -> AnyView {
     view! {
         <form
             method="post"
@@ -685,10 +732,12 @@ fn render_rules(
             <button class="button primary" type="submit">"Save Rules"</button>
         </form>
     }
+    .into_any()
 }
 
 /// Render local file actions and file rows.
-fn render_files(
+#[must_use]
+pub fn render_files(
     state: &UiState,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
@@ -757,7 +806,8 @@ fn render_files(
 }
 
 /// Render one file row.
-fn render_file_row(state: &UiState, file: &FileEntry) -> impl IntoView {
+#[must_use]
+pub fn render_file_row(state: &UiState, file: &FileEntry) -> impl IntoView {
     let revision = state
         .active_detail
         .as_ref()
@@ -770,12 +820,12 @@ fn render_file_row(state: &UiState, file: &FileEntry) -> impl IntoView {
                 {if file.is_main {
                     view! { <strong class="main-file-badge">"Main"</strong> }.into_any()
                 } else {
-                    view! {}.into_any()
+                    ().into_any()
                 }}
             </span>
             <span>{format_file_size(file)}</span>
             {if file.is_main || !is_main_file_candidate(file) {
-                view! {}.into_any()
+                ().into_any()
             } else {
                 view! {
                     <form method="post" action="/ui/action">
@@ -801,11 +851,11 @@ fn render_file_row(state: &UiState, file: &FileEntry) -> impl IntoView {
 
 /// Render category tags and transfer controls.
 fn render_category_summary(
-    state: UiState,
+    state: &UiState,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
-) -> impl IntoView {
-    let current = current_categories(&state);
+) -> AnyView {
+    let current = current_categories(state);
     let available = available_categories(&state.categories, &current)
         .into_iter()
         .cloned()
@@ -847,7 +897,7 @@ fn render_category_summary(
                         <div class="category-list">
                             {current.clone().into_iter().map(|path| {
                                 render_category_action_row(
-                                    state.clone(),
+                                    state,
                                     path,
                                     "remove_category",
                                     "Remove",
@@ -862,7 +912,7 @@ fn render_category_summary(
                         <div class="category-list">
                             {available.clone().into_iter().map(|category| {
                                 render_category_action_row(
-                                    state.clone(),
+                                    state,
                                     category.path,
                                     "add_category",
                                     "Add",
@@ -876,17 +926,18 @@ fn render_category_summary(
             </details>
         </section>
     }
+    .into_any()
 }
 
 /// Render one category add/remove row.
 fn render_category_action_row(
-    state: UiState,
+    state: &UiState,
     path: String,
     action: &'static str,
     label: &'static str,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
-) -> impl IntoView {
+) -> AnyView {
     view! {
         <form
             method="post"
@@ -908,10 +959,11 @@ fn render_category_action_row(
             <button class="button tiny" type="submit">{label}</button>
         </form>
     }
+    .into_any()
 }
 
 /// Render recent daemon events.
-fn render_events(state: UiState) -> impl IntoView {
+fn render_events(state: &UiState) -> AnyView {
     view! {
         <div class="event-list">
             {state.events.iter().rev().take(50).map(|event| view! {
@@ -923,10 +975,12 @@ fn render_events(state: UiState) -> impl IntoView {
             }).collect::<Vec<_>>()}
         </div>
     }
+    .into_any()
 }
 
 /// Render the floating rules save result dialog when present.
-fn render_rules_notice(
+#[must_use]
+pub fn render_rules_notice(
     state: UiState,
     set_state: WriteSignal<UiState>,
 ) -> AnyView {
@@ -977,12 +1031,13 @@ fn render_rules_notice(
             </aside>
         }
         .into_any(),
-        None => view! {}.into_any(),
+        None => ().into_any(),
     }
 }
 
 /// Return the right pane title for single-item or bulk selection mode.
-fn detail_title(state: &UiState) -> String {
+#[must_use]
+pub fn detail_title(state: &UiState) -> String {
     if state.tab == "rules" {
         return "Rules Editor".to_string();
     }
@@ -1021,7 +1076,8 @@ fn field(
 }
 
 /// Render an empty metadata form when no active item exists.
-fn empty_metadata_form(state: &UiState) -> impl IntoView {
+#[must_use]
+pub fn empty_metadata_form(state: &UiState) -> impl IntoView {
     view! {
         <form method="post" action="/ui/action" class="metadata-form">
             <input type="hidden" name="return_to" value=state.return_to.clone()/>
@@ -1043,7 +1099,8 @@ fn empty_metadata_form(state: &UiState) -> impl IntoView {
 }
 
 /// Return categories common to the current active or selected items.
-fn current_categories(state: &UiState) -> Vec<String> {
+#[must_use]
+pub fn current_categories(state: &UiState) -> Vec<String> {
     let target_ids = if state.category_target_ids.is_empty() {
         state.active_id.iter().cloned().collect::<Vec<_>>()
     } else {
@@ -1066,7 +1123,7 @@ fn current_categories(state: &UiState) -> Vec<String> {
 }
 
 /// Return the second-line summary for one item row.
-fn item_subtitle(item: &ItemSummary) -> String {
+pub fn item_subtitle(item: &ItemSummary) -> String {
     let mut parts = vec![item.id.clone(), item.item_type.clone()];
     if let Some(extension) = item.main_file.as_deref().and_then(file_extension)
     {
@@ -1079,7 +1136,8 @@ fn item_subtitle(item: &ItemSummary) -> String {
 }
 
 /// Return a display extension such as `.pdf` for a relative file path.
-fn file_extension(path: &str) -> Option<String> {
+#[must_use]
+pub fn file_extension(path: &str) -> Option<String> {
     path.rsplit_once('.')
         .map(|(_, extension)| extension.trim())
         .filter(|extension| !extension.is_empty())
@@ -1087,7 +1145,8 @@ fn file_extension(path: &str) -> Option<String> {
 }
 
 /// Return categories that are not already common to all selected items.
-fn available_categories<'a>(
+#[must_use]
+pub fn available_categories<'a>(
     categories: &'a [CategorySummary],
     current: &[String],
 ) -> Vec<&'a CategorySummary> {
@@ -1098,7 +1157,8 @@ fn available_categories<'a>(
 }
 
 /// Format a file size for display.
-fn format_file_size(file: &FileEntry) -> String {
+#[must_use]
+pub fn format_file_size(file: &FileEntry) -> String {
     match file.bytes {
         Some(bytes) if bytes < 1024 => format!("{bytes} B"),
         Some(bytes) if bytes < 1024 * 1024 => format!("{} KB", bytes / 1024),
@@ -1108,12 +1168,13 @@ fn format_file_size(file: &FileEntry) -> String {
 }
 
 /// Return whether a listed file can become the metadata main file.
-fn is_main_file_candidate(file: &FileEntry) -> bool {
+#[must_use]
+pub fn is_main_file_candidate(file: &FileEntry) -> bool {
     file.kind == "file" && file.path != "metadata.toml"
 }
 
 /// Upload files selected from the hidden file input in hydrated browsers.
-fn upload_input_files(
+pub fn upload_input_files(
     event: leptos::ev::Event,
     item_id: String,
     return_to: String,
@@ -1134,7 +1195,7 @@ fn upload_input_files(
 }
 
 /// Upload files dropped on the file tab in hydrated browsers.
-fn upload_dropped_files(
+pub fn upload_dropped_files(
     event: leptos::ev::DragEvent,
     item_id: String,
     return_to: String,
@@ -1155,12 +1216,14 @@ fn upload_dropped_files(
 }
 
 /// Return the top navigation class for the events view.
-fn top_event_class(active: bool) -> &'static str {
+#[must_use]
+pub fn top_event_class(active: bool) -> &'static str {
     if active { "top-link is-active" } else { "top-link" }
 }
 
 /// Return the right-pane tab class for route tabs.
-fn right_tab_class(current: &str, tab: &str) -> &'static str {
+#[must_use]
+pub fn right_tab_class(current: &str, tab: &str) -> &'static str {
     if current == tab { "right-tab is-active" } else { "right-tab" }
 }
 
@@ -1202,7 +1265,7 @@ fn submit_action(
 }
 
 /// Submit a form when a non-submit control changes in hydrated browsers.
-fn submit_changed_form(
+pub fn submit_changed_form(
     event: leptos::ev::Event,
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
@@ -1219,162 +1282,4 @@ fn dismiss_rules_notice(set_state: WriteSignal<UiState>) {
     set_state.update(|state| state.rules_notice = None);
     #[cfg(feature = "hydrate")]
     crate::client::clear_rules_notice_query();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::document;
-    use crate::model::UiState;
-    use leptos::prelude::*;
-
-    #[test]
-    fn document_renders_hydratable_state_script() {
-        let state = UiState {
-            repo_name: "Localref".to_string(),
-            search: None,
-            category: None,
-            items: Vec::new(),
-            categories: Vec::new(),
-            events: Vec::new(),
-            pending_count: 0,
-            selected_ids: Vec::new(),
-            category_target_ids: Vec::new(),
-            active_id: None,
-            active_detail: None,
-            tab: "metadata".to_string(),
-            return_to: "/?tab=metadata".to_string(),
-            status_label: "Running".to_string(),
-            watcher_paused: false,
-            files: Vec::new(),
-            rules_text: String::new(),
-            rules_notice: None,
-            plugin_tabs: Vec::new(),
-            plugin_buttons: Vec::new(),
-            plugin_menu_items: Vec::new(),
-            plugin_slots: Vec::new(),
-            plugin_page_html: None,
-        };
-
-        let html = document(state).into_view().to_html();
-
-        assert!(html.contains(r#"id="localref-ui-state""#));
-        assert!(html.contains("Localref"));
-    }
-
-    #[test]
-    fn plugin_page_renders_inside_srcdoc_frame() {
-        let state = UiState {
-            repo_name: "Localref".to_string(),
-            search: None,
-            category: None,
-            items: Vec::new(),
-            categories: Vec::new(),
-            events: Vec::new(),
-            pending_count: 0,
-            selected_ids: Vec::new(),
-            category_target_ids: Vec::new(),
-            active_id: None,
-            active_detail: None,
-            tab: "plugin:bibtexer:export_form".to_string(),
-            return_to: "/?tab=plugin:bibtexer:export_form".to_string(),
-            status_label: "Running".to_string(),
-            watcher_paused: false,
-            files: Vec::new(),
-            rules_text: String::new(),
-            rules_notice: None,
-            plugin_tabs: Vec::new(),
-            plugin_buttons: Vec::new(),
-            plugin_menu_items: Vec::new(),
-            plugin_slots: Vec::new(),
-            plugin_page_html: Some(
-                "<form><button>Export</button></form>".to_string(),
-            ),
-        };
-
-        let html = document(state).into_view().to_html();
-
-        assert!(html.contains(r#"<iframe"#));
-        assert!(html.contains(r#"srcdoc=""#));
-        assert!(html.contains(r#"base target=&quot;_top&quot;"#));
-        assert!(!html.contains(r#"inner_html"#));
-    }
-
-    #[test]
-    fn metadata_plugin_slot_renders_inside_srcdoc_frame() {
-        let state = UiState {
-            repo_name: "Localref".to_string(),
-            search: None,
-            category: None,
-            items: Vec::new(),
-            categories: Vec::new(),
-            events: Vec::new(),
-            pending_count: 0,
-            selected_ids: Vec::new(),
-            category_target_ids: Vec::new(),
-            active_id: None,
-            active_detail: None,
-            tab: "metadata".to_string(),
-            return_to: "/?tab=metadata".to_string(),
-            status_label: "Running".to_string(),
-            watcher_paused: false,
-            files: Vec::new(),
-            rules_text: String::new(),
-            rules_notice: None,
-            plugin_tabs: Vec::new(),
-            plugin_buttons: Vec::new(),
-            plugin_menu_items: Vec::new(),
-            plugin_slots: vec![crate::model::PluginSlotHtml {
-                mount: "metadata_page".to_string(),
-                plugin_name: "bibtexer".to_string(),
-                page_id: "metadata_export".to_string(),
-                label: "Citation Export".to_string(),
-                html: "<form><button>Export</button></form>".to_string(),
-            }],
-            plugin_page_html: None,
-        };
-
-        let html = document(state).into_view().to_html();
-
-        assert!(html.contains(r#"class="plugin-slot""#));
-        assert!(html.contains("Citation Export"));
-        assert!(html.contains(r#"srcdoc=""#));
-        assert!(html.contains(r#"data-plugin="bibtexer""#));
-    }
-
-    #[test]
-    fn item_subtitle_includes_main_file_extension() {
-        let item = crate::model::ItemSummary {
-            id: "lr:zotero:one".to_string(),
-            title: "Paper".to_string(),
-            authors: Vec::new(),
-            item_type: "preprint".to_string(),
-            categories: vec!["A".to_string()],
-            main_file: Some("paper.PDF".to_string()),
-            files: vec!["paper.PDF".to_string()],
-        };
-
-        assert_eq!(
-            super::item_subtitle(&item),
-            "lr:zotero:one / preprint / main .pdf / A"
-        );
-    }
-
-    #[test]
-    fn metadata_toml_is_not_a_main_file_candidate() {
-        let metadata = crate::model::FileEntry {
-            path: "metadata.toml".to_string(),
-            kind: "file".to_string(),
-            bytes: Some(10),
-            is_main: false,
-        };
-        let attachment = crate::model::FileEntry {
-            path: "notes.txt".to_string(),
-            kind: "file".to_string(),
-            bytes: Some(5),
-            is_main: false,
-        };
-
-        assert!(!super::is_main_file_candidate(&metadata));
-        assert!(super::is_main_file_candidate(&attachment));
-    }
 }

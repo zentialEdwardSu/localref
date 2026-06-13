@@ -9,13 +9,18 @@ use crate::plugin::Plugin;
 /// Input envelope received on stdin.
 #[derive(Debug, Deserialize)]
 struct PluginInput {
+    /// Protocol operation to execute.
     mode: String,
+    /// Page identifier used by render requests.
     #[serde(default)]
     page: String,
+    /// Action identifier used by run requests.
     #[serde(default)]
     action: String,
+    /// Parameters supplied to an action.
     #[serde(default)]
     params: std::collections::HashMap<String, String>,
+    /// Serialized host UI state.
     #[serde(default)]
     state: Option<serde_json::Value>,
 }
@@ -43,101 +48,101 @@ pub fn run(plugin: &impl Plugin) {
             return;
         }
     };
+    let parse_state = || {
+        parsed
+            .state
+            .as_ref()
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+    };
 
     match parsed.mode.as_str() {
-        "manifest" => handle_manifest(plugin),
-        "render" => handle_render(plugin, &parsed),
-        "run" => handle_run(plugin, &parsed),
+        "manifest" => {
+            let manifest = serde_json::json!({
+                "name": plugin.name(),
+                "description": plugin.description(),
+                "actions": plugin.actions().into_iter().map(|a| {
+                    let mount = match a.mount {
+                        crate::plugin::ActionMount::ActionButton => "action_button",
+                        crate::plugin::ActionMount::ContextMenu => "context_menu",
+                    };
+                    serde_json::json!({
+                        "id": a.id,
+                        "label": a.label,
+                        "mount": mount,
+                    })
+                }).collect::<Vec<_>>(),
+                "pages": plugin.pages().into_iter().map(|p| {
+                    let mount = match p.mount {
+                        crate::plugin::PageMount::DetailTab => "detail_tab",
+                        crate::plugin::PageMount::MetadataPage => "metadata_page",
+                        crate::plugin::PageMount::SelectionPage => "selection_page",
+                    };
+                    serde_json::json!({
+                        "id": p.id,
+                        "label": p.label,
+                        "mount": mount,
+                        "route": p.route,
+                    })
+                }).collect::<Vec<_>>(),
+            });
+            println!(
+                "{}",
+                serde_json::to_string(&manifest).unwrap_or_default()
+            );
+        }
+        "render" => {
+            let Some(state) = parse_state() else {
+                print_error("invalid state in render input");
+                return;
+            };
+
+            match plugin.render(&parsed.page, &state) {
+                Ok(output) => println!(
+                    "{}",
+                    serde_json::to_string(&output).unwrap_or_default()
+                ),
+                Err(error) => {
+                    let output =
+                        localref_plugin::state::RenderOutput::error(error);
+                    println!(
+                        "{}",
+                        serde_json::to_string(&output).unwrap_or_default()
+                    );
+                }
+            }
+        }
+        "run" => {
+            let Some(state) = parse_state() else {
+                print_error("invalid state in run input");
+                return;
+            };
+
+            match plugin.run(&parsed.action, &parsed.params, &state) {
+                Ok(output) => println!(
+                    "{}",
+                    serde_json::to_string(&output).unwrap_or_default()
+                ),
+                Err(error) => {
+                    let output =
+                        localref_plugin::state::RunOutput::error(error);
+                    println!(
+                        "{}",
+                        serde_json::to_string(&output).unwrap_or_default()
+                    );
+                }
+            }
+        }
         mode => print_error(&format!("unknown mode: {mode}")),
     }
 }
 
-fn handle_manifest(plugin: &impl Plugin) {
-    let manifest = serde_json::json!({
-        "name": plugin.name(),
-        "description": plugin.description(),
-        "actions": plugin.actions().into_iter().map(|a| {
-            serde_json::json!({
-                "id": a.id,
-                "label": a.label,
-                "mount": mount_str(&a.mount),
-            })
-        }).collect::<Vec<_>>(),
-        "pages": plugin.pages().into_iter().map(|p| {
-            serde_json::json!({
-                "id": p.id,
-                "label": p.label,
-                "mount": page_mount_str(&p.mount),
-                "route": p.route,
-            })
-        }).collect::<Vec<_>>(),
-    });
-    println!("{}", serde_json::to_string(&manifest).unwrap_or_default());
-}
-
-fn handle_render(plugin: &impl Plugin, input: &PluginInput) {
-    let Some(state) = input
-        .state
-        .as_ref()
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-    else {
-        print_error("invalid state in render input");
-        return;
-    };
-
-    match plugin.render(&input.page, &state) {
-        Ok(output) => {
-            println!("{}", serde_json::to_string(&output).unwrap_or_default());
-        }
-        Err(e) => {
-            let output = localref_plugin::state::RenderOutput::error(e);
-            println!("{}", serde_json::to_string(&output).unwrap_or_default());
-        }
-    }
-}
-
-fn handle_run(plugin: &impl Plugin, input: &PluginInput) {
-    let Some(state) = input
-        .state
-        .as_ref()
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-    else {
-        print_error("invalid state in run input");
-        return;
-    };
-
-    match plugin.run(&input.action, &input.params, &state) {
-        Ok(output) => {
-            println!("{}", serde_json::to_string(&output).unwrap_or_default());
-        }
-        Err(e) => {
-            let output = localref_plugin::state::RunOutput::error(e);
-            println!("{}", serde_json::to_string(&output).unwrap_or_default());
-        }
-    }
-}
-
+/// Print a protocol error response to stdout.
 fn print_error(message: &str) {
     let err = serde_json::json!({
         "status": "error",
         "message": message,
     });
     println!("{}", serde_json::to_string(&err).unwrap_or_default());
-}
-
-const fn mount_str(mount: &crate::plugin::ActionMount) -> &'static str {
-    match mount {
-        crate::plugin::ActionMount::ActionButton => "action_button",
-        crate::plugin::ActionMount::ContextMenu => "context_menu",
-    }
-}
-
-const fn page_mount_str(mount: &crate::plugin::PageMount) -> &'static str {
-    match mount {
-        crate::plugin::PageMount::DetailTab => "detail_tab",
-        crate::plugin::PageMount::MetadataPage => "metadata_page",
-        crate::plugin::PageMount::SelectionPage => "selection_page",
-    }
 }
 
 /// Declare the plugin entry point.

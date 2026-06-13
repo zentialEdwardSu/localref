@@ -82,6 +82,7 @@ use serde::Deserialize;
 /// A parsed set of import-time classification rules.
 #[derive(Clone, Debug, Default)]
 pub struct RuleSet {
+    /// Stored rules.
     rules: Vec<Rule>,
 }
 
@@ -108,18 +109,36 @@ pub struct RuleSummary {
 }
 
 #[derive(Debug, Deserialize)]
+/// Internal representation for rule config.
 struct RuleConfig {
     #[serde(default)]
+    /// Stored rules.
     rules: Vec<Rule>,
 }
 
+/// Internal variants for matcher.
 enum Matcher {
-    Substring { field: String, needle: String },
-    Regex { field: String, regex: Regex },
+    /// Represents substring.
+    Substring {
+        /// Metadata field to inspect.
+        field: String,
+        /// Case-insensitive substring to find.
+        needle: String,
+    },
+    /// Represents regex.
+    Regex {
+        /// Metadata field to inspect.
+        field: String,
+        /// Compiled expression matched against the field.
+        regex: Regex,
+    },
 }
 
 impl RuleSet {
     /// Load `library/.localref/rules.toml`, returning an empty set if missing.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn load(library_root: impl AsRef<Path>) -> Result<Self> {
         let path = library_root.as_ref().join(".localref").join("rules.toml");
         if !path.exists() {
@@ -131,6 +150,9 @@ impl RuleSet {
     }
 
     /// Parse rules from TOML text.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn parse(text: &str) -> Result<Self> {
         let config: RuleConfig = toml::from_str(text)?;
         for rule in &config.rules {
@@ -146,6 +168,7 @@ impl RuleSet {
     }
 
     /// Return display-ready summaries for every parsed rule.
+    #[must_use]
     pub fn summaries(&self) -> Vec<RuleSummary> {
         self.rules
             .iter()
@@ -158,13 +181,19 @@ impl RuleSet {
     }
 
     /// Return all categories matched by a metadata record.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn match_metadata(
         &self,
         metadata: &Metadata,
     ) -> Result<Vec<CategoryPath>> {
         let mut categories = Vec::new();
         for rule in &self.rules {
-            if query_matches(&rule.query, metadata)? {
+            let matched = parse_query(&rule.query)?
+                .into_iter()
+                .any(|matcher| matcher.matches(metadata));
+            if matched {
                 let category =
                     CategoryPath::new(&rule.target).ok_or_else(|| {
                         LocalrefError::InvalidPathComponent {
@@ -181,18 +210,12 @@ impl RuleSet {
     }
 }
 
-fn query_matches(query: &str, metadata: &Metadata) -> Result<bool> {
-    for matcher in parse_query(query)? {
-        if matcher.matches(metadata) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
+/// Internal helper for parse query.
 fn parse_query(query: &str) -> Result<Vec<Matcher>> {
     let mut matchers = Vec::new();
-    for atom in split_or(query) {
+    for atom in
+        query.split(" OR ").map(str::trim).filter(|atom| !atom.is_empty())
+    {
         let Some((field, pattern)) = atom.split_once(':') else {
             return Err(LocalrefError::Unsupported(
                 "rule query atoms must use field:pattern",
@@ -203,40 +226,32 @@ fn parse_query(query: &str) -> Result<Vec<Matcher>> {
         if field.is_empty() || pattern.is_empty() {
             return Err(LocalrefError::Unsupported("empty rule query atom"));
         }
-        matchers.push(parse_matcher(field, pattern)?);
+        let matcher = if pattern.starts_with('/') {
+            let Some(last_slash) = pattern.rfind('/') else {
+                return Err(LocalrefError::Unsupported(
+                    "unterminated regex rule",
+                ));
+            };
+            if last_slash == 0 {
+                return Err(LocalrefError::Unsupported("empty regex rule"));
+            }
+            let source = &pattern[1..last_slash];
+            let flags = &pattern[last_slash + 1..];
+            let regex = RegexBuilder::new(source)
+                .case_insensitive(flags.contains('i'))
+                .build()
+                .map_err(|error| LocalrefError::Rule(error.to_string()))?;
+            Matcher::Regex { field, regex }
+        } else {
+            Matcher::Substring { field, needle: pattern.to_ascii_lowercase() }
+        };
+        matchers.push(matcher);
     }
     Ok(matchers)
 }
 
-fn split_or(query: &str) -> Vec<&str> {
-    query
-        .split(" OR ")
-        .map(str::trim)
-        .filter(|atom| !atom.is_empty())
-        .collect()
-}
-
-fn parse_matcher(field: String, pattern: &str) -> Result<Matcher> {
-    if pattern.starts_with('/') {
-        let Some(last_slash) = pattern.rfind('/') else {
-            return Err(LocalrefError::Unsupported("unterminated regex rule"));
-        };
-        if last_slash == 0 {
-            return Err(LocalrefError::Unsupported("empty regex rule"));
-        }
-        let source = &pattern[1..last_slash];
-        let flags = &pattern[last_slash + 1..];
-        let regex = RegexBuilder::new(source)
-            .case_insensitive(flags.contains('i'))
-            .build()
-            .map_err(|error| LocalrefError::Rule(error.to_string()))?;
-        Ok(Matcher::Regex { field, regex })
-    } else {
-        Ok(Matcher::Substring { field, needle: pattern.to_ascii_lowercase() })
-    }
-}
-
 impl Matcher {
+    /// Internal helper for matches.
     fn matches(&self, metadata: &Metadata) -> bool {
         match self {
             Matcher::Substring { field, needle } => {
@@ -253,6 +268,7 @@ impl Matcher {
     }
 }
 
+/// Internal helper for values for field.
 fn values_for_field(metadata: &Metadata, field: &str) -> Vec<String> {
     match field {
         "title" => vec![metadata.title.clone()],
@@ -273,8 +289,12 @@ fn values_for_field(metadata: &Metadata, field: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
-    use crate::model::{MetadataFiles, MetadataImport, MetadataTags};
+    use crate::model::{
+        MetadataFiles, MetadataImport, MetadataState, MetadataTags,
+    };
 
     #[test]
     fn matches_regex_and_substring_rules() {
@@ -306,8 +326,8 @@ query = 'tags:ris'
             files: MetadataFiles::default(),
             tags: MetadataTags { items: vec!["RIS".to_string()] },
             import: MetadataImport::default(),
-            state: Default::default(),
-            raw_connector: Default::default(),
+            state: MetadataState::default(),
+            raw_connector: BTreeMap::default(),
         };
 
         let categories = rules.match_metadata(&metadata).unwrap();

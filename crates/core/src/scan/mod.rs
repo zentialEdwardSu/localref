@@ -73,6 +73,9 @@ pub enum CatEntryKind {
 }
 
 /// Scan `All/` and `Cat/` under one library root.
+/// # Errors
+///
+/// Returns an error when the operation cannot be completed.
 pub fn scan_library(library_root: impl AsRef<Path>) -> Result<LibraryScan> {
     let root = library_root.as_ref();
     Ok(LibraryScan {
@@ -82,6 +85,9 @@ pub fn scan_library(library_root: impl AsRef<Path>) -> Result<LibraryScan> {
 }
 
 /// Scan direct children of `All/`.
+/// # Errors
+///
+/// Returns an error when the operation cannot be completed.
 pub fn scan_all(library_root: impl AsRef<Path>) -> Result<Vec<AllEntry>> {
     let root = library_root.as_ref();
     let all_dir = root.join("All");
@@ -113,6 +119,9 @@ pub fn scan_all(library_root: impl AsRef<Path>) -> Result<Vec<AllEntry>> {
 }
 
 /// Scan `Cat/` recursively without following item links.
+/// # Errors
+///
+/// Returns an error when the operation cannot be completed.
 pub fn scan_cat(library_root: impl AsRef<Path>) -> Result<Vec<CatEntry>> {
     let root = library_root.as_ref();
     let cat_dir = root.join("Cat");
@@ -133,6 +142,7 @@ pub fn scan_cat(library_root: impl AsRef<Path>) -> Result<Vec<CatEntry>> {
     Ok(entries)
 }
 
+/// Internal helper for scan cat dir.
 fn scan_cat_dir(
     root: &Path,
     cat_root: &Path,
@@ -140,6 +150,32 @@ fn scan_cat_dir(
     all_canonical: Option<&Path>,
     entries: &mut Vec<CatEntry>,
 ) -> Result<()> {
+    let category_for = |rel_cat_entry: &Path| {
+        let parent = rel_cat_entry.parent()?;
+        if parent.as_os_str().is_empty() {
+            return None;
+        }
+        CategoryPath::new(parent.to_string_lossy().replace('\\', "/"))
+    };
+    let looks_like_item = |path: &Path| -> Result<bool> {
+        if path.join("metadata.toml").exists() {
+            return Ok(true);
+        }
+        for entry in fs::read_dir(path)
+            .map_err(|source| LocalrefError::io(path, source))?
+        {
+            let entry =
+                entry.map_err(|source| LocalrefError::io(path, source))?;
+            if entry
+                .file_type()
+                .map_err(|source| LocalrefError::io(entry.path(), source))?
+                .is_file()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
     for entry in
         fs::read_dir(dir).map_err(|source| LocalrefError::io(dir, source))?
     {
@@ -196,9 +232,7 @@ fn scan_cat_dir(
                         .as_deref()
                         .map(|target| relative(root, target)),
                 });
-            } else if category.is_some()
-                && looks_like_cat_item_directory(&path)?
-            {
+            } else if category.is_some() && looks_like_item(&path)? {
                 entries.push(CatEntry {
                     category,
                     path: relative(root, &path),
@@ -219,34 +253,7 @@ fn scan_cat_dir(
     Ok(())
 }
 
-/// Return true when a real `Cat/` directory looks like a literature item.
-fn looks_like_cat_item_directory(path: &Path) -> Result<bool> {
-    if path.join("metadata.toml").exists() {
-        return Ok(true);
-    }
-    for entry in
-        fs::read_dir(path).map_err(|source| LocalrefError::io(path, source))?
-    {
-        let entry = entry.map_err(|source| LocalrefError::io(path, source))?;
-        if entry
-            .file_type()
-            .map_err(|source| LocalrefError::io(entry.path(), source))?
-            .is_file()
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn category_for(rel_cat_entry: &Path) -> Option<CategoryPath> {
-    let parent = rel_cat_entry.parent()?;
-    if parent.as_os_str().is_empty() {
-        return None;
-    }
-    CategoryPath::new(parent.to_string_lossy().replace('\\', "/"))
-}
-
+/// Internal helper for relative.
 fn relative(root: &Path, path: &Path) -> String {
     let normalized = path
         .strip_prefix(root)

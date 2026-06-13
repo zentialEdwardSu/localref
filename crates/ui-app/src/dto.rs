@@ -54,7 +54,8 @@ pub(crate) fn app_state_from_model(
 }
 
 /// Convert one metadata document into detail-pane fields.
-fn active_detail(
+#[must_use]
+pub fn active_detail(
     document: &localref_core::model::MetadataDocument,
 ) -> ActiveDetail {
     ActiveDetail {
@@ -72,7 +73,8 @@ fn active_detail(
 }
 
 /// Convert one core item document into a UI item summary.
-fn item_summary(item: localref_core::model::ItemDocument) -> ItemSummary {
+#[must_use]
+pub fn item_summary(item: localref_core::model::ItemDocument) -> ItemSummary {
     let mut files = Vec::new();
     if let Some(main) = item.main_file.clone() {
         files.push(main);
@@ -90,7 +92,8 @@ fn item_summary(item: localref_core::model::ItemDocument) -> ItemSummary {
 }
 
 /// Convert one core category summary into a UI category summary.
-fn category_summary(
+#[must_use]
+pub fn category_summary(
     category: localref_core::storage::CategorySummary,
 ) -> CategorySummary {
     CategorySummary {
@@ -100,7 +103,8 @@ fn category_summary(
 }
 
 /// Convert one core file entry into a UI file entry.
-fn file_entry(
+#[must_use]
+pub fn file_entry(
     file: localref_core::model::ItemFileEntry,
     main_file: Option<&str>,
 ) -> FileEntry {
@@ -108,11 +112,14 @@ fn file_entry(
     FileEntry { path: file.path, kind: file.kind, bytes: file.bytes, is_main }
 }
 
-/// Convert one core event into a UI event summary.
-fn event_summary(event: localref_core::model::Event) -> EventSummary {
+/// Convert one core log entry into a UI event summary.
+#[must_use]
+pub fn event_summary(event: localref_core::logging::LogEntry) -> EventSummary {
     EventSummary {
         id: event.id,
-        kind: format!("{:?}", event.kind),
+        level: event.level,
+        target: event.target,
+        kind: event.event_kind.unwrap_or_default(),
         message: event.message,
         item_id: event.item_id,
         path: event.path,
@@ -120,7 +127,8 @@ fn event_summary(event: localref_core::model::Event) -> EventSummary {
 }
 
 /// Convert one server-side rules notice into a UI rules notice.
-fn rules_notice(notice: RulesNotice) -> AppRulesNotice {
+#[must_use]
+pub fn rules_notice(notice: RulesNotice) -> AppRulesNotice {
     match notice {
         RulesNotice::Saved(rules) => AppRulesNotice::Saved {
             rules: rules

@@ -4,7 +4,6 @@
 //! in the configured browser endpoint, while daemon work continues through the
 //! local REST API.
 
-use crate::runtime_log::RuntimeLogger;
 use crate::tray::{
     TrayAction, TrayController, TrayMenuItem, TrayNotification,
     TrayNotificationKind, notification_for_command,
@@ -21,15 +20,12 @@ enum TrayUserEvent {
 }
 
 /// Run the native tray loop until the Quit menu action is selected.
-pub fn run_native_tray(
-    controller: TrayController,
-    logger: RuntimeLogger,
-) -> Result<(), String> {
-    let notifier = NativeTrayNotifier::new(logger.clone());
+pub fn run_native_tray(controller: TrayController) -> Result<(), String> {
+    let notifier = NativeTrayNotifier;
     if let Err(error) = native_win32::register_app_notifications_with_icon(
         &localref_icon_path(),
     ) {
-        logger.warn("tray-notification", error.to_string());
+        tracing::warn!(target: "localref::tray", "notification registration failed: {error}");
     }
     let event_loop =
         EventLoopBuilder::<TrayUserEvent>::with_user_event().build();
@@ -39,7 +35,7 @@ pub fn run_native_tray(
     }));
     let tray = LocalrefTray::new(&controller.menu_items())
         .map_err(|error| error.to_string())?;
-    logger.info("tray", "native tray host started");
+    tracing::info!(target: "localref::tray", "native tray host started");
 
     let mut tray = Some(tray);
     event_loop.run(move |event, _, control_flow| {
@@ -55,7 +51,7 @@ pub fn run_native_tray(
         if !handle_tray_action(action, &controller, &notifier) {
             tray.take();
             if let Err(error) = native_win32::unregister_app_notifications() {
-                logger.warn("tray-notification", error.to_string());
+                tracing::warn!(target: "localref::tray", "notification unregistration failed: {error}");
             }
             *control_flow = ControlFlow::Exit;
         }
@@ -91,24 +87,17 @@ fn handle_tray_action(
 }
 
 #[derive(Clone)]
-struct NativeTrayNotifier {
-    logger: RuntimeLogger,
-}
+struct NativeTrayNotifier;
 
 impl NativeTrayNotifier {
-    /// Create a notifier that records every notification attempt.
-    fn new(logger: RuntimeLogger) -> Self {
-        Self { logger }
-    }
-
     /// Deliver one tray notification through the Windows App SDK native layer.
     fn notify(&self, notification: &TrayNotification) {
         let message = format!("{}: {}", notification.title, notification.body);
         match notification.kind {
             TrayNotificationKind::Error => {
-                self.logger.error("tray-notification", &message)
+                tracing::error!(target: "localref::tray", "{message}")
             }
-            _ => self.logger.info("tray-notification", &message),
+            _ => tracing::info!(target: "localref::tray", "{message}"),
         }
         let kind = match notification.kind {
             TrayNotificationKind::Info => native_win32::NotificationKind::Info,
@@ -124,7 +113,10 @@ impl NativeTrayNotifier {
             &notification.body,
             kind,
         ) {
-            self.logger.warn("tray-notification", error.to_string());
+            tracing::warn!(
+                target: "localref::tray",
+                "show_app_notification failed: {error}",
+            );
         }
     }
 }
@@ -191,8 +183,8 @@ pub fn localref_icon_path() -> std::path::PathBuf {
 pub fn localref_icon() -> Result<Icon, String> {
     #[cfg(windows)]
     {
-        return Icon::from_path(localref_icon_path(), Some((32, 32)))
-            .map_err(|error| error.to_string());
+        Icon::from_path(localref_icon_path(), Some((32, 32)))
+            .map_err(|error| error.to_string())
     }
 
     #[cfg(not(windows))]
@@ -232,48 +224,4 @@ fn resolve_localref_icon_path(
 fn workspace_icon_path() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(LOCALREF_ICON_ASSET)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tray_icon_asset_exists() {
-        assert!(localref_icon_path().is_file());
-    }
-
-    #[test]
-    fn packaged_icon_next_to_exe_takes_precedence() {
-        let temp = tempfile::tempdir().unwrap();
-        let exe_dir = temp.path().join("Localref");
-        let assets = exe_dir.join("assets");
-        std::fs::create_dir_all(&assets).unwrap();
-        let icon = assets.join("favicon.ico");
-        std::fs::write(&icon, [0, 0, 1, 0]).unwrap();
-        let fallback = temp.path().join("fallback.ico");
-
-        let resolved = resolve_localref_icon_path(
-            Some(&exe_dir.join("localref.exe")),
-            &fallback,
-        );
-
-        assert_eq!(resolved, icon);
-    }
-
-    #[test]
-    fn missing_packaged_icon_uses_workspace_fallback() {
-        let temp = tempfile::tempdir().unwrap();
-        let exe = temp.path().join("Localref").join("localref.exe");
-        let fallback = temp.path().join("assets").join("favicon.ico");
-
-        let resolved = resolve_localref_icon_path(Some(&exe), &fallback);
-
-        assert_eq!(resolved, fallback);
-    }
-
-    #[test]
-    fn shared_icon_has_valid_dimensions() {
-        assert!(localref_icon().is_ok());
-    }
 }

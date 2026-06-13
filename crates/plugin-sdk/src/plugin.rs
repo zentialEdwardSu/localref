@@ -56,7 +56,9 @@ pub struct Action {
 
 /// Where an action appears in the host UI.
 pub enum ActionMount {
+    /// Display the action as a top-level action button.
     ActionButton,
+    /// Display the action in the item context menu.
     ContextMenu,
 }
 
@@ -97,8 +99,11 @@ pub struct Page {
 
 /// Where a page appears in the host UI.
 pub enum PageMount {
+    /// Display the page as an item detail tab.
     DetailTab,
+    /// Display the page in the item metadata view.
     MetadataPage,
+    /// Display the page for a multi-item selection.
     SelectionPage,
 }
 

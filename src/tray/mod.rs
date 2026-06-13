@@ -1,6 +1,7 @@
 #[cfg(feature = "native-tray")]
 mod native_tray;
 
-pub mod tray;
+#[path = "tray.rs"]
+pub mod controller;
 
-pub use tray::*;
+pub use controller::*;

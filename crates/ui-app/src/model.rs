@@ -112,12 +112,16 @@ pub struct CategorySummary {
     pub item_count: usize,
 }
 
-/// Recent daemon event rendered in the events panel.
+/// Recent log entry rendered in the events panel.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EventSummary {
     /// Monotonic event id.
     pub id: u64,
-    /// Event kind label.
+    /// Log level: TRACE, DEBUG, INFO, WARN, ERROR.
+    pub level: String,
+    /// Module path that emitted the record.
+    pub target: String,
+    /// Event kind or empty string for plain log entries.
     pub kind: String,
     /// User-visible message.
     pub message: String,

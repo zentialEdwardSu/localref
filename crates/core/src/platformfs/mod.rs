@@ -24,6 +24,7 @@ use crate::types::CategoryPath;
 /// Filesystem helper rooted at one Localref library.
 #[derive(Clone, Debug)]
 pub struct LibraryFs {
+    /// Stored root.
     root: PathBuf,
 }
 
@@ -34,26 +35,33 @@ impl LibraryFs {
     }
 
     /// Return the library root.
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
     /// Return the `All/` directory path.
+    #[must_use]
     pub fn all_dir(&self) -> PathBuf {
         self.root.join("All")
     }
 
     /// Return the `Cat/` directory path.
+    #[must_use]
     pub fn cat_dir(&self) -> PathBuf {
         self.root.join("Cat")
     }
 
     /// Return the `.localref/` directory path.
+    #[must_use]
     pub fn state_dir(&self) -> PathBuf {
         self.root.join(".localref")
     }
 
     /// Ensure the stage-one Localref directory layout exists.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn ensure_layout(&self) -> Result<()> {
         for path in [
             self.all_dir(),
@@ -70,6 +78,9 @@ impl LibraryFs {
     }
 
     /// Create a unique item directory under `All/`.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn create_unique_item_dir(&self, title: &str) -> Result<PathBuf> {
         let base = sanitize_ntfs_component(title)?;
         let mut candidate = self.all_dir().join(&base);
@@ -86,13 +97,23 @@ impl LibraryFs {
     }
 
     /// Atomically write bytes to a path and flush the temporary file before rename.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn atomic_write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|source| LocalrefError::io(parent, source))?;
         }
 
-        let tmp = temporary_sibling(path)?;
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| LocalrefError::InvalidPathComponent {
+                component: path.display().to_string(),
+                reason: "target path has no UTF-8 file name",
+            })?;
+        let tmp = path.with_file_name(format!(".{filename}.localref-tmp"));
         {
             let mut file = OpenOptions::new()
                 .create_new(true)
@@ -107,11 +128,77 @@ impl LibraryFs {
 
         fs::rename(&tmp, path)
             .map_err(|source| LocalrefError::io(path, source))?;
-        flush_parent_dir(path)?;
+        if let Some(parent) = path.parent() {
+            #[cfg(windows)]
+            {
+                let _ = parent;
+            }
+            #[cfg(not(windows))]
+            {
+                let file = File::open(parent)
+                    .map_err(|source| LocalrefError::io(parent, source))?;
+                file.sync_all()
+                    .map_err(|source| LocalrefError::io(parent, source))?;
+            }
+        }
         Ok(())
     }
 
+    /// Validate a real directory under `Cat/` and return its category path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory is outside `Cat/`, cannot be
+    /// canonicalized, or has no category parent.
+    pub fn category_for_real_directory(
+        &self,
+        cat_dir: &Path,
+    ) -> Result<CategoryPath> {
+        let cat_root = self
+            .cat_dir()
+            .canonicalize()
+            .map_err(|source| LocalrefError::io(self.cat_dir(), source))?;
+        let canonical = cat_dir
+            .canonicalize()
+            .map_err(|source| LocalrefError::io(cat_dir, source))?;
+        if canonical == cat_root || !canonical.starts_with(&cat_root) {
+            return Err(LocalrefError::InvalidPathComponent {
+                component: canonical.display().to_string(),
+                reason: "Cat normalization must target a directory under Cat/",
+            });
+        }
+        let parent = canonical
+            .parent()
+            .ok_or(LocalrefError::MissingField("Cat category"))?;
+        let category = parent
+            .strip_prefix(&cat_root)
+            .unwrap_or(parent)
+            .to_string_lossy()
+            .replace('\\', "/");
+        CategoryPath::new(category)
+            .ok_or(LocalrefError::MissingField("category"))
+    }
+
+    /// Return an unused path under `All/` for a directory entry name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entry name is not a valid NTFS component.
+    pub fn unique_all_item_path(&self, entry_name: &str) -> Result<PathBuf> {
+        let base = sanitize_ntfs_component(entry_name)?;
+        let mut candidate = self.all_dir().join(&base);
+        let mut suffix = 2_u32;
+        while candidate.exists() {
+            candidate = self.all_dir().join(format!("{base} ({suffix})"));
+            suffix += 1;
+        }
+        Ok(candidate)
+    }
+
     /// Create a category directory link under `Cat/` pointing at an `All/` item.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn create_category_link(
         &self,
         category: &CategoryPath,
@@ -132,6 +219,9 @@ impl LibraryFs {
     }
 
     /// Create an empty category directory under `Cat/`.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn create_category_dir(
         &self,
         category: &CategoryPath,
@@ -143,6 +233,9 @@ impl LibraryFs {
     }
 
     /// Create a category link using an explicit entry name.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn create_category_link_named(
         &self,
         category: &CategoryPath,
@@ -158,11 +251,19 @@ impl LibraryFs {
         if link_path.exists() {
             return Ok(link_path);
         }
-        create_dir_link(item_dir, &link_path)?;
+        #[cfg(windows)]
+        native_win32::create_directory_junction(&link_path, item_dir)
+            .map_err(|source| LocalrefError::Platform(source.to_string()))?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(item_dir, &link_path)
+            .map_err(|source| LocalrefError::io(&link_path, source))?;
         Ok(link_path)
     }
 
     /// Remove a category link while leaving the `All/` target untouched.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn remove_category_link(
         &self,
         category: &CategoryPath,
@@ -181,6 +282,9 @@ impl LibraryFs {
     }
 
     /// Rename a category directory.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn rename_category(
         &self,
         from: &CategoryPath,
@@ -198,6 +302,9 @@ impl LibraryFs {
     }
 
     /// Move all entries from one category into another and remove the source.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn merge_category(
         &self,
         from: &CategoryPath,
@@ -228,6 +335,9 @@ impl LibraryFs {
     }
 
     /// Return the filesystem path for a category.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn category_dir(&self, category: &CategoryPath) -> Result<PathBuf> {
         let mut path = self.cat_dir();
         for component in category.components() {
@@ -236,6 +346,7 @@ impl LibraryFs {
         Ok(path)
     }
 
+    /// Internal helper for ensure target is all item.
     fn ensure_target_is_all_item(&self, item_dir: &Path) -> Result<()> {
         let all_dir = self
             .all_dir()
@@ -255,6 +366,9 @@ impl LibraryFs {
 }
 
 /// Sanitize one filename/path component according to NTFS constraints.
+/// # Errors
+///
+/// Returns an error when the operation cannot be completed.
 pub fn sanitize_ntfs_component(value: &str) -> Result<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -265,7 +379,7 @@ pub fn sanitize_ntfs_component(value: &str) -> Result<String> {
     for ch in trimmed.chars() {
         match ch {
             '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => {
-                sanitized.push('_')
+                sanitized.push('_');
             }
             '\u{0}'..='\u{1f}' => sanitized.push('_'),
             _ => sanitized.push(ch),
@@ -283,53 +397,9 @@ pub fn sanitize_ntfs_component(value: &str) -> Result<String> {
         });
     }
 
-    if is_reserved_windows_name(&sanitized) {
-        sanitized.push('_');
-    }
-
-    Ok(sanitized)
-}
-
-fn temporary_sibling(path: &Path) -> Result<PathBuf> {
-    let filename = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| LocalrefError::InvalidPathComponent {
-            component: path.display().to_string(),
-            reason: "target path has no UTF-8 file name",
-        })?;
-    let tmp_name = format!(".{filename}.localref-tmp");
-    Ok(path.with_file_name(tmp_name))
-}
-
-fn flush_parent_dir(path: &Path) -> Result<()> {
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
-
-    #[cfg(windows)]
-    {
-        // NTFS gives the atomicity guarantee needed here through the
-        // same-directory rename after the temporary file has been flushed.
-        // Opening a directory handle for `FlushFileBuffers` is not reliably
-        // available to normal desktop processes, so Windows does not fail the
-        // import when parent-directory flushing is unavailable.
-        let _ = parent;
-    }
-
-    #[cfg(not(windows))]
-    {
-        let file = File::open(parent)
-            .map_err(|source| LocalrefError::io(parent, source))?;
-        file.sync_all().map_err(|source| LocalrefError::io(parent, source))?;
-    }
-
-    Ok(())
-}
-
-fn is_reserved_windows_name(value: &str) -> bool {
-    let stem = value.split('.').next().unwrap_or(value).to_ascii_uppercase();
-    matches!(
+    let stem =
+        sanitized.split('.').next().unwrap_or(&sanitized).to_ascii_uppercase();
+    if matches!(
         stem.as_str(),
         "CON"
             | "PRN"
@@ -353,19 +423,11 @@ fn is_reserved_windows_name(value: &str) -> bool {
             | "LPT7"
             | "LPT8"
             | "LPT9"
-    )
-}
+    ) {
+        sanitized.push('_');
+    }
 
-#[cfg(windows)]
-fn create_dir_link(target: &Path, link: &Path) -> Result<()> {
-    native_win32::create_directory_junction(link, target)
-        .map_err(|source| LocalrefError::Platform(source.to_string()))
-}
-
-#[cfg(unix)]
-fn create_dir_link(target: &Path, link: &Path) -> Result<()> {
-    std::os::unix::fs::symlink(target, link)
-        .map_err(|source| LocalrefError::io(link, source))
+    Ok(sanitized)
 }
 
 #[cfg(test)]

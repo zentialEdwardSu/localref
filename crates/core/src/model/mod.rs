@@ -69,7 +69,13 @@ pub struct Creator {
 impl Creator {
     /// Return the best user-visible name for this creator.
     pub fn display_name(&self) -> Option<String> {
-        if let Some(name) = optional_trimmed(&self.name) {
+        if let Some(name) = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+        {
             return Some(name);
         }
         let parts = [self.given.as_deref(), self.family.as_deref()]
@@ -229,25 +235,13 @@ pub struct SearchHit {
     pub abstract_note: Option<String>,
 }
 
-/// Durable daemon event written to `.localref/logs/events.jsonl`.
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-pub struct Event {
-    /// Monotonic event id inside the event log file.
-    pub id: u64,
-    /// Event kind.
-    pub kind: EventKind,
-    /// Human-readable event message.
-    pub message: String,
-    /// Related item id, when known.
-    pub item_id: Option<String>,
-    /// Related library-relative path, when known.
-    pub path: Option<String>,
-}
-
-/// Event kind vocabulary for phase-one daemon behavior.
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+/// Well-known log event kind identifiers used as `event_kind` field values.
+///
+/// Each variant serializes to its `snake_case` string form, matching the values
+/// previously emitted by the old `EventKind` enum.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EventKind {
+pub enum LogKind {
     /// An import task started.
     ImportStarted,
     /// An import task finished.
@@ -292,6 +286,43 @@ pub enum EventKind {
     ItemDeleted,
 }
 
+impl LogKind {
+    /// Return the canonical `snake_case` string for this variant.
+    ///
+    /// The returned string matches the value written into the JSONL
+    /// `event_kind` field and the old `EventKind` serialized names.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            LogKind::ImportStarted => "import_started",
+            LogKind::ImportFinished => "import_finished",
+            LogKind::ImportFailed => "import_failed",
+            LogKind::ItemRegistered => "item_registered",
+            LogKind::MetadataWritten => "metadata_written",
+            LogKind::ScanStarted => "scan_started",
+            LogKind::ScanFinished => "scan_finished",
+            LogKind::PauseChanged => "pause_changed",
+            LogKind::WriteConflict => "write_conflict",
+            LogKind::AutoClassifiedOnImport => "auto_classified_on_import",
+            LogKind::CatLinkCreated => "cat_link_created",
+            LogKind::CategoryCreated => "category_created",
+            LogKind::ImportPendingUserConfirmation => {
+                "import_pending_user_confirmation"
+            }
+            LogKind::ImportCancelled => "import_cancelled",
+            LogKind::MetadataCreated => "metadata_created",
+            LogKind::MultipleMainPdfCandidates => {
+                "multiple_main_pdf_candidates"
+            }
+            LogKind::CatCopyReplacedByLink => "cat_copy_replaced_by_link",
+            LogKind::CatLinkDeleted => "cat_link_deleted",
+            LogKind::CategoryRenamed => "category_renamed",
+            LogKind::CategoryMerged => "category_merged",
+            LogKind::ItemDeleted => "item_deleted",
+        }
+    }
+}
+
 impl Metadata {
     /// Return user-visible creator names in metadata order.
     pub fn creator_names(&self) -> Vec<String> {
@@ -302,26 +333,42 @@ impl Metadata {
     pub fn author_names(&self) -> Vec<String> {
         self.creators
             .iter()
-            .filter(|creator| is_author_role(&creator.role))
+            .filter(|creator| {
+                creator.role.to_ascii_lowercase().contains("author")
+            })
             .filter_map(Creator::display_name)
             .collect()
     }
 
     /// Parse and validate metadata TOML text.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn from_toml_str(text: &str) -> Result<Self> {
-        reject_categories_field(text)?;
+        let value: toml::Value = toml::from_str(text)?;
+        if value.get("categories").is_some() {
+            return Err(LocalrefError::Unsupported(
+                "metadata.toml must not contain categories",
+            ));
+        }
         let metadata: Self = toml::from_str(text)?;
         metadata.validate()?;
         Ok(metadata)
     }
 
     /// Serialize metadata to pretty TOML after validation.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn to_toml_string(&self) -> Result<String> {
         self.validate()?;
         Ok(toml::to_string_pretty(self)?)
     }
 
     /// Validate required metadata invariants.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn validate(&self) -> Result<()> {
         if self.id.trim().is_empty() {
             return Err(LocalrefError::MissingField("metadata.id"));
@@ -333,53 +380,15 @@ impl Metadata {
     }
 
     /// Return a stable revision hash for TOML text.
+    #[must_use]
     pub fn revision_for_text(text: &str) -> String {
-        stable_hash_hex(text.as_bytes())
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in text.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{hash:016x}")
     }
-}
-
-impl Event {
-    /// Construct one event log record.
-    pub fn new(
-        id: u64,
-        kind: EventKind,
-        message: impl Into<String>,
-        item_id: Option<String>,
-        path: Option<String>,
-    ) -> Self {
-        Self { id, kind, message: message.into(), item_id, path }
-    }
-}
-
-fn reject_categories_field(text: &str) -> Result<()> {
-    let value: toml::Value = toml::from_str(text)?;
-    if value.get("categories").is_some() {
-        return Err(LocalrefError::Unsupported(
-            "metadata.toml must not contain categories",
-        ));
-    }
-    Ok(())
-}
-
-fn optional_trimmed(value: &Option<String>) -> Option<String> {
-    value
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn is_author_role(role: &str) -> bool {
-    role.to_ascii_lowercase().contains("author")
-}
-
-fn stable_hash_hex(bytes: &[u8]) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
 }
 
 #[cfg(test)]

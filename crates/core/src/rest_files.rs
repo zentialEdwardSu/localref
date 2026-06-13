@@ -12,7 +12,7 @@ use crate::error::{LocalrefError, Result};
 use crate::model::{ItemFileEntry, ItemFilesDocument};
 
 /// Return all filesystem entries currently under one indexed item directory.
-pub fn item_files(
+pub(super) fn item_files(
     daemon: &LocalrefDaemon,
     item_id: &str,
 ) -> Result<Option<ItemFilesDocument>> {
@@ -31,7 +31,7 @@ pub fn item_files(
 }
 
 /// Return the absolute item directory for one indexed item.
-pub fn item_folder(
+pub(super) fn item_folder(
     daemon: &LocalrefDaemon,
     item_id: &str,
 ) -> Result<Option<PathBuf>> {
@@ -42,12 +42,17 @@ pub fn item_folder(
 }
 
 /// Resolve a validated item-relative file path to an absolute path.
-pub fn item_file_path(
+pub(super) fn item_file_path(
     daemon: &LocalrefDaemon,
     item_id: &str,
     relative: &Path,
 ) -> Result<Option<PathBuf>> {
-    if !is_item_relative_path(relative) {
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || !relative
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+    {
         return Err(LocalrefError::Unsupported("invalid item file path"));
     }
     let Some(folder) = item_folder(daemon, item_id)? else {
@@ -59,7 +64,7 @@ pub fn item_file_path(
 
 /// Open a file or directory with the platform's default viewer.
 #[cfg(windows)]
-pub fn open_system_path(path: &Path) -> Result<()> {
+pub(super) fn open_system_path(path: &Path) -> Result<()> {
     native_win32::open_path(path)
         .map_err(|source| LocalrefError::Platform(source.to_string()))
 }
@@ -72,15 +77,7 @@ pub fn open_system_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Return whether a user supplied path stays inside an item directory.
-pub fn is_item_relative_path(path: &Path) -> bool {
-    !path.as_os_str().is_empty()
-        && !path.is_absolute()
-        && path
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)))
-}
-
+/// Internal helper for collect entries.
 fn collect_entries(
     root: &Path,
     current: &Path,
@@ -138,10 +135,17 @@ mod tests {
 
     #[test]
     fn item_relative_paths_reject_escape_attempts() {
-        assert!(is_item_relative_path(Path::new("paper.pdf")));
-        assert!(is_item_relative_path(Path::new("figures/one.png")));
-        assert!(!is_item_relative_path(Path::new("../paper.pdf")));
-        assert!(!is_item_relative_path(Path::new("/tmp/paper.pdf")));
-        assert!(!is_item_relative_path(Path::new("")));
+        let is_valid = |path: &Path| {
+            !path.as_os_str().is_empty()
+                && !path.is_absolute()
+                && path
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_)))
+        };
+        assert!(is_valid(Path::new("paper.pdf")));
+        assert!(is_valid(Path::new("figures/one.png")));
+        assert!(!is_valid(Path::new("../paper.pdf")));
+        assert!(!is_valid(Path::new("/tmp/paper.pdf")));
+        assert!(!is_valid(Path::new("")));
     }
 }

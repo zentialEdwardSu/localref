@@ -35,22 +35,33 @@ pub struct PendingImportConfirmation {
 /// Thread-safe pending import storage.
 #[derive(Clone, Default)]
 pub struct PendingImportStore {
+    /// Stored inner.
     inner: Arc<Mutex<PendingState>>,
 }
 
 #[derive(Default)]
+/// Internal representation for pending state.
 struct PendingState {
+    /// Stored next id.
     next_id: u64,
+    /// Stored records.
     records: Vec<PendingImportRecord>,
 }
 
-pub(crate) struct PendingImportRecord {
+/// Internal representation for pending import record.
+pub(super) struct PendingImportRecord {
+    /// Stored session.
     pub session: PendingImportSession,
+    /// Stored import.
     pub import: ConnectorImport,
 }
 
 impl PendingImportStore {
     /// Create and store one pending import session.
+    #[must_use]
+    /// # Panics
+    ///
+    /// Panics if an internal invariant is violated.
     pub fn create(
         &self,
         import: ConnectorImport,
@@ -74,6 +85,10 @@ impl PendingImportStore {
     }
 
     /// Return all pending import sessions.
+    #[must_use]
+    /// # Panics
+    ///
+    /// Panics if an internal invariant is violated.
     pub fn list(&self) -> Vec<PendingImportSession> {
         self.inner
             .lock()

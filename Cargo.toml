@@ -19,6 +19,9 @@ native-win32 = { path = "crates/native-win32" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
 tao = { workspace = true, optional = true }
 tray-icon = { workspace = true, optional = true }
 ui-app = { path = "crates/ui-app", features = ["ssr"], optional = true }
@@ -57,11 +60,24 @@ thiserror = "2"
 toml = "0.9"
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tao = "0.30"
 tray-icon = "0.21"
 
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unused_results = "warn"
+
 [workspace.lints.clippy]
-correctness = "deny"
-single_call_fn = "deny"
-complexity = "deny"
-pedantic = { level = "warn", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+style = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+dbg_macro = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"

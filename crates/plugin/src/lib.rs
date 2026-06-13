@@ -3,6 +3,15 @@
 //! Plugins are standalone CLI binaries placed in a designated plugins
 //! directory. The host process discovers them at startup and invokes them
 //! on demand via subprocess calls — no long-running plugin services.
+#![warn(unreachable_pub)]
+#![deny(clippy::correctness)]
+#![deny(clippy::single_call_fn)]
+#![deny(clippy::complexity)]
+#![warn(clippy::pedantic)]
+#![warn(clippy::useless_attribute)]
+#![warn(clippy::redundant_pub_crate)]
+#![warn(clippy::excessive_precision)]
+#![warn(clippy::missing_docs_in_private_items)]
 
 pub mod discovery;
 pub mod error;

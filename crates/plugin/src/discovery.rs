@@ -31,62 +31,35 @@ pub fn discover_plugins(plugins_dir: &Path) -> Vec<DiscoveredPlugin> {
         .filter(|entry| {
             entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
         })
-        .filter_map(|entry| discover_plugin(&entry.path()))
+        .filter_map(|entry| {
+            let dir = entry.path();
+            let manifest_path = dir.join("plugin.toml");
+            let toml_text = std::fs::read_to_string(&manifest_path).ok()?;
+            let manifest = PluginManifest::parse(&toml_text).ok()?;
+            let executable = manifest
+                .executable
+                .as_deref()
+                .map(|name| dir.join(name))
+                .filter(|path| path.is_file())
+                .or_else(|| {
+                    #[cfg(windows)]
+                    {
+                        let path = dir.join(format!("{}.exe", manifest.name));
+                        path.is_file().then_some(path)
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    let path = dir.join(&manifest.name);
+                    path.is_file().then_some(path)
+                })?;
+            let static_dir = dir.join("static");
+            Some(DiscoveredPlugin { dir, manifest, executable, static_dir })
+        })
         .collect()
-}
-
-/// Try to discover a single plugin in the given directory.
-fn discover_plugin(dir: &Path) -> Option<DiscoveredPlugin> {
-    let manifest_path = dir.join("plugin.toml");
-    let toml_text = std::fs::read_to_string(&manifest_path).ok()?;
-    let manifest = PluginManifest::parse(&toml_text).ok()?;
-    let executable = find_executable(dir, &manifest)?;
-    let static_dir = dir.join("static");
-    Some(DiscoveredPlugin {
-        dir: dir.to_path_buf(),
-        manifest,
-        executable,
-        static_dir,
-    })
-}
-
-/// Find the plugin executable by name in the plugin directory.
-#[cfg(windows)]
-fn find_executable(dir: &Path, manifest: &PluginManifest) -> Option<PathBuf> {
-    if let Some(executable) = manifest.executable.as_deref() {
-        let path = dir.join(executable);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    let name = &manifest.name;
-    let exe_name = format!("{name}.exe");
-    let exe_path = dir.join(&exe_name);
-    if exe_path.is_file() {
-        return Some(exe_path);
-    }
-    let path = dir.join(name);
-    if path.is_file() {
-        return Some(path);
-    }
-    None
-}
-
-/// Find the plugin executable by name in the plugin directory.
-#[cfg(not(windows))]
-fn find_executable(dir: &Path, manifest: &PluginManifest) -> Option<PathBuf> {
-    if let Some(executable) = manifest.executable.as_deref() {
-        let path = dir.join(executable);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    let name = &manifest.name;
-    let path = dir.join(name);
-    if path.is_file() {
-        return Some(path);
-    }
-    None
 }
 
 impl DiscoveredPlugin {

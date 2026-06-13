@@ -51,7 +51,18 @@
 //! as [`ConnectorEvent`] values so the future `core::ImportPipeline` can decide
 //! how to stage and persist them.
 
+#![warn(unreachable_pub)]
+#![deny(clippy::correctness)]
+#![deny(clippy::single_call_fn)]
+#![deny(clippy::complexity)]
+#![warn(clippy::pedantic)]
+#![warn(clippy::useless_attribute)]
+#![warn(clippy::redundant_pub_crate)]
+#![warn(clippy::excessive_precision)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -199,21 +210,33 @@ pub enum ConnectorEvent {
 /// the future `core::ImportPipeline`.
 pub trait ConnectorImportSink: Send + Sync + 'static {
     /// Accept one normalized connector import request.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     fn accept_import(
         &self,
         request: ConnectorImportRequest,
     ) -> Result<(), String>;
 
     /// Accept one uploaded connector attachment.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     fn accept_attachment(
         &self,
         attachment: ConnectorAttachment,
     ) -> Result<(), String>;
 
     /// Accept one connector event.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     fn accept_event(&self, event: ConnectorEvent) -> Result<(), String>;
 
     /// Return category paths that can be shown as connector save targets.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     fn category_paths(&self) -> Result<Vec<String>, String> {
         Ok(Vec::new())
     }
@@ -227,18 +250,27 @@ pub trait ConnectorImportSink: Send + Sync + 'static {
 /// imports and events, so this sink stores them in process memory.
 #[derive(Debug, Default)]
 pub struct MemoryImportSink {
+    /// Stored imports.
     imports: Mutex<Vec<ConnectorImportRequest>>,
+    /// Stored attachments.
     attachments: Mutex<Vec<ConnectorAttachment>>,
+    /// Stored events.
     events: Mutex<Vec<ConnectorEvent>>,
 }
 
 impl MemoryImportSink {
     /// Return all imports accepted by this sink.
+    /// # Panics
+    ///
+    /// Panics if an internal mutex has been poisoned.
     pub fn imports(&self) -> Vec<ConnectorImportRequest> {
         self.imports.lock().expect("memory import sink mutex poisoned").clone()
     }
 
     /// Return all connector events accepted by this sink.
+    /// # Panics
+    ///
+    /// Panics if an internal mutex has been poisoned.
     pub fn events(&self) -> Vec<ConnectorEvent> {
         self.events
             .lock()
@@ -247,6 +279,9 @@ impl MemoryImportSink {
     }
 
     /// Return all attachments accepted by this sink.
+    /// # Panics
+    ///
+    /// Panics if an internal mutex has been poisoned.
     pub fn attachments(&self) -> Vec<ConnectorAttachment> {
         self.attachments
             .lock()
@@ -288,13 +323,17 @@ impl ConnectorImportSink for MemoryImportSink {
 }
 
 #[derive(Clone)]
-struct AppState {
+/// Internal representation for app state.
+pub struct AppState {
+    /// Stored sink.
     sink: Arc<dyn ConnectorImportSink>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+/// Internal representation for attachment query.
 struct AttachmentQuery {
     #[serde(default, alias = "sessionID", alias = "sessionId")]
+    /// Stored session id.
     session_id: Option<String>,
 }
 
@@ -386,6 +425,9 @@ pub fn router(sink: Arc<dyn ConnectorImportSink>) -> Router {
 /// Localref behavior: this helper binds a `tokio` TCP listener and serves the
 /// router built by [`router`]. It is used by the manual dynamic-test binary and
 /// can later be embedded by the Localref daemon.
+/// # Errors
+///
+/// Returns an error when the operation cannot be completed.
 pub async fn serve(
     addr: SocketAddr,
     sink: Arc<dyn ConnectorImportSink>,
@@ -402,7 +444,7 @@ pub async fn serve(
 ///
 /// Localref behavior: Localref returns the same liveness body and records a
 /// method-call event for manual debugging.
-async fn ping_get(State(state): State<AppState>) -> Response {
+pub async fn ping_get(State(state): State<AppState>) -> Response {
     record_method(&state, "GET", "/connector/ping");
     text_response(StatusCode::OK, "text/html", "Zotero is running")
 }
@@ -417,7 +459,7 @@ async fn ping_get(State(state): State<AppState>) -> Response {
 /// Localref behavior: the response enables direct attachment upload and
 /// disables features Localref does not yet support, such as tag autocomplete and
 /// Google Docs integration.
-async fn ping_post(State(state): State<AppState>) -> Response {
+pub async fn ping_post(State(state): State<AppState>) -> Response {
     record_method(&state, "POST", "/connector/ping");
     json_response(json!({
         "prefs": {
@@ -440,7 +482,7 @@ async fn ping_post(State(state): State<AppState>) -> Response {
 ///
 /// Localref behavior: Localref does not serve translators. Returning an empty
 /// list lets this endpoint succeed without claiming translator support.
-async fn get_translators(State(state): State<AppState>) -> Response {
+pub async fn get_translators(State(state): State<AppState>) -> Response {
     record_method(&state, "POST", "/connector/getTranslators");
     json_response(Vec::<Value>::new())
 }
@@ -453,7 +495,7 @@ async fn get_translators(State(state): State<AppState>) -> Response {
 /// Localref behavior: translator detection is not implemented, so this endpoint
 /// returns an empty list. Normal saves can still work when the extension has
 /// already translated items itself.
-async fn detect(State(state): State<AppState>) -> Response {
+pub async fn detect(State(state): State<AppState>) -> Response {
     record_method(&state, "POST", "/connector/detect");
     json_response(Vec::<Value>::new())
 }
@@ -465,7 +507,7 @@ async fn detect(State(state): State<AppState>) -> Response {
 ///
 /// Localref behavior: translator code is not bundled in Localref, so this
 /// endpoint returns 404 instead of fabricating translator source.
-async fn get_translator_code(State(state): State<AppState>) -> Response {
+pub async fn get_translator_code(State(state): State<AppState>) -> Response {
     record_method(&state, "POST", "/connector/getTranslatorCode");
     text_response(StatusCode::NOT_FOUND, "text/plain", "translator not found")
 }
@@ -479,22 +521,16 @@ async fn get_translator_code(State(state): State<AppState>) -> Response {
 /// [`ConnectorImportSink::accept_import`] and returns `201 Created`. Metadata
 /// mapping, staging, rule classification, and category confirmation belong to
 /// the future `core::ImportPipeline`.
-async fn save_items(
+pub async fn save_items(
     State(state): State<AppState>,
     Json(payload): Json<SaveItemsRequest>,
 ) -> Response {
     record_method(&state, "POST", "/connector/saveItems");
-    let normalized_items = match payload
+    let normalized_items = payload
         .items
         .iter()
         .map(|item| connector_item_from_value(&payload, item))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(items) => items,
-        Err(message) => {
-            return error_response(StatusCode::BAD_REQUEST, message);
-        }
-    };
+        .collect::<Vec<_>>();
     let import = ConnectorImportRequest {
         session_id: payload.session_id.clone(),
         uri: payload.uri.clone(),
@@ -518,7 +554,7 @@ async fn save_items(
 /// Localref behavior: Localref records a [`ConnectorEvent::SnapshotReceived`]
 /// and returns `201 Created`, leaving snapshot persistence to the later import
 /// pipeline.
-async fn save_snapshot(
+pub async fn save_snapshot(
     State(state): State<AppState>,
     Json(payload): Json<Value>,
 ) -> Response {
@@ -539,7 +575,7 @@ async fn save_snapshot(
 /// Localref behavior: there is no UI bridge here yet, so the endpoint selects
 /// every supplied key. This keeps the connector flow non-interactive until the
 /// planned Dioxus import-confirmation UI is wired through `rest`.
-async fn select_items(
+pub async fn select_items(
     State(state): State<AppState>,
     Json(payload): Json<Value>,
 ) -> Response {
@@ -588,7 +624,7 @@ async fn selected_collection(
 }
 
 /// Build Zotero Connector target records from Localref category paths.
-fn connector_save_targets(
+pub fn connector_save_targets(
     category_paths: impl IntoIterator<Item = String>,
 ) -> Vec<Value> {
     let mut targets = vec![json!({
@@ -598,10 +634,7 @@ fn connector_save_targets(
         "level": 0
     })];
     for category in normalized_category_prefixes(category_paths) {
-        let name = category
-            .rsplit('/')
-            .next()
-            .expect("normalized category should have a final segment");
+        let name = category.rsplit('/').next().unwrap_or(category.as_str());
         targets.push(json!({
             "id": format!("C{}", encode_target_path(&category)),
             "name": name,
@@ -613,7 +646,7 @@ fn connector_save_targets(
 }
 
 /// Return every category prefix needed to render a hierarchical target tree.
-fn normalized_category_prefixes(
+pub fn normalized_category_prefixes(
     category_paths: impl IntoIterator<Item = String>,
 ) -> BTreeSet<String> {
     let mut prefixes = BTreeSet::new();
@@ -634,7 +667,8 @@ fn normalized_category_prefixes(
 }
 
 /// Percent-encode category path bytes for connector target ids.
-fn encode_target_path(path: &str) -> String {
+#[must_use]
+pub fn encode_target_path(path: &str) -> String {
     let mut encoded = String::new();
     for byte in path.bytes() {
         if byte.is_ascii_alphanumeric()
@@ -642,7 +676,7 @@ fn encode_target_path(path: &str) -> String {
         {
             encoded.push(byte as char);
         } else {
-            encoded.push_str(&format!("%{byte:02X}"));
+            let _ = write!(encoded, "%{byte:02X}");
         }
     }
     encoded
@@ -655,7 +689,7 @@ fn encode_target_path(path: &str) -> String {
 ///
 /// Localref behavior: this adapter reports the session as immediately done.
 /// Attachments are accepted by upload endpoints and emitted as events.
-async fn session_progress(State(state): State<AppState>) -> Response {
+pub async fn session_progress(State(state): State<AppState>) -> Response {
     record_method(&state, "POST", "/connector/sessionProgress");
     json_response(json!({
         "done": true,
@@ -670,7 +704,7 @@ async fn session_progress(State(state): State<AppState>) -> Response {
 ///
 /// Localref behavior: this endpoint reports no pending attachments and marks
 /// the progress query complete.
-async fn attachment_progress(State(state): State<AppState>) -> Response {
+pub async fn attachment_progress(State(state): State<AppState>) -> Response {
     record_method(&state, "POST", "/connector/attachmentProgress");
     json_response(json!({
         "done": true,
@@ -685,7 +719,9 @@ async fn attachment_progress(State(state): State<AppState>) -> Response {
 ///
 /// Localref behavior: resolver support is out of scope for this adapter, so it
 /// always returns `false`.
-async fn has_attachment_resolvers(State(state): State<AppState>) -> Response {
+pub async fn has_attachment_resolvers(
+    State(state): State<AppState>,
+) -> Response {
     record_method(&state, "POST", "/connector/hasAttachmentResolvers");
     json_response(false)
 }
@@ -698,7 +734,7 @@ async fn has_attachment_resolvers(State(state): State<AppState>) -> Response {
 /// Localref behavior: because [`has_attachment_resolvers`] always returns
 /// `false`, this endpoint should normally not be called. It returns 404 if it
 /// is called.
-async fn save_attachment_from_resolver(
+pub async fn save_attachment_from_resolver(
     State(state): State<AppState>,
 ) -> Response {
     record_method(&state, "POST", "/connector/saveAttachmentFromResolver");
@@ -735,7 +771,7 @@ async fn save_attachment(
         bytes: body.len(),
     });
 
-    match connector_attachment_from_upload(session_id, metadata, body) {
+    match connector_attachment_from_upload(session_id, metadata, &body) {
         Ok(attachment) => match state.sink.accept_attachment(attachment) {
             Ok(()) => empty_json_response(StatusCode::CREATED),
             Err(message) => {
@@ -748,12 +784,12 @@ async fn save_attachment(
 
 /// Handle `POST /connector/saveSingleFile`.
 ///
-/// Zotero source behavior: Zotero Connector can send SingleFile snapshot
+/// Zotero source behavior: Zotero Connector can send `SingleFile` snapshot
 /// content for webpage snapshots.
 ///
 /// Localref behavior: this adapter records the snapshot request and returns
 /// `201 Created`; snapshot content persistence is not implemented here.
-async fn save_single_file(
+pub async fn save_single_file(
     State(state): State<AppState>,
     Json(payload): Json<Value>,
 ) -> Response {
@@ -773,7 +809,7 @@ async fn save_single_file(
 ///
 /// Localref behavior: session mutation is not implemented yet, so this endpoint
 /// accepts the call and returns an empty JSON object.
-async fn update_session(State(state): State<AppState>) -> Response {
+pub async fn update_session(State(state): State<AppState>) -> Response {
     record_method(&state, "POST", "/connector/updateSession");
     json_response(json!({}))
 }
@@ -785,7 +821,7 @@ async fn update_session(State(state): State<AppState>) -> Response {
 ///
 /// Localref behavior: Localref has no sync runner in this crate, so this is a
 /// no-op `204 No Content`.
-async fn delay_sync(State(state): State<AppState>) -> Response {
+pub async fn delay_sync(State(state): State<AppState>) -> Response {
     record_method(&state, "POST", "/connector/delaySync");
     empty_response(StatusCode::NO_CONTENT)
 }
@@ -797,7 +833,7 @@ async fn delay_sync(State(state): State<AppState>) -> Response {
 ///
 /// Localref behavior: recognition is out of scope here, so the endpoint returns
 /// `204 No Content`.
-async fn get_recognized_item(State(state): State<AppState>) -> Response {
+pub async fn get_recognized_item(State(state): State<AppState>) -> Response {
     record_method(&state, "POST", "/connector/getRecognizedItem");
     empty_response(StatusCode::NO_CONTENT)
 }
@@ -823,7 +859,7 @@ async fn preflight() -> Response {
 /// Localref behavior: a structured 404 makes the manual dynamic-test server
 /// easier to diagnose when the browser extension calls an endpoint not yet
 /// modeled in this crate.
-async fn connector_not_found(request: Request<Body>) -> Response {
+pub async fn connector_not_found(request: Request<Body>) -> Response {
     if request.method() == Method::OPTIONS {
         return preflight().await;
     }
@@ -862,7 +898,8 @@ fn json_string(value: &Value, keys: &[&str]) -> Option<String> {
 }
 
 /// Parse Zotero's `X-Metadata` attachment upload header.
-fn parse_attachment_metadata(headers: &HeaderMap) -> Option<Value> {
+#[must_use]
+pub fn parse_attachment_metadata(headers: &HeaderMap) -> Option<Value> {
     headers
         .get("X-Metadata")
         .and_then(|value| value.to_str().ok())
@@ -870,10 +907,15 @@ fn parse_attachment_metadata(headers: &HeaderMap) -> Option<Value> {
 }
 
 /// Convert an uploaded attachment body into the shared connector attachment type.
-fn connector_attachment_from_upload(
+///
+/// # Errors
+///
+/// Returns an error when the upload metadata does not contain a usable
+/// filename.
+pub fn connector_attachment_from_upload(
     session_id: Option<String>,
     metadata: Option<Value>,
-    body: Bytes,
+    body: &Bytes,
 ) -> Result<ConnectorAttachment, String> {
     let mime_type = metadata
         .as_ref()
@@ -917,13 +959,14 @@ fn connector_attachment_from_upload(
 }
 
 /// Convert one translated Zotero item into a shared connector item.
-fn connector_item_from_value(
+#[must_use]
+pub fn connector_item_from_value(
     request: &SaveItemsRequest,
     item: &Value,
-) -> Result<ConnectorItem, String> {
+) -> ConnectorItem {
     let item_type = json_string(item, &["itemType", "type"]);
     let title = item_title(item, item_type.as_deref());
-    Ok(ConnectorItem {
+    ConnectorItem {
         session_id: request.session_id.clone(),
         uri: request
             .uri
@@ -935,7 +978,7 @@ fn connector_item_from_value(
         abstract_note: json_string(item, &["abstractNote", "abstract"]),
         doi: json_string(item, &["DOI", "doi"]),
         raw: item.clone(),
-    })
+    }
 }
 
 /// Build a stable display title for any Zotero item type.
@@ -960,7 +1003,8 @@ fn connector_item_from_value(
 /// imports should still create an `All/` directory instead of rejecting these
 /// items, so this function uses known title-like fields and finally falls back
 /// to the item type plus Zotero id.
-fn item_title(item: &Value, item_type: Option<&str>) -> String {
+#[must_use]
+pub fn item_title(item: &Value, item_type: Option<&str>) -> String {
     if let Some(title) = json_string(
         item,
         &[
@@ -1012,7 +1056,8 @@ fn item_title(item: &Value, item_type: Option<&str>) -> String {
 /// in a `note` field rather than in `title`. Localref only uses this stripped
 /// text as an import folder/display fallback; the original note HTML remains in
 /// the raw Zotero JSON.
-fn strip_html_like_text(value: &str) -> String {
+#[must_use]
+pub fn strip_html_like_text(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut in_tag = false;
     for ch in value.chars() {
@@ -1027,7 +1072,8 @@ fn strip_html_like_text(value: &str) -> String {
 }
 
 /// Shorten long note-derived titles to a filesystem-friendly display length.
-fn truncate_title(value: &str) -> String {
+#[must_use]
+pub fn truncate_title(value: &str) -> String {
     const MAX_CHARS: usize = 80;
     let mut iter = value.chars();
     let title: String = iter.by_ref().take(MAX_CHARS).collect();
@@ -1035,7 +1081,7 @@ fn truncate_title(value: &str) -> String {
 }
 
 /// Extract a file name from connector attachment metadata.
-fn filename_from_value(value: &str) -> Option<String> {
+pub fn filename_from_value(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
@@ -1048,7 +1094,8 @@ fn filename_from_value(value: &str) -> Option<String> {
 }
 
 /// Add a file extension inferred from attachment type when the name has none.
-fn filename_with_type_extension(
+#[must_use]
+pub fn filename_with_type_extension(
     filename: &str,
     mime_type: Option<&str>,
     attachment_type: Option<&str>,
@@ -1064,7 +1111,7 @@ fn filename_with_type_extension(
 }
 
 /// Infer a file extension from Zotero attachment MIME/type metadata.
-fn extension_for_attachment(
+pub fn extension_for_attachment(
     mime_type: Option<&str>,
     attachment_type: Option<&str>,
 ) -> Option<&'static str> {
@@ -1083,7 +1130,7 @@ fn extension_for_attachment(
     match attachment_type.as_deref() {
         Some("pdf") => Some("pdf"),
         Some("epub") => Some("epub"),
-        Some("snapshot") | Some("webpage") | Some("html") => Some("html"),
+        Some("snapshot" | "webpage" | "html") => Some("html"),
         _ => None,
     }
 }

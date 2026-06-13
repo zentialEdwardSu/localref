@@ -1,7 +1,10 @@
 //! URL state and view model assembly for the Localref web UI.
 
+use std::fmt::Write as _;
+
+use localref_core::logging::LogEntry;
 use localref_core::model::{
-    Creator, Event, ItemDocument, ItemFileEntry, Metadata, MetadataDocument,
+    Creator, ItemDocument, ItemFileEntry, Metadata, MetadataDocument,
 };
 use localref_core::rules::{RuleSet, RuleSummary};
 use localref_core::storage::CategorySummary;
@@ -16,48 +19,78 @@ use crate::model::{
 
 /// URL query state used by the browser UI.
 #[derive(Clone, Debug, Default, Deserialize)]
-pub(crate) struct UiQuery {
+pub struct UiQuery {
+    /// Stored q.
     pub(crate) q: Option<String>,
+    /// Stored category.
     pub(crate) category: Option<String>,
+    /// Stored selected.
     pub(crate) selected: Option<String>,
+    /// Stored active.
     pub(crate) active: Option<String>,
+    /// Stored tab.
     pub(crate) tab: Option<String>,
+    /// Stored rules status.
     pub(crate) rules_status: Option<String>,
+    /// Stored rules error.
     pub(crate) rules_error: Option<String>,
+    /// Stored plugin.
     pub(crate) plugin: Option<String>,
+    /// Stored plugin error.
     pub(crate) plugin_error: Option<String>,
     #[serde(default)]
+    /// Stored item.
     pub(crate) item: Vec<String>,
 }
 
 /// Server-side model consumed by render components.
 #[derive(Clone)]
-pub(crate) struct UiModel {
+pub struct UiModel {
+    /// Stored query.
     pub(crate) query: UiQuery,
+    /// Stored items.
     pub(crate) items: Vec<ItemDocument>,
+    /// Stored categories.
     pub(crate) categories: Vec<CategorySummary>,
-    pub(crate) events: Vec<Event>,
+    /// Stored events.
+    pub(crate) events: Vec<LogEntry>,
+    /// Stored pending count.
     pub(crate) pending_count: usize,
+    /// Stored selected ids.
     pub(crate) selected_ids: Vec<String>,
+    /// Stored category target ids.
     pub(crate) category_target_ids: Vec<String>,
+    /// Stored active id.
     pub(crate) active_id: Option<String>,
+    /// Stored active metadata.
     pub(crate) active_metadata: Option<MetadataDocument>,
+    /// Stored files.
     pub(crate) files: Vec<ItemFileEntry>,
+    /// Stored rules text.
     pub(crate) rules_text: String,
+    /// Stored rules notice.
     pub(crate) rules_notice: Option<RulesNotice>,
+    /// Stored tab.
     pub(crate) tab: String,
+    /// Stored return to.
     pub(crate) return_to: String,
+    /// Stored status.
     pub(crate) status: DaemonStatus,
+    /// Stored plugin tabs.
     pub(crate) plugin_tabs: Vec<PluginTabDef>,
+    /// Stored plugin buttons.
     pub(crate) plugin_buttons: Vec<PluginButtonDef>,
+    /// Stored plugin menu items.
     pub(crate) plugin_menu_items: Vec<PluginMenuItemDef>,
+    /// Stored plugin slots.
     pub(crate) plugin_slots: Vec<PluginSlotHtml>,
+    /// Stored plugin page html.
     pub(crate) plugin_page_html: Option<String>,
 }
 
 /// Floating feedback shown after saving automatic-classification rules.
 #[derive(Clone)]
-pub(crate) enum RulesNotice {
+pub enum RulesNotice {
     /// Rules parsed and were saved.
     Saved(Vec<RuleSummary>),
     /// Rules failed to parse or validate.
@@ -66,7 +99,10 @@ pub(crate) enum RulesNotice {
 
 impl UiModel {
     /// Load all data needed by the first server-rendered page.
-    pub(crate) fn load(
+    /// # Errors
+    ///
+    /// Returns an error when the requested UI operation cannot be completed.
+    pub fn load(
         daemon: &LocalrefDaemon,
         mut query: UiQuery,
         plugins: &[DiscoveredPlugin],
@@ -164,7 +200,9 @@ impl UiModel {
     }
 }
 
-fn rules_notice(query: &UiQuery, rules_text: &str) -> Option<RulesNotice> {
+/// Internal helper for rules notice.
+#[must_use]
+pub fn rules_notice(query: &UiQuery, rules_text: &str) -> Option<RulesNotice> {
     if let Some(error) = optional_text(query.rules_error.as_deref()) {
         return Some(RulesNotice::Error(error));
     }
@@ -177,7 +215,9 @@ fn rules_notice(query: &UiQuery, rules_text: &str) -> Option<RulesNotice> {
     })
 }
 
-fn filtered_items(
+/// Internal helper for filtered items.
+#[must_use]
+pub fn filtered_items(
     items: Vec<ItemDocument>,
     q: Option<&str>,
     category: Option<&str>,
@@ -199,7 +239,9 @@ fn filtered_items(
         .collect()
 }
 
-fn item_matches_search(item: &ItemDocument, needle: &str) -> bool {
+/// Internal helper for item matches search.
+#[must_use]
+pub fn item_matches_search(item: &ItemDocument, needle: &str) -> bool {
     item.id.to_ascii_lowercase().contains(needle)
         || item.title.to_ascii_lowercase().contains(needle)
         || item
@@ -214,7 +256,7 @@ fn item_id_is_visible(items: &[ItemDocument], id: &str) -> bool {
 }
 
 /// Return item ids that category operations should mutate.
-fn category_target_ids(
+pub fn category_target_ids(
     selected_ids: &[String],
     active_id: Option<&str>,
 ) -> Vec<String> {
@@ -226,7 +268,7 @@ fn category_target_ids(
 }
 
 /// Return selected item ids from URL state.
-fn selected_ids(query: &UiQuery) -> Vec<String> {
+pub fn selected_ids(query: &UiQuery) -> Vec<String> {
     if !query.item.is_empty() {
         return query.item.clone();
     }
@@ -241,7 +283,8 @@ fn selected_ids(query: &UiQuery) -> Vec<String> {
 }
 
 /// Build a Localref UI URL preserving search, filters, selection, active item.
-pub(crate) fn return_to(
+#[must_use]
+pub fn return_to(
     query: &UiQuery,
     selected_ids: &[String],
     active_id: Option<&str>,
@@ -278,7 +321,8 @@ pub(crate) fn optional_text(value: Option<&str>) -> Option<String> {
 }
 
 /// Parse semicolon-separated author names for metadata editing.
-pub(crate) fn parse_author_names(value: Option<&str>) -> Vec<Creator> {
+#[must_use]
+pub fn parse_author_names(value: Option<&str>) -> Vec<Creator> {
     value
         .unwrap_or_default()
         .split(';')
@@ -293,7 +337,7 @@ pub(crate) fn parse_author_names(value: Option<&str>) -> Vec<Creator> {
 }
 
 /// Replace author creators while preserving non-author creators.
-pub(crate) fn replace_author_creators(
+pub fn replace_author_creators(
     metadata: &mut Metadata,
     authors: Vec<Creator>,
 ) {
@@ -314,7 +358,8 @@ pub(crate) fn author_summary(metadata: &Metadata) -> String {
 
 /// Return categories that can be added to the current selection.
 #[cfg(test)]
-pub(crate) fn available_categories<'a>(
+#[must_use]
+pub fn available_categories<'a>(
     categories: &'a [CategorySummary],
     current: &[String],
 ) -> Vec<&'a CategorySummary> {
@@ -330,7 +375,8 @@ pub(crate) fn escape_text(value: &str) -> String {
 }
 
 /// Build plugin detail tab definitions from discovered plugins.
-fn build_plugin_tabs(plugins: &[DiscoveredPlugin]) -> Vec<PluginTabDef> {
+#[must_use]
+pub fn build_plugin_tabs(plugins: &[DiscoveredPlugin]) -> Vec<PluginTabDef> {
     plugins
         .iter()
         .flat_map(|plugin| {
@@ -351,7 +397,10 @@ fn build_plugin_tabs(plugins: &[DiscoveredPlugin]) -> Vec<PluginTabDef> {
 }
 
 /// Build plugin action button definitions from discovered plugins.
-fn build_plugin_buttons(plugins: &[DiscoveredPlugin]) -> Vec<PluginButtonDef> {
+#[must_use]
+pub fn build_plugin_buttons(
+    plugins: &[DiscoveredPlugin],
+) -> Vec<PluginButtonDef> {
     plugins
         .iter()
         .flat_map(|plugin| {
@@ -370,7 +419,8 @@ fn build_plugin_buttons(plugins: &[DiscoveredPlugin]) -> Vec<PluginButtonDef> {
 }
 
 /// Build plugin context menu item definitions from discovered plugins.
-fn build_plugin_menu_items(
+#[must_use]
+pub fn build_plugin_menu_items(
     plugins: &[DiscoveredPlugin],
 ) -> Vec<PluginMenuItemDef> {
     plugins
@@ -390,6 +440,7 @@ fn build_plugin_menu_items(
         .collect()
 }
 
+/// Internal helper for encode query.
 fn encode_query(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
@@ -398,7 +449,7 @@ fn encode_query(value: &str) -> String {
         {
             encoded.push(byte as char);
         } else {
-            encoded.push_str(&format!("%{byte:02X}"));
+            let _ = write!(encoded, "%{byte:02X}");
         }
     }
     encoded

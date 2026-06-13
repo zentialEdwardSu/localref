@@ -210,7 +210,7 @@ pub fn notification_for_command(
                 snapshot.item_count,
                 snapshot.category_count,
                 snapshot.pending_count,
-                snapshot.event_count
+                snapshot.log_count
             ),
             kind: TrayNotificationKind::Success,
         },
@@ -307,7 +307,7 @@ mod tests {
                 item_count: 2,
                 category_count: 3,
                 pending_count: 1,
-                event_count: 4,
+                log_count: 4,
             })),
         );
 

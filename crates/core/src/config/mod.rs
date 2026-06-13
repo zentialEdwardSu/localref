@@ -25,57 +25,108 @@ pub const DEFAULT_REST_ENDPOINT: &str = "http://127.0.0.1:24817";
 /// Runtime configuration shared by Localref binaries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalrefConfig {
+    /// Stored source path.
     source_path: PathBuf,
+    /// Stored repo name.
     repo_name: String,
+    /// Stored library root.
     library_root: PathBuf,
+    /// Stored rest addr.
     rest_addr: SocketAddr,
+    /// Stored rest endpoint.
     rest_endpoint: String,
+    /// Stored csc addr.
     csc_addr: SocketAddr,
+    /// Stored desktop start hidden.
     desktop_start_hidden: bool,
+    /// Stored desktop quiet start.
     desktop_quiet_start: bool,
+    /// Stored plugins dir.
     plugins_dir: PathBuf,
 }
 
 #[derive(Debug, Default, Deserialize)]
+/// Internal representation for config file.
 struct ConfigFile {
+    /// Stored repo name.
     repo_name: Option<String>,
+    /// Stored library root.
     library_root: Option<PathBuf>,
+    /// Stored rest.
     rest: Option<RestConfigFile>,
+    /// Stored csc.
     csc: Option<CscConfigFile>,
+    /// Stored desktop.
     desktop: Option<DesktopConfigFile>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+/// Internal representation for rest config file.
 struct RestConfigFile {
+    /// Stored addr.
     addr: Option<String>,
+    /// Stored endpoint.
     endpoint: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+/// Internal representation for csc config file.
 struct CscConfigFile {
+    /// Stored addr.
     addr: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+/// Internal representation for desktop config file.
 struct DesktopConfigFile {
+    /// Stored start hidden.
     start_hidden: Option<bool>,
+    /// Stored quiet start.
     quiet_start: Option<bool>,
 }
 
 impl LocalrefConfig {
     /// Load configuration from `LOCALREF_CONFIG` or the default path.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn load() -> Result<Self, String> {
         let path = config_path()?;
         Self::load_from_path(path)
     }
 
     /// Load configuration from one explicit TOML file path.
+    /// # Errors
+    ///
+    /// Returns an error when the operation cannot be completed.
     pub fn load_from_path(path: impl Into<PathBuf>) -> Result<Self, String> {
         let path = path.into();
         if !path.exists() {
             let file = ConfigFile::default();
             let config = Self::from_config_file(path, file)?;
-            write_default_config(&config)?;
+            if let Some(parent) = config.source_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    format!("failed to create {}: {error}", parent.display())
+                })?;
+            }
+            let repo_name =
+                config.repo_name.replace('\\', "\\\\").replace('"', "\\\"");
+            let library_root =
+                config.library_root.to_string_lossy().replace('\'', "''");
+            let text = format!(
+                "repo_name = \"{repo_name}\"\nlibrary_root = '{library_root}'\n\n[rest]\naddr = \"{}\"\nendpoint = \"{}\"\n\n[csc]\naddr = \"{}\"\n\n[desktop]\nstart_hidden = {}\nquiet_start = {}\n",
+                config.rest_addr,
+                config.rest_endpoint,
+                config.csc_addr,
+                config.desktop_start_hidden,
+                config.desktop_quiet_start
+            );
+            std::fs::write(&config.source_path, text).map_err(|error| {
+                format!(
+                    "failed to write {}: {error}",
+                    config.source_path.display()
+                )
+            })?;
             return Ok(config);
         }
         let text = std::fs::read_to_string(&path).map_err(|error| {
@@ -88,59 +139,74 @@ impl LocalrefConfig {
     }
 
     /// Return the file that supplied this configuration.
+    #[must_use]
     pub fn source_path(&self) -> &Path {
         &self.source_path
     }
 
     /// Return the configured Localref library root.
+    #[must_use]
     pub fn library_root(&self) -> &Path {
         &self.library_root
     }
 
     /// Return the configured repository display name.
+    #[must_use]
     pub fn repo_name(&self) -> &str {
         &self.repo_name
     }
 
     /// Return the REST API bind address for server binaries.
+    #[must_use]
     pub fn rest_addr(&self) -> SocketAddr {
         self.rest_addr
     }
 
     /// Return the REST API endpoint for desktop clients.
+    #[must_use]
     pub fn rest_endpoint(&self) -> &str {
         &self.rest_endpoint
     }
 
     /// Return the Zotero Connector-compatible bind address.
+    #[must_use]
     pub fn csc_addr(&self) -> SocketAddr {
         self.csc_addr
     }
 
     /// Return whether tray-hosted startup should skip the initial window.
+    #[must_use]
     pub fn desktop_start_hidden(&self) -> bool {
         self.desktop_start_hidden
     }
 
     /// Return whether tray-hosted startup should avoid console chatter.
+    #[must_use]
     pub fn desktop_quiet_start(&self) -> bool {
         self.desktop_quiet_start
     }
 
     /// Return the directory where plugins are discovered.
+    #[must_use]
     pub fn plugins_dir(&self) -> &Path {
         &self.plugins_dir
     }
 
+    /// Internal helper for from config file.
     fn from_config_file(
         source_path: PathBuf,
         file: ConfigFile,
     ) -> Result<Self, String> {
-        let library_root =
-            file.library_root.unwrap_or(default_library_root()?);
+        let library_root = match file.library_root {
+            Some(path) => path,
+            None => home_dir()?.join(".localref").join("libroot"),
+        };
         let repo_name = file
             .repo_name
-            .and_then(|value| optional_text(&value))
+            .and_then(|value| {
+                let value = value.trim();
+                (!value.is_empty()).then(|| value.to_string())
+            })
             .unwrap_or_else(|| "Localref".to_string());
         let rest = file.rest.unwrap_or_default();
         let csc = file.csc.unwrap_or_default();
@@ -171,6 +237,9 @@ impl LocalrefConfig {
 }
 
 /// Return the configured TOML path from `LOCALREF_CONFIG` or `~/.localref`.
+/// # Errors
+///
+/// Returns an error when the operation cannot be completed.
 pub fn config_path() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os(LOCALREF_CONFIG_ENV) {
         return Ok(PathBuf::from(path));
@@ -178,12 +247,14 @@ pub fn config_path() -> Result<PathBuf, String> {
     Ok(home_dir()?.join(".localref").join("config.toml"))
 }
 
+/// Internal helper for parse addr.
 fn parse_addr(value: &str, field: &'static str) -> Result<SocketAddr, String> {
     value
         .parse()
         .map_err(|error| format!("{field} must be a socket address: {error}"))
 }
 
+/// Internal helper for home dir.
 fn home_dir() -> Result<PathBuf, String> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -192,44 +263,6 @@ fn home_dir() -> Result<PathBuf, String> {
             "LOCALREF_CONFIG is not set and no home directory was found"
                 .to_string()
         })
-}
-
-fn default_library_root() -> Result<PathBuf, String> {
-    Ok(home_dir()?.join(".localref").join("libroot"))
-}
-
-fn write_default_config(config: &LocalrefConfig) -> Result<(), String> {
-    if let Some(parent) = config.source_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            format!("failed to create {}: {error}", parent.display())
-        })?;
-    }
-    let text = format!(
-        "repo_name = \"{}\"\nlibrary_root = '{}'\n\n[rest]\naddr = \"{}\"\nendpoint = \"{}\"\n\n[csc]\naddr = \"{}\"\n\n[desktop]\nstart_hidden = {}\nquiet_start = {}\n",
-        toml_basic_string(&config.repo_name),
-        toml_literal_path(&config.library_root),
-        config.rest_addr,
-        config.rest_endpoint,
-        config.csc_addr,
-        config.desktop_start_hidden,
-        config.desktop_quiet_start
-    );
-    std::fs::write(&config.source_path, text).map_err(|error| {
-        format!("failed to write {}: {error}", config.source_path.display())
-    })
-}
-
-fn toml_literal_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\'', "''")
-}
-
-fn toml_basic_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn optional_text(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() { None } else { Some(value.to_string()) }
 }
 
 #[cfg(test)]
@@ -243,14 +276,12 @@ mod tests {
 
         assert_eq!(config.source_path(), temp.as_path());
         assert_eq!(config.repo_name(), "Localref");
-        assert_eq!(config.library_root(), default_library_root().unwrap());
+        let default_root =
+            home_dir().unwrap().join(".localref").join("libroot");
+        assert_eq!(config.library_root(), default_root);
         assert_eq!(
             config.plugins_dir(),
-            default_library_root()
-                .unwrap()
-                .join(".localref")
-                .join("plugins")
-                .as_path()
+            default_root.join(".localref").join("plugins").as_path()
         );
         assert_eq!(config.rest_addr().to_string(), DEFAULT_REST_ADDR);
         assert_eq!(config.rest_endpoint(), "http://127.0.0.1:24817");

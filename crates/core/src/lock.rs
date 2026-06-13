@@ -13,31 +13,45 @@ use crate::error::{LocalrefError, Result};
 
 /// Manager for lock files under `.localref/locks`.
 #[derive(Clone, Debug)]
-pub struct LockManager {
+pub(super) struct LockManager {
+    /// Stored dir.
     dir: PathBuf,
 }
 
 /// Acquired filesystem lock removed when dropped.
 #[derive(Debug)]
-pub struct FsLock {
+pub(super) struct FsLock {
+    /// Stored path.
     path: PathBuf,
 }
 
 impl LockManager {
     /// Create a lock manager for one library root.
-    pub fn new(library_root: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(library_root: impl Into<PathBuf>) -> Self {
         Self { dir: library_root.into().join(".localref").join("locks") }
     }
 
     /// Acquire an exclusive lock for one write key.
-    pub fn acquire(
+    pub(crate) fn acquire(
         &self,
         key: impl AsRef<str>,
         operation: impl AsRef<str>,
     ) -> Result<FsLock> {
         fs::create_dir_all(&self.dir)
             .map_err(|source| LocalrefError::io(&self.dir, source))?;
-        let filename = format!("{}.lock", lock_component(key.as_ref()));
+        let mut component = String::with_capacity(key.as_ref().len());
+        for ch in key.as_ref().chars() {
+            match ch {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => {
+                    component.push(ch);
+                }
+                _ => component.push('_'),
+            }
+        }
+        if component.is_empty() {
+            component.push_str("lock");
+        }
+        let filename = format!("{component}.lock");
         let path = self.dir.join(filename);
         let mut file = OpenOptions::new()
             .create_new(true)
@@ -66,15 +80,4 @@ impl Drop for FsLock {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
-}
-
-fn lock_component(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => output.push(ch),
-            _ => output.push('_'),
-        }
-    }
-    if output.is_empty() { "lock".to_string() } else { output }
 }
