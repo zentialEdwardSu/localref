@@ -4,7 +4,7 @@
 //! boundary. Supporting crates provide protocol, REST, tray, and UI libraries,
 //! but they do not expose their own installed binaries.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 mod rest_client;
@@ -12,16 +12,10 @@ mod tray;
 mod ui;
 
 use clap::{Parser, Subcommand};
-use csc::{
-    ConnectorEvent, ConnectorImportRequest, ConnectorImportSink,
-    serve as serve_csc,
-};
+use csc::serve as serve_csc;
 use localref_core::LocalrefDaemon;
 use localref_core::config::LocalrefConfig;
 use localref_core::storage::StorageDb;
-use localref_core::types::{
-    ConnectorAttachment, ConnectorImport, ConnectorItem, ImportOutcome,
-};
 use tray::{TrayAction, TrayCommandResult, TrayController, status_label};
 
 /// Start Localref in the selected mode.
@@ -115,8 +109,7 @@ fn run_tray_host(runtime: AppRuntime) -> std::io::Result<()> {
     } else {
         print_config_summary(&config);
     }
-    let print_listeners = !config.desktop_quiet_start();
-    let _api_thread = start_api_runtime(runtime, print_listeners)?;
+    let _api_thread = start_api_runtime(runtime)?;
     run_native_tray_host(&config)
 }
 
@@ -130,8 +123,6 @@ struct AppRuntime {
     /// Daemon facade backed by the query database.
     daemon: LocalrefDaemon,
     /// Plugins discovered once at startup.
-    // Used by serve_rest_with_daemon in a later wiring step.
-    #[allow(dead_code)]
     plugins: Arc<Vec<localref_plugin::DiscoveredPlugin>>,
 }
 
@@ -154,7 +145,6 @@ impl AppRuntime {
 /// Start REST and CSC servers on a background Tokio runtime.
 fn start_api_runtime(
     runtime: AppRuntime,
-    _print_listeners: bool,
 ) -> std::io::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("localref-api-runtime".to_string())
@@ -167,6 +157,7 @@ fn start_api_runtime(
                 let rest = serve_rest_with_daemon(
                     runtime.config.clone(),
                     runtime.daemon.clone(),
+                    runtime.plugins.clone(),
                 );
                 let csc = serve_csc_with_daemon(
                     runtime.config.clone(),
@@ -187,6 +178,7 @@ fn start_api_runtime(
 async fn serve_rest_with_daemon(
     config: LocalrefConfig,
     daemon: LocalrefDaemon,
+    plugins: Arc<Vec<localref_plugin::DiscoveredPlugin>>,
 ) -> std::io::Result<()> {
     println!("localref REST listening on http://{}", config.rest_addr());
     tracing::info!(
@@ -195,14 +187,16 @@ async fn serve_rest_with_daemon(
         config.rest_addr(),
     );
     let listener = tokio::net::TcpListener::bind(config.rest_addr()).await?;
-    axum::serve(listener, rest_app(&config, daemon)).await
+    axum::serve(listener, rest_app(&config, daemon, plugins)).await
 }
 
 /// Build the REST listener application.
 #[cfg(feature = "desktop")]
-fn rest_app(config: &LocalrefConfig, daemon: LocalrefDaemon) -> axum::Router {
-    let plugins =
-        Arc::new(localref_plugin::discover_plugins(config.plugins_dir()));
+fn rest_app(
+    config: &LocalrefConfig,
+    daemon: LocalrefDaemon,
+    plugins: Arc<Vec<localref_plugin::DiscoveredPlugin>>,
+) -> axum::Router {
     let plugin_context = ui_app::PluginHostContext {
         library_root: config.library_root().to_path_buf(),
         rest_endpoint: config.rest_endpoint().to_string(),
@@ -219,7 +213,11 @@ fn rest_app(config: &LocalrefConfig, daemon: LocalrefDaemon) -> axum::Router {
 
 /// Build the REST listener application.
 #[cfg(not(feature = "desktop"))]
-fn rest_app(_config: &LocalrefConfig, daemon: LocalrefDaemon) -> axum::Router {
+fn rest_app(
+    _config: &LocalrefConfig,
+    daemon: LocalrefDaemon,
+    _plugins: Arc<Vec<localref_plugin::DiscoveredPlugin>>,
+) -> axum::Router {
     localref_core::rest::router_with_daemon(daemon)
 }
 
@@ -228,7 +226,7 @@ async fn serve_csc_with_daemon(
     config: LocalrefConfig,
     daemon: LocalrefDaemon,
 ) -> std::io::Result<()> {
-    let sink = Arc::new(LoggingImportSink::new(daemon));
+    let sink = Arc::new(csc::DaemonConnectorSink::new(daemon));
     println!("localref CSC listening on http://{}", config.csc_addr());
     tracing::info!(
         target: "localref::csc",
@@ -269,7 +267,7 @@ fn run_native_tray_host(config: &LocalrefConfig) -> std::io::Result<()> {
 fn run_native_tray_host(_config: &LocalrefConfig) -> std::io::Result<()> {
     tracing::error!(target: "localref::tray", "native tray feature is not enabled");
     Err(std::io::Error::other(
-        "native tray feature is not enabled; use `localref headless` for diagnostics",
+        "native tray feature is not enabled; use the localref-rest-dev binary for diagnostics",
     ))
 }
 
@@ -328,229 +326,3 @@ fn detach_console_for_quiet_start() {
 /// Debug or non-Windows builds never detach the console.
 #[cfg(any(not(windows), debug_assertions))]
 fn detach_console_for_quiet_start() {}
-
-/// Connector sink that logs incoming connector data and forwards it to core.
-struct LoggingImportSink {
-    daemon: LocalrefDaemon,
-    sessions: Mutex<Vec<PendingImport>>,
-}
-
-/// Buffered connector save session.
-#[derive(Debug)]
-struct PendingImport {
-    session_id: Option<String>,
-    items: Vec<ConnectorItem>,
-    attachments: Vec<ConnectorAttachment>,
-    outcome: Option<ImportOutcome>,
-}
-
-impl LoggingImportSink {
-    /// Create a sink from an already-open daemon facade.
-    fn new(daemon: LocalrefDaemon) -> Self {
-        Self { daemon, sessions: Mutex::new(Vec::new()) }
-    }
-
-    /// Try to import every buffered session that has metadata.
-    fn try_import_locked(
-        &self,
-        sessions: &mut [PendingImport],
-    ) -> Result<(), String> {
-        for session in
-            sessions.iter_mut().filter(|session| session.outcome.is_none())
-        {
-            let Some(item) = session.items.first().cloned() else {
-                continue;
-            };
-            let outcome = self
-                .daemon
-                .import_connector_item(ConnectorImport {
-                    item,
-                    attachments: session.attachments.clone(),
-                })
-                .map_err(|error| error.to_string())?;
-            println!("saved Localref item: {}", outcome.item_dir.display());
-            tracing::info!(
-                target: "localref::csc_import",
-                "saved Localref item: {}",
-                outcome.item_dir.display(),
-            );
-            for file in &outcome.written_files {
-                println!("  wrote: {}", file.display());
-                tracing::info!(
-                    target: "localref::csc_import",
-                    "wrote {}",
-                    file.display(),
-                );
-            }
-            session.outcome = Some(outcome);
-        }
-        Ok(())
-    }
-}
-
-impl ConnectorImportSink for LoggingImportSink {
-    fn accept_import(
-        &self,
-        request: ConnectorImportRequest,
-    ) -> Result<(), String> {
-        println!("connector import: {} item(s)", request.items.len());
-        tracing::info!(
-            target: "localref::csc_import",
-            "connector import: {} item(s)",
-            request.items.len(),
-        );
-        for item in &request.normalized_items {
-            println!("  title: {}", item.title);
-            if let Some(item_type) = &item.item_type {
-                println!("  type: {item_type}");
-            }
-            if let Some(abstract_note) = &item.abstract_note {
-                println!("  abstract: {abstract_note}");
-            }
-        }
-        let mut sessions =
-            self.sessions.lock().expect("connector sessions mutex poisoned");
-        if let Some(session) = sessions.iter_mut().find(|session| {
-            session.session_id == request.session_id
-                && session.outcome.is_none()
-        }) {
-            session.items = request.normalized_items;
-        } else {
-            sessions.push(PendingImport {
-                session_id: request.session_id,
-                items: request.normalized_items,
-                attachments: Vec::new(),
-                outcome: None,
-            });
-        }
-        self.try_import_locked(&mut sessions)
-    }
-
-    fn accept_attachment(
-        &self,
-        attachment: ConnectorAttachment,
-    ) -> Result<(), String> {
-        println!(
-            "connector attachment: {} bytes, file {}",
-            attachment.bytes.len(),
-            attachment.filename
-        );
-        tracing::info!(
-            target: "localref::csc_attachment",
-            "connector attachment: {} bytes, file {}",
-            attachment.bytes.len(),
-            attachment.filename,
-        );
-        let mut sessions =
-            self.sessions.lock().expect("connector sessions mutex poisoned");
-        let session_index = sessions
-            .iter()
-            .position(|session| session.session_id == attachment.session_id)
-            .or_else(|| {
-                attachment
-                    .session_id
-                    .is_none()
-                    .then(|| sessions.len().checked_sub(1))
-                    .flatten()
-            });
-        let Some(session_index) = session_index else {
-            if attachment.parent_item_id.is_none() {
-                let outcome = self
-                    .daemon
-                    .import_connector_item(standalone_attachment_import(
-                        attachment,
-                    ))
-                    .map_err(|error| error.to_string())?;
-                println!(
-                    "saved Localref item: {}",
-                    outcome.item_dir.display()
-                );
-                tracing::info!(
-                    target: "localref::csc_attachment",
-                    "saved standalone attachment: {}",
-                    outcome.item_dir.display(),
-                );
-                return Ok(());
-            }
-            sessions.push(PendingImport {
-                session_id: attachment.session_id.clone(),
-                items: Vec::new(),
-                attachments: vec![attachment],
-                outcome: None,
-            });
-            return Ok(());
-        };
-        let session = &mut sessions[session_index];
-        if let Some(outcome) = &session.outcome {
-            let path = self
-                .daemon
-                .save_connector_attachment_to_item(
-                    &outcome.item_dir,
-                    attachment,
-                )
-                .map_err(|error| error.to_string())?;
-            println!("  wrote: {}", path.display());
-            tracing::info!(
-                target: "localref::csc_attachment",
-                "saved late attachment: {}",
-                path.display(),
-            );
-        } else {
-            session.attachments.push(attachment);
-            self.try_import_locked(&mut sessions)?;
-        }
-        Ok(())
-    }
-
-    fn accept_event(&self, event: ConnectorEvent) -> Result<(), String> {
-        let serialized = serde_json::to_string(&event)
-            .map_err(|error| error.to_string())?;
-        println!("connector event: {serialized}");
-        tracing::info!(
-            target: "localref::csc_event",
-            "{serialized}",
-        );
-        Ok(())
-    }
-
-    /// Return Localref category paths for connector target selection.
-    fn category_paths(&self) -> Result<Vec<String>, String> {
-        self.daemon
-            .list_categories()
-            .map(|categories| {
-                categories.into_iter().map(|category| category.path).collect()
-            })
-            .map_err(|error| error.to_string())
-    }
-}
-
-/// Build a top-level Localref import for a standalone connector attachment.
-fn standalone_attachment_import(
-    attachment: ConnectorAttachment,
-) -> ConnectorImport {
-    let title = attachment
-        .title
-        .clone()
-        .filter(|title| !title.trim().is_empty())
-        .unwrap_or_else(|| attachment.filename.clone());
-    let uri = attachment.raw_metadata.as_ref().and_then(|metadata| {
-        metadata
-            .get("url")
-            .or_else(|| metadata.get("uri"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-    });
-    let item = ConnectorItem {
-        session_id: attachment.session_id.clone(),
-        uri,
-        connector_item_id: None,
-        item_type: Some("attachment".to_string()),
-        title,
-        abstract_note: None,
-        doi: None,
-        raw: attachment.raw_metadata.clone().unwrap_or_else(
-            || serde_json::json!({ "title": attachment.filename }),
-        ),
-    };
-    ConnectorImport { item, attachments: vec![attachment] }
-}
