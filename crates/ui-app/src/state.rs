@@ -1,7 +1,5 @@
 //! URL state and view model assembly for the Localref web UI.
 
-use std::fmt::Write as _;
-
 use localref_core::logging::LogEntry;
 use localref_core::model::{
     Creator, ItemDocument, ItemFileEntry, Metadata, MetadataDocument,
@@ -10,6 +8,8 @@ use localref_core::rules::{RuleSet, RuleSummary};
 use localref_core::storage::CategorySummary;
 use localref_core::{DaemonStatus, LocalrefDaemon, PauseMode};
 use localref_plugin::discovery::DiscoveredPlugin;
+
+use crate::route::encode_query;
 use localref_plugin::manifest::{ActionMount, PageMount};
 use serde::Deserialize;
 
@@ -290,20 +290,20 @@ pub fn return_to(
     active_id: Option<&str>,
     tab: &str,
 ) -> String {
-    let mut parts = Vec::new();
-    if let Some(q) = optional_text(query.q.as_deref()) {
-        parts.push(format!("q={}", encode_query(&q)));
-    }
-    if let Some(category) = optional_text(query.category.as_deref()) {
-        parts.push(format!("category={}", encode_query(&category)));
-    }
-    if !selected_ids.is_empty() {
-        parts.push(format!("selected={}", selected_ids.join(",")));
-    }
-    if let Some(active_id) = active_id {
-        parts.push(format!("active={}", encode_query(active_id)));
-    }
-    parts.push(format!("tab={}", encode_query(tab)));
+    let selected = (!selected_ids.is_empty())
+        .then(|| format!("selected={}", selected_ids.join(",")));
+    let parts: Vec<String> = [
+        optional_text(query.q.as_deref())
+            .map(|q| format!("q={}", encode_query(&q))),
+        optional_text(query.category.as_deref())
+            .map(|category| format!("category={}", encode_query(&category))),
+        selected,
+        active_id.map(|active_id| format!("active={}", encode_query(active_id))),
+        Some(format!("tab={}", encode_query(tab))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     format!("/?{}", parts.join("&"))
 }
 
@@ -440,17 +440,3 @@ pub fn build_plugin_menu_items(
         .collect()
 }
 
-/// Internal helper for encode query.
-fn encode_query(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'_' | b'.' | b'~' | b':' | b',')
-        {
-            encoded.push(byte as char);
-        } else {
-            let _ = write!(encoded, "%{byte:02X}");
-        }
-    }
-    encoded
-}

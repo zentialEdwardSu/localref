@@ -6,6 +6,9 @@ use localref_core::types::CategoryPath;
 use localref_core::{LocalrefDaemon, PauseMode};
 use serde::Deserialize;
 
+use crate::server::decode_query_value;
+use crate::state::optional_text;
+
 /// Form payload posted by UI controls.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct UiAction {
@@ -363,42 +366,6 @@ fn category_target_ids_from_return(path: &str) -> Vec<String> {
     } else {
         selected
     }
-}
-
-/// Internal helper for decode query value.
-fn decode_query_value(value: &str) -> Option<String> {
-    let mut bytes = Vec::with_capacity(value.len());
-    let mut input = value.as_bytes().iter().copied();
-    while let Some(byte) = input.next() {
-        match byte {
-            b'+' => bytes.push(b' '),
-            b'%' => {
-                let high = input.next().and_then(hex_value)?;
-                let low = input.next().and_then(hex_value)?;
-                bytes.push((high << 4) | low);
-            }
-            byte => bytes.push(byte),
-        }
-    }
-    String::from_utf8(bytes).ok()
-}
-
-/// Internal helper for hex value.
-fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
-/// Internal helper for optional text.
-fn optional_text(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 /// Internal helper for to string.

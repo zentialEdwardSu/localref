@@ -203,10 +203,8 @@ impl LocalrefConfig {
         };
         let repo_name = file
             .repo_name
-            .and_then(|value| {
-                let value = value.trim();
-                (!value.is_empty()).then(|| value.to_string())
-            })
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "Localref".to_string());
         let rest = file.rest.unwrap_or_default();
         let csc = file.csc.unwrap_or_default();

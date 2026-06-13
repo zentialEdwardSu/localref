@@ -75,11 +75,12 @@ pub fn active_detail(
 /// Convert one core item document into a UI item summary.
 #[must_use]
 pub fn item_summary(item: localref_core::model::ItemDocument) -> ItemSummary {
-    let mut files = Vec::new();
-    if let Some(main) = item.main_file.clone() {
-        files.push(main);
-    }
-    files.extend(item.extra_files.clone());
+    let files = item
+        .main_file
+        .iter()
+        .chain(&item.extra_files)
+        .cloned()
+        .collect();
     ItemSummary {
         id: item.id,
         title: item.title,

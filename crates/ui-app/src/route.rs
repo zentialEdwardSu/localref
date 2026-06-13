@@ -113,8 +113,8 @@ pub fn optional_text(value: &str) -> Option<String> {
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
-/// Internal helper for encode query.
-fn encode_query(value: &str) -> String {
+/// Percent-encode one query parameter value, preserving `-_.~:,`.
+pub(crate) fn encode_query(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric()

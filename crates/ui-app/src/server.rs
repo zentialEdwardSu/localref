@@ -444,14 +444,18 @@ pub fn default_download_filename(action_name: &str) -> String {
 
 /// Internal helper for safe download filename.
 fn safe_download_filename(value: &str) -> String {
-    let mut safe = String::new();
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-            safe.push(ch);
-        } else if ch.is_whitespace() {
-            safe.push('-');
-        }
-    }
+    let safe: String = value
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                Some(ch)
+            } else if ch.is_whitespace() {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect();
     if safe.is_empty() { "localref-export.txt".to_string() } else { safe }
 }
 
@@ -631,25 +635,9 @@ pub fn rules_action_return(result: &Result<(), String>) -> String {
     match result {
         Ok(()) => "/?tab=rules&rules_status=saved".to_string(),
         Err(error) => {
-            format!("/?tab=rules&rules_error={}", encode_query(error))
+            format!("/?tab=rules&rules_error={}", encode_query_component(error))
         }
     }
-}
-
-/// Internal helper for encode query.
-#[must_use]
-pub fn encode_query(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'_' | b'.' | b'~')
-        {
-            encoded.push(byte as char);
-        } else {
-            let _ = write!(encoded, "%{byte:02X}");
-        }
-    }
-    encoded
 }
 
 /// Percent-encode a string for use in a query parameter value.

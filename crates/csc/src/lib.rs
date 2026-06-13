@@ -580,12 +580,13 @@ pub async fn select_items(
     Json(payload): Json<Value>,
 ) -> Response {
     record_method(&state, "POST", "/connector/selectItems");
-    let mut selected = serde_json::Map::new();
-    if let Some(items) = payload.get("items").and_then(Value::as_object) {
-        for key in items.keys() {
-            selected.insert(key.clone(), Value::Bool(true));
-        }
-    }
+    let selected = payload
+        .get("items")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(serde_json::Map::keys)
+        .map(|key| (key.clone(), Value::Bool(true)))
+        .collect();
     json_response(Value::Object(selected))
 }
 
@@ -1082,14 +1083,12 @@ pub fn truncate_title(value: &str) -> String {
 
 /// Extract a file name from connector attachment metadata.
 pub fn filename_from_value(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    trimmed
+    value
+        .trim()
         .rsplit(['/', '\\'])
         .next()
-        .filter(|filename| !filename.trim().is_empty())
+        .map(str::trim)
+        .filter(|filename| !filename.is_empty())
         .map(str::to_string)
 }
 

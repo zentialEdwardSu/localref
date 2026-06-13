@@ -13,20 +13,24 @@ pub type Params = HashMap<String, String>;
 #[allow(dead_code)]
 #[must_use]
 pub fn return_to(state: &PluginState) -> String {
-    let mut parts = Vec::new();
-    if let Some(ref q) = state.search {
-        parts.push(format!("q={}", encode_query(q)));
-    }
-    if let Some(ref cat) = state.category {
-        parts.push(format!("category={}", encode_query(cat)));
-    }
-    if !state.selected_ids.is_empty() {
-        parts.push(format!("selected={}", state.selected_ids.join(",")));
-    }
-    if let Some(ref active) = state.active_id {
-        parts.push(format!("active={}", encode_query(active)));
-    }
-    parts.push(format!("tab={}", encode_query(&state.tab)));
+    let selected = (!state.selected_ids.is_empty())
+        .then(|| format!("selected={}", state.selected_ids.join(",")));
+    let parts: Vec<String> = [
+        state.search.as_ref().map(|q| format!("q={}", encode_query(q))),
+        state
+            .category
+            .as_ref()
+            .map(|cat| format!("category={}", encode_query(cat))),
+        selected,
+        state
+            .active_id
+            .as_ref()
+            .map(|active| format!("active={}", encode_query(active))),
+        Some(format!("tab={}", encode_query(&state.tab))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     format!("/?{}", parts.join("&"))
 }
 

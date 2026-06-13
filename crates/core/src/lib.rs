@@ -2266,20 +2266,22 @@ fn unique_item_file_path(item_dir: &Path, filename: &str) -> PathBuf {
 
 /// Internal helper for direct files.
 fn direct_files(item_dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(item_dir)
+    let mut files = std::fs::read_dir(item_dir)
         .map_err(|source| LocalrefError::io(item_dir, source))?
-    {
-        let entry =
-            entry.map_err(|source| LocalrefError::io(item_dir, source))?;
-        let path = entry.path();
-        if path.is_file()
-            && path.file_name().and_then(|name| name.to_str())
-                != Some("metadata.toml")
-        {
-            files.push(path);
-        }
-    }
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|source| LocalrefError::io(item_dir, source))
+        })
+        .filter(|path| match path {
+            Ok(path) => {
+                path.is_file()
+                    && path.file_name().and_then(|name| name.to_str())
+                        != Some("metadata.toml")
+            }
+            Err(_) => true,
+        })
+        .collect::<Result<Vec<_>>>()?;
     files.sort();
     Ok(files)
 }

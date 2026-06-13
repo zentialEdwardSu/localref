@@ -1101,24 +1101,23 @@ pub fn empty_metadata_form(state: &UiState) -> impl IntoView {
 /// Return categories common to the current active or selected items.
 #[must_use]
 pub fn current_categories(state: &UiState) -> Vec<String> {
-    let target_ids = if state.category_target_ids.is_empty() {
-        state.active_id.iter().cloned().collect::<Vec<_>>()
+    let target_ids: &[String] = if state.category_target_ids.is_empty() {
+        state.active_id.as_slice()
     } else {
-        state.category_target_ids.clone()
+        &state.category_target_ids
     };
-    let mut common: Option<std::collections::BTreeSet<String>> = None;
-    for id in target_ids {
-        let Some(item) = state.items.iter().find(|item| item.id == id) else {
-            continue;
-        };
-        let categories = item.categories.iter().cloned().collect();
-        common = Some(match common {
-            Some(current) => {
-                current.intersection(&categories).cloned().collect()
-            }
-            None => categories,
+    let common = target_ids
+        .iter()
+        .filter_map(|id| state.items.iter().find(|item| &item.id == id))
+        .fold(None, |common: Option<std::collections::BTreeSet<String>>, item| {
+            let categories = item.categories.iter().cloned().collect();
+            Some(match common {
+                Some(current) => {
+                    current.intersection(&categories).cloned().collect()
+                }
+                None => categories,
+            })
         });
-    }
     common.unwrap_or_default().into_iter().collect()
 }
 
