@@ -281,6 +281,9 @@ async fn load_model(
 }
 
 /// Render plugin pages mounted into fixed host UI slots.
+///
+/// Each matching slot is rendered in its own task so a slow plugin cannot
+/// block its siblings; results are sorted deterministically for stable SSR.
 pub async fn render_fixed_plugin_slots(
     model: &mut UiModel,
     state: &ServerState,
@@ -290,7 +293,11 @@ pub async fn render_fixed_plugin_slots(
     } else {
         PageMount::SelectionPage
     };
+    let target_mount_name = page_mount_name(&target_mount).to_string();
     let plugin_state = build_plugin_ui_state(model, state);
+
+    let mut set: tokio::task::JoinSet<crate::model::PluginSlotHtml> =
+        tokio::task::JoinSet::new();
     for plugin in state.plugins.iter() {
         for page in plugin
             .manifest
@@ -298,31 +305,60 @@ pub async fn render_fixed_plugin_slots(
             .iter()
             .filter(|page| page.mount == target_mount)
         {
-            let html = match localref_plugin::invoke::invoke_render(
-                &plugin.executable,
-                &page.id,
-                &plugin_state,
-            )
-            .await
-            {
-                Ok(output) if output.status == "ok" => output.html,
-                Ok(output) => plugin_error_html(
-                    output
-                        .message
-                        .as_deref()
-                        .unwrap_or("plugin render failed"),
-                ),
-                Err(error) => plugin_error_html(&error.to_string()),
-            };
-            model.plugin_slots.push(crate::model::PluginSlotHtml {
-                mount: page_mount_name(&page.mount).to_string(),
-                plugin_name: plugin.name().to_string(),
-                page_id: page.id.clone(),
-                label: page.label.clone(),
-                html,
+            let executable = plugin.executable.clone();
+            let page_id = page.id.clone();
+            let mount = page_mount_name(&page.mount).to_string();
+            let plugin_name = plugin.name().to_string();
+            let label = page.label.clone();
+            let plugin_state = plugin_state.clone();
+            set.spawn(async move {
+                let html = match localref_plugin::invoke::invoke_render(
+                    &executable,
+                    &page_id,
+                    &plugin_state,
+                )
+                .await
+                {
+                    Ok(output) if output.status == "ok" => output.html,
+                    Ok(output) => plugin_error_html(
+                        output
+                            .message
+                            .as_deref()
+                            .unwrap_or("plugin render failed"),
+                    ),
+                    Err(error) => plugin_error_html(&error.to_string()),
+                };
+                crate::model::PluginSlotHtml {
+                    mount,
+                    plugin_name,
+                    page_id,
+                    label,
+                    html,
+                }
             });
         }
     }
+
+    let mut rendered: Vec<crate::model::PluginSlotHtml> = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok(slot) => rendered.push(slot),
+            Err(error) => rendered.push(crate::model::PluginSlotHtml {
+                mount: target_mount_name.clone(),
+                plugin_name: String::new(),
+                page_id: String::new(),
+                label: String::new(),
+                html: plugin_error_html(&format!(
+                    "plugin slot task failed: {error}"
+                )),
+            }),
+        }
+    }
+    rendered.sort_by(|a, b| {
+        (a.plugin_name.as_str(), a.page_id.as_str())
+            .cmp(&(b.plugin_name.as_str(), b.page_id.as_str()))
+    });
+    model.plugin_slots.extend(rendered);
 }
 
 /// Return the stable JSON name for a plugin page mount.
@@ -683,6 +719,8 @@ mod tests {
                     mount: PageMount::DetailTab,
                     route: "export".to_string(),
                 }],
+                needs_items: false,
+                needs_active_detail: false,
             },
             executable: PathBuf::from("plugins/bibtexer/bibtexer"),
             static_dir: PathBuf::from("plugins/bibtexer/static"),
