@@ -149,6 +149,35 @@ fn open_daemon(config: &LocalrefConfig) -> LocalrefDaemon {
     LocalrefDaemon::new(storage)
 }
 
+/// Process-wide runtime built once and shared by every mode.
+///
+/// Opens the query database, builds the daemon facade, and discovers plugins a
+/// single time so every runtime mode starts from the same prepared state.
+struct AppRuntime {
+    /// Loaded configuration owned for the process lifetime.
+    config: LocalrefConfig,
+    /// Daemon facade backed by the query database.
+    daemon: LocalrefDaemon,
+    /// Plugins discovered once at startup.
+    plugins: Arc<Vec<localref_plugin::DiscoveredPlugin>>,
+}
+
+impl AppRuntime {
+    /// Open the daemon and discover plugins once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the query database cannot be opened.
+    fn bootstrap(config: LocalrefConfig) -> std::io::Result<Self> {
+        let storage = StorageDb::open(config.library_root())
+            .map_err(std::io::Error::other)?;
+        let daemon = LocalrefDaemon::new(storage);
+        let plugins =
+            Arc::new(localref_plugin::discover_plugins(config.plugins_dir()));
+        Ok(Self { config, daemon, plugins })
+    }
+}
+
 /// Run an async server mode from the synchronous command entry point.
 fn run_runtime(
     future: impl Future<Output = std::io::Result<()>>,
