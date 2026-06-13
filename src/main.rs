@@ -4,7 +4,6 @@
 //! boundary. Supporting crates provide protocol, REST, tray, and UI libraries,
 //! but they do not expose their own installed binaries.
 
-use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -35,10 +34,10 @@ fn main() -> std::io::Result<()> {
         config.desktop_quiet_start(),
     );
     match cli.command.unwrap_or(AppCommand::TrayHost) {
-        AppCommand::TrayHost => run_tray_host(config),
-        AppCommand::Headless => run_runtime(serve_all(config)),
-        AppCommand::Rest => run_runtime(serve_rest(config)),
-        AppCommand::Csc => run_runtime(serve_csc_only(config)),
+        AppCommand::TrayHost => {
+            let runtime = AppRuntime::bootstrap(config)?;
+            run_tray_host(runtime)
+        }
         AppCommand::Ui => launch_ui().map_err(std::io::Error::other),
         AppCommand::Tray { action } => {
             run_tray_action(
@@ -64,14 +63,6 @@ struct Cli {
 enum AppCommand {
     /// Start the tray-resident daemon process.
     TrayHost,
-    /// Start REST and connector servers without a tray icon.
-    #[command(alias = "serve")]
-    Headless,
-    /// Start only the REST API for manual diagnostics.
-    Rest,
-    /// Start only the connector-compatible API for manual diagnostics.
-    #[command(alias = "csc-dev")]
-    Csc,
     /// Open the browser-served UI.
     Ui,
     /// Execute one tray action through the same binary.
@@ -116,37 +107,17 @@ impl From<TrayCliAction> for TrayAction {
 }
 
 /// Start the tray-hosted daemon runtime.
-fn run_tray_host(config: LocalrefConfig) -> std::io::Result<()> {
+fn run_tray_host(runtime: AppRuntime) -> std::io::Result<()> {
     tracing::info!(target: "localref::tray_host", "tray host starting");
+    let config = runtime.config.clone();
     if config.desktop_quiet_start() {
         detach_console_for_quiet_start();
     } else {
         print_config_summary(&config);
     }
-    let daemon = open_daemon(&config);
-    let _api_thread = start_api_runtime(
-        config.clone(),
-        daemon,
-        !config.desktop_quiet_start(),
-    )?;
+    let print_listeners = !config.desktop_quiet_start();
+    let _api_thread = start_api_runtime(runtime, print_listeners)?;
     run_native_tray_host(&config)
-}
-
-/// Start both long-lived HTTP surfaces.
-async fn serve_all(config: LocalrefConfig) -> std::io::Result<()> {
-    tracing::info!(target: "localref::headless", "headless server starting");
-    print_config_summary(&config);
-    let daemon = open_daemon(&config);
-    let rest = serve_rest_with_daemon(config.clone(), daemon.clone());
-    let csc = serve_csc_with_daemon(config, daemon);
-    tokio::try_join!(rest, csc).map(|_| ())
-}
-
-/// Open the daemon once for all in-process API surfaces.
-fn open_daemon(config: &LocalrefConfig) -> LocalrefDaemon {
-    let storage = StorageDb::open(config.library_root())
-        .expect("failed to open Localref query database");
-    LocalrefDaemon::new(storage)
 }
 
 /// Process-wide runtime built once and shared by every mode.
@@ -159,6 +130,8 @@ struct AppRuntime {
     /// Daemon facade backed by the query database.
     daemon: LocalrefDaemon,
     /// Plugins discovered once at startup.
+    // Used by serve_rest_with_daemon in a later wiring step.
+    #[allow(dead_code)]
     plugins: Arc<Vec<localref_plugin::DiscoveredPlugin>>,
 }
 
@@ -178,33 +151,27 @@ impl AppRuntime {
     }
 }
 
-/// Run an async server mode from the synchronous command entry point.
-fn run_runtime(
-    future: impl Future<Output = std::io::Result<()>>,
-) -> std::io::Result<()> {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(future)
-}
-
 /// Start REST and CSC servers on a background Tokio runtime.
 fn start_api_runtime(
-    config: LocalrefConfig,
-    daemon: LocalrefDaemon,
+    runtime: AppRuntime,
     _print_listeners: bool,
 ) -> std::io::Result<JoinHandle<()>> {
-    std::thread::Builder::new().name("localref-api-runtime".to_string()).spawn(
-        move || {
-            let rest_config = config.clone();
-            let rest_daemon = daemon.clone();
-            let runtime = tokio::runtime::Builder::new_multi_thread()
+    std::thread::Builder::new()
+        .name("localref-api-runtime".to_string())
+        .spawn(move || {
+            let tokio_rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .expect("failed to start Localref API runtime");
-            runtime.block_on(async move {
-                let rest = serve_rest_with_daemon(rest_config, rest_daemon);
-                let csc = serve_csc_with_daemon(config, daemon);
+            tokio_rt.block_on(async move {
+                let rest = serve_rest_with_daemon(
+                    runtime.config.clone(),
+                    runtime.daemon.clone(),
+                );
+                let csc = serve_csc_with_daemon(
+                    runtime.config.clone(),
+                    runtime.daemon.clone(),
+                );
                 if let Err(error) = tokio::try_join!(rest, csc).map(|_| ()) {
                     tracing::error!(
                         target: "localref::runtime",
@@ -213,16 +180,7 @@ fn start_api_runtime(
                     eprintln!("localref API runtime stopped: {error}");
                 }
             });
-        },
-    )
-}
-
-/// Start only the user-facing REST API.
-async fn serve_rest(config: LocalrefConfig) -> std::io::Result<()> {
-    let storage = StorageDb::open(config.library_root())
-        .expect("failed to open Localref query database");
-    let daemon = LocalrefDaemon::new(storage);
-    serve_rest_with_daemon(config, daemon).await
+        })
 }
 
 /// Start the REST API using an already-open daemon.
@@ -263,13 +221,6 @@ fn rest_app(config: &LocalrefConfig, daemon: LocalrefDaemon) -> axum::Router {
 #[cfg(not(feature = "desktop"))]
 fn rest_app(_config: &LocalrefConfig, daemon: LocalrefDaemon) -> axum::Router {
     localref_core::rest::router_with_daemon(daemon)
-}
-
-/// Start only the Zotero Connector-compatible API.
-async fn serve_csc_only(config: LocalrefConfig) -> std::io::Result<()> {
-    let daemon = LocalrefDaemon::for_library(config.library_root())
-        .expect("failed to open Localref daemon");
-    serve_csc_with_daemon(config, daemon).await
 }
 
 /// Start the connector API using an already-open daemon.
