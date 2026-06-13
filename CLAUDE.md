@@ -24,9 +24,9 @@ cargo test <test_name>                  # single test
 cargo test -p localref-core <test_name>
 
 # Run (debug)
-cargo run -- headless                   # headless server (rest + csc)
-cargo run -- rest                       # REST-only diagnostics
 cargo run -- ui                         # open browser UI
+cargo run --bin localref-rest-dev       # REST-only diagnostics binary
+cargo run --bin localref-csc-dev        # connector-only diagnostics binary
 ```
 
 # 12-rules for Implement
@@ -98,18 +98,17 @@ Localref is a tray-resident desktop reference manager. The single binary (`local
 
 **Runtime modes** (`src/main.rs`):
 - `tray-host` (default): tray icon + daemon + REST + CSC + UI
-- `headless` / `serve`: REST + CSC servers, no tray
-- `rest`: REST-only for diagnostics
-- `csc` / `csc-dev`: connector API only
 - `ui`: open the browser-served web UI
 - `tray <action>`: drive the tray from CLI (open-ui, scan, pause/resume, quit)
+
+REST-only and connector-only diagnostics live in the standalone `localref-rest-dev` and `localref-csc-dev` binaries (`src/bin/`), not as `localref` subcommands.
 
 **Workspace crates:**
 
 | Crate | Purpose |
 |---|---|
-| `localref-core` (`crates/core`) | Import pipeline, daemon task queue, redb query storage, REST API endpoints, rules engine, event log, lock management |
-| `csc` (`crates/csc`) | Zotero Connector HTTP protocol adapter — an Axum server that accepts connector-shaped requests and forwards them to a `ConnectorImportSink` trait |
+| `localref-core` (`crates/core`) | Import pipeline, daemon task queue, redb query storage, REST API endpoints, rules engine, log ring buffer, lock management |
+| `csc` (`crates/csc`) | Zotero Connector HTTP protocol adapter — an Axum server that accepts connector-shaped requests and forwards them to a `ConnectorImportSink` trait; provides `DaemonConnectorSink`, the production sink that buffers connector sessions and forwards to the core import pipeline |
 | `localref-plugin` (`crates/plugin`) | Plugin discovery (scans directories for `plugin.toml`), invocation via stdio JSON subprocess calls, shared types (`RenderOutput`, `RunOutput`, `PluginUiState`) |
 | `localref-plugin-sdk` (`crates/plugin-sdk`) | Optional Rust trait (`Plugin`) for building plugins more ergonomically than raw stdio JSON |
 | `ui-app` (`crates/ui-app`) | Leptos SSR + WASM hydration web UI (`ssr` feature for server, `hydrate` feature for wasm32). Provides `router_with_daemon_repo_plugins_and_context()` to merge plugin routes into the Axum router |
@@ -124,16 +123,16 @@ Localref is a tray-resident desktop reference manager. The single binary (`local
     db/query.redb         # redb rebuildable query database
     rules.toml            # auto-classification rules
     locks/                # filesystem locks
-    logs/events.jsonl     # daemon event log
+    logs/localref.jsonl   # structured JSONL daemon log
 ```
 
 **Key abstractions in `localref-core`:**
-- `LocalrefDaemon` — the main facade; owns task queue, storage, event log, pending imports
+- `LocalrefDaemon` — the main facade; owns task queue, storage, and the log ring buffer
 - `ImportPipeline` — stateless pipeline for writing items into `All/` with metadata
 - `StorageDb` — redb-backed query index rebuildable from `All/*/metadata.toml`
 - `LibraryFs` — filesystem helpers: atomic writes, NTFS-safe filenames, category link management
 - `RuleSet` — parses `rules.toml` and matches imported metadata against automatic classification rules
-- `EventLog` — append-only JSONL event log for observable daemon activity
+- `LogRingBuffer` (`logging.rs`) — in-memory ring buffer of `tracing` events, exposed to the UI/REST as observable daemon activity
 - `LockManager` — cross-process filesystem lock files under `.localref/locks/`
 
 **Plugin system:**
@@ -162,7 +161,7 @@ The web UI mounts plugins at `/plugin/<name>/action` for form POSTs. Plugin page
 
 - `desktop` (default) — includes `ui-app` with SSR, enables REST+CSC+UI
 - `native-tray` (default) — Windows native tray icon via `tao` + `tray-icon`
-- Build without defaults for a headless server: `cargo build --no-default-features`
+- Build without defaults for a headless (no-tray) server: `cargo build --no-default-features`
 
 ## Conventions
 
