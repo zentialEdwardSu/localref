@@ -858,6 +858,44 @@ title = "Drop Target"
         assert!(item_dir.join("appendix.pdf").is_file());
     }
 
+    #[test]
+    fn unmatched_connector_import_links_under_unmatched_category() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        let outcome = daemon
+            .import_connector_item(ConnectorImport {
+                item: ConnectorItem {
+                    session_id: Some("s-unmatched".to_string()),
+                    uri: None,
+                    connector_item_id: Some("unmatched-1".to_string()),
+                    item_type: Some("journalArticle".to_string()),
+                    title: "Totally Unclassifiable Paper".to_string(),
+                    abstract_note: None,
+                    doi: None,
+                    raw: json!({"title": "Totally Unclassifiable Paper"}),
+                },
+                attachments: Vec::new(),
+            })
+            .expect("import should succeed");
+
+        assert!(outcome.item_dir.exists(), "item dir written to All/");
+        assert_eq!(
+            outcome.categories,
+            vec![CategoryPath::new("unmatched").unwrap()],
+            "unmatched import must be classified as 'unmatched'",
+        );
+        // The item must be reachable from Cat/unmatched/, not merely have the
+        // directory created — that is the orphan-prevention guarantee.
+        let unmatched_dir = temp.path().join("Cat").join("unmatched");
+        let link_count = std::fs::read_dir(&unmatched_dir)
+            .expect("Cat/unmatched/ must exist after an unmatched import")
+            .count();
+        assert_eq!(
+            link_count, 1,
+            "Cat/unmatched/ must contain exactly one link to the imported item",
+        );
+    }
+
     #[tokio::test]
     async fn category_write_endpoints_update_cat_links() {
         let temp = tempfile::tempdir().unwrap();

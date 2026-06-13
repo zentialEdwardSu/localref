@@ -48,6 +48,9 @@ use crate::types::{
 use lock::LockManager;
 use serde::{Deserialize, Serialize};
 
+/// Category assigned to connector imports that match no classification rule.
+const UNMATCHED_CATEGORY: &str = "unmatched";
+
 /// Import pipeline rooted at one Localref library.
 #[derive(Clone, Debug)]
 pub struct ImportPipeline {
@@ -1396,6 +1399,10 @@ impl ImportPipeline {
     /// # Errors
     ///
     /// Returns an error when the operation cannot be completed.
+    /// # Panics
+    ///
+    /// Panics if `UNMATCHED_CATEGORY` is not a valid category path. This is a
+    /// compile-time-fixed constant, so the panic is unreachable in practice.
     pub fn import_connector_item_with_categories(
         &self,
         import: impl Borrow<ConnectorImport>,
@@ -1464,6 +1471,17 @@ impl ImportPipeline {
             "connector import finished",
         );
 
+        // No rule matched: fall back to the `unmatched` category so the item
+        // is always reachable from Cat/ and never orphaned.
+        let categories = if categories.is_empty() {
+            vec![
+                CategoryPath::new(UNMATCHED_CATEGORY)
+                    .expect("UNMATCHED_CATEGORY must be a valid category path"),
+            ]
+        } else {
+            categories
+        };
+
         for category in &categories {
             let link_path =
                 self.fs.create_category_link(category, &item_dir)?;
@@ -1475,15 +1493,13 @@ impl ImportPipeline {
                 category.as_str(),
             );
         }
-        if !categories.is_empty() {
-            tracing::info!(
-                event_kind = LogKind::AutoClassifiedOnImport.as_str(),
-                item_id = item_id.as_str(),
-                path = relative_to_root(self.fs.root(), &item_dir),
-                "matched {} categor(ies)",
-                categories.len(),
-            );
-        }
+        tracing::info!(
+            event_kind = LogKind::AutoClassifiedOnImport.as_str(),
+            item_id = item_id.as_str(),
+            path = relative_to_root(self.fs.root(), &item_dir),
+            "matched {} categor(ies)",
+            categories.len(),
+        );
 
         Ok(ImportOutcome { item_id, item_dir, written_files, categories })
     }
