@@ -224,7 +224,12 @@ pub async fn plugin_action(
         .unwrap_or_default();
     match load_model(&state, query).await {
         Ok(model) => {
-            let plugin_state = build_plugin_ui_state(&model, &state);
+            let plugin_state = build_plugin_ui_state(
+                &model,
+                &state,
+                plugin.manifest.needs_items,
+                plugin.manifest.needs_active_detail,
+            );
             match localref_plugin::invoke::invoke_run(
                 &plugin.executable,
                 &action_name,
@@ -255,7 +260,12 @@ async fn load_model(
     render_fixed_plugin_slots(&mut model, state).await;
     if let Some((plugin, page_id)) = active_plugin_page(&model, &state.plugins)
     {
-        let plugin_state = build_plugin_ui_state(&model, state);
+        let plugin_state = build_plugin_ui_state(
+            &model,
+            state,
+            plugin.manifest.needs_items,
+            plugin.manifest.needs_active_detail,
+        );
         let mut html = match localref_plugin::invoke::invoke_render(
             &plugin.executable,
             page_id,
@@ -294,7 +304,6 @@ pub async fn render_fixed_plugin_slots(
         PageMount::SelectionPage
     };
     let target_mount_name = page_mount_name(&target_mount).to_string();
-    let plugin_state = build_plugin_ui_state(model, state);
 
     let mut set: tokio::task::JoinSet<crate::model::PluginSlotHtml> =
         tokio::task::JoinSet::new();
@@ -310,7 +319,12 @@ pub async fn render_fixed_plugin_slots(
             let mount = page_mount_name(&page.mount).to_string();
             let plugin_name = plugin.name().to_string();
             let label = page.label.clone();
-            let plugin_state = plugin_state.clone();
+            let plugin_state = build_plugin_ui_state(
+                model,
+                state,
+                plugin.manifest.needs_items,
+                plugin.manifest.needs_active_detail,
+            );
             set.spawn(async move {
                 let html = match localref_plugin::invoke::invoke_render(
                     &executable,
@@ -549,6 +563,8 @@ pub async fn plugin_static(
 fn build_plugin_ui_state(
     model: &UiModel,
     server_state: &ServerState,
+    needs_items: bool,
+    needs_active_detail: bool,
 ) -> PluginUiState {
     use localref_plugin::state::{
         PluginActiveDetail, PluginCategorySummary, PluginItemSummary,
@@ -559,26 +575,30 @@ fn build_plugin_ui_state(
         repo_name: server_state.repo_name.clone(),
         search: model.query.q.clone(),
         category: model.query.category.clone(),
-        items: model
-            .items
-            .iter()
-            .map(|item| PluginItemSummary {
-                id: item.id.clone(),
-                title: item.title.clone(),
-                authors: item.authors.clone(),
-                item_type: item.item_type.clone(),
-                categories: item.categories.clone(),
-                main_file: item.main_file.clone(),
-                files: {
-                    let mut paths: Vec<String> = Vec::new();
-                    if let Some(ref main) = item.main_file {
-                        paths.push(main.clone());
-                    }
-                    paths.extend(item.extra_files.clone());
-                    paths
-                },
-            })
-            .collect(),
+        items: if needs_items {
+            model
+                .items
+                .iter()
+                .map(|item| PluginItemSummary {
+                    id: item.id.clone(),
+                    title: item.title.clone(),
+                    authors: item.authors.clone(),
+                    item_type: item.item_type.clone(),
+                    categories: item.categories.clone(),
+                    main_file: item.main_file.clone(),
+                    files: {
+                        let mut paths: Vec<String> = Vec::new();
+                        if let Some(ref main) = item.main_file {
+                            paths.push(main.clone());
+                        }
+                        paths.extend(item.extra_files.clone());
+                        paths
+                    },
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
         categories: model
             .categories
             .iter()
@@ -589,20 +609,24 @@ fn build_plugin_ui_state(
             .collect(),
         selected_ids: model.selected_ids.clone(),
         active_id: model.active_id.clone(),
-        active_detail: model.active_metadata.as_ref().map(|doc| {
-            PluginActiveDetail {
-                metadata_revision: doc.metadata_revision.clone(),
-                title: doc.metadata.title.clone(),
-                authors: crate::state::author_summary(&doc.metadata),
-                item_type: doc.metadata.item_type.clone(),
-                year: doc.metadata.year,
-                doi: doc.metadata.doi.clone(),
-                venue: doc.metadata.venue.clone(),
-                language: doc.metadata.language.clone(),
-                uri: doc.metadata.uri.clone(),
-                abstract_note: doc.metadata.abstract_note.clone(),
-            }
-        }),
+        active_detail: if needs_active_detail {
+            model.active_metadata.as_ref().map(|doc| {
+                PluginActiveDetail {
+                    metadata_revision: doc.metadata_revision.clone(),
+                    title: doc.metadata.title.clone(),
+                    authors: crate::state::author_summary(&doc.metadata),
+                    item_type: doc.metadata.item_type.clone(),
+                    year: doc.metadata.year,
+                    doi: doc.metadata.doi.clone(),
+                    venue: doc.metadata.venue.clone(),
+                    language: doc.metadata.language.clone(),
+                    uri: doc.metadata.uri.clone(),
+                    abstract_note: doc.metadata.abstract_note.clone(),
+                }
+            })
+        } else {
+            None
+        },
         tab: model.tab.clone(),
         status_label: model.status_label(),
         library_root: server_state
