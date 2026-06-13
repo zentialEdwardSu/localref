@@ -19,6 +19,12 @@ pub struct PluginManifest {
     /// SSR pages the plugin provides.
     #[serde(default)]
     pub pages: Vec<PageSpec>,
+    /// Whether the plugin needs the full visible-items list in its state.
+    #[serde(default)]
+    pub needs_items: bool,
+    /// Whether the plugin needs the active item's detailed metadata.
+    #[serde(default)]
+    pub needs_active_detail: bool,
 }
 
 /// One plugin action registered for a mount point.
@@ -110,5 +116,25 @@ route = "selection-tools"
         assert_eq!(manifest.executable.as_deref(), Some("bin/cite-cli"));
         assert_eq!(manifest.pages[0].mount, PageMount::MetadataPage);
         assert_eq!(manifest.pages[1].mount, PageMount::SelectionPage);
+    }
+
+    #[test]
+    fn manifest_state_needs_default_false_and_opt_in() {
+        let lean = PluginManifest::parse(
+            "name = \"lean\"\nexecutable = \"bin/lean\"\n",
+        )
+        .expect("manifest parses");
+        assert!(!lean.needs_items, "needs_items defaults to false");
+        assert!(
+            !lean.needs_active_detail,
+            "needs_active_detail defaults to false",
+        );
+
+        let heavy = PluginManifest::parse(
+            "name = \"heavy\"\nexecutable = \"bin/heavy\"\nneeds_items = true\nneeds_active_detail = true\n",
+        )
+        .expect("manifest parses");
+        assert!(heavy.needs_items);
+        assert!(heavy.needs_active_detail);
     }
 }

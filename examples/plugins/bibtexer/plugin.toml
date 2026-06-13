@@ -1,6 +1,7 @@
 name = "bibtexer"
 executable = "bibtexer"
 description = "Export citations in BibTeX and RIS formats"
+needs_items = true
 
 [[actions]]
 id = "export_bibtex"
