@@ -161,7 +161,6 @@ pub fn render_topbar(
                     <span>{move || state.with(|state| state.items.len())} " items"</span>
                     <span>{move || state.with(|state| state.categories.len())} " categories"</span>
                     <span>{move || state.with(|state| state.events.len())} " events"</span>
-                    <span>{move || state.with(|state| state.pending_count)} " pending"</span>
                 </div>
                 <div class="control-row">
                     <button

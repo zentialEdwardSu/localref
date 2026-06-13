@@ -266,10 +266,6 @@ pub enum LogKind {
     CatLinkCreated,
     /// A category directory was created in `Cat/`.
     CategoryCreated,
-    /// Import is waiting for user category confirmation.
-    ImportPendingUserConfirmation,
-    /// A pending import was cancelled.
-    ImportCancelled,
     /// Metadata was created for an existing `All/` directory.
     MetadataCreated,
     /// Multiple candidate main files need user selection.
@@ -306,10 +302,6 @@ impl LogKind {
             LogKind::AutoClassifiedOnImport => "auto_classified_on_import",
             LogKind::CatLinkCreated => "cat_link_created",
             LogKind::CategoryCreated => "category_created",
-            LogKind::ImportPendingUserConfirmation => {
-                "import_pending_user_confirmation"
-            }
-            LogKind::ImportCancelled => "import_cancelled",
             LogKind::MetadataCreated => "metadata_created",
             LogKind::MultipleMainPdfCandidates => {
                 "multiple_main_pdf_candidates"

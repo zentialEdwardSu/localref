@@ -12,7 +12,7 @@ use crate::model::Metadata;
 use crate::rest_files;
 use crate::storage::StorageDb;
 use crate::types::CategoryPath;
-use crate::{LocalrefDaemon, PauseMode, PendingImportConfirmation};
+use crate::{LocalrefDaemon, PauseMode};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
@@ -98,12 +98,6 @@ pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
         .route("/api/events/stream", get(events_stream))
         .route("/api/categories/tree", get(categories_tree))
         .route("/api/categories", post(create_category))
-        .route("/api/import/pending", get(pending_imports))
-        .route(
-            "/api/import/pending/{id}/confirm",
-            post(confirm_pending_import),
-        )
-        .route("/api/import/pending/{id}/cancel", post(cancel_pending_import))
         .route("/api/items", get(list_items))
         .route("/api/items/{id}", get(get_item))
         .route("/api/items/{id}/files", get(item_files).post(add_item_file))
@@ -508,38 +502,6 @@ pub async fn categories_tree(State(state): State<ApiState>) -> Response {
     }
 }
 
-/// Internal helper for pending imports.
-pub async fn pending_imports(State(state): State<ApiState>) -> Response {
-    Json(state.daemon.pending_imports()).into_response()
-}
-
-/// Internal helper for confirm pending import.
-pub async fn confirm_pending_import(
-    State(state): State<ApiState>,
-    Path(id): Path<u64>,
-    Json(request): Json<PendingImportConfirmation>,
-) -> Response {
-    match state.daemon.confirm_pending_import(id, request) {
-        Ok(outcome) => Json(outcome).into_response(),
-        Err(error) => {
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-        }
-    }
-}
-
-/// Internal helper for cancel pending import.
-pub async fn cancel_pending_import(
-    State(state): State<ApiState>,
-    Path(id): Path<u64>,
-) -> Response {
-    match state.daemon.cancel_pending_import(id) {
-        Ok(session) => Json(session).into_response(),
-        Err(error) => {
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-        }
-    }
-}
-
 /// Internal helper for api error.
 fn api_error(status: StatusCode, message: impl Into<String>) -> Response {
     let mut response =
@@ -641,43 +603,6 @@ main = "paper.pdf"
         )
         .await;
         assert!(resumed["paused_modes"].as_array().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn confirms_pending_imports() {
-        let temp = tempfile::tempdir().unwrap();
-        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
-        let session = daemon
-            .create_pending_connector_import(ConnectorImport {
-                item: ConnectorItem {
-                    session_id: Some("session-rest-pending".to_string()),
-                    uri: None,
-                    connector_item_id: Some("rest-pending".to_string()),
-                    item_type: Some("journalArticle".to_string()),
-                    title: "REST Pending Paper".to_string(),
-                    abstract_note: None,
-                    doi: None,
-                    raw: json!({"title": "REST Pending Paper"}),
-                },
-                attachments: Vec::new(),
-            })
-            .unwrap();
-        let app = router_with_daemon(daemon);
-
-        let pending = request_json(&app, "GET", "/api/import/pending").await;
-        assert_eq!(pending[0]["title"], "REST Pending Paper");
-
-        let outcome = request_json_body(
-            &app,
-            "POST",
-            &format!("/api/import/pending/{}/confirm", session.id),
-            json!({"categories": ["Inbox"]}),
-        )
-        .await;
-        assert_eq!(outcome["categories"][0], "Inbox");
-
-        let remaining = request_json(&app, "GET", "/api/import/pending").await;
-        assert_eq!(remaining.as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]

@@ -20,7 +20,6 @@ pub mod error;
 pub mod lock;
 pub mod logging;
 pub mod model;
-pub mod pending;
 pub mod platformfs;
 pub mod rest;
 pub mod rest_files;
@@ -47,9 +46,6 @@ use crate::types::{
     CategoryPath, ConnectorAttachment, ConnectorImport, ImportOutcome, ItemId,
 };
 use lock::LockManager;
-pub use pending::{
-    PendingImportConfirmation, PendingImportSession, PendingImportStore,
-};
 use serde::{Deserialize, Serialize};
 
 /// Import pipeline rooted at one Localref library.
@@ -209,8 +205,6 @@ pub struct LocalrefDaemon {
     storage: StorageDb,
     /// Stored library root.
     library_root: PathBuf,
-    /// Stored pending.
-    pending: PendingImportStore,
     /// Stored queue.
     queue: Arc<Mutex<TaskQueueState>>,
 }
@@ -238,7 +232,6 @@ impl LocalrefDaemon {
         Self {
             library_root,
             storage,
-            pending: PendingImportStore::default(),
             queue: Arc::new(Mutex::new(TaskQueueState {
                 next_id: 1,
                 running: false,
@@ -387,105 +380,6 @@ impl LocalrefDaemon {
                 Err(error)
             }
         }
-    }
-
-    /// Create a pending connector import that must be confirmed by the user.
-    /// # Errors
-    ///
-    /// Returns an error when the operation cannot be completed.
-    pub fn create_pending_connector_import(
-        &self,
-        import: ConnectorImport,
-    ) -> Result<PendingImportSession> {
-        let item_id = connector_item_id(&import)?;
-        let metadata = metadata_from_import(&item_id, &import, &[], &[]);
-        let categories =
-            RuleSet::load(&self.library_root)?.match_metadata(&metadata)?;
-        let session = self.pending.create(import, categories);
-        tracing::info!(
-            event_kind = LogKind::ImportPendingUserConfirmation.as_str(),
-            item_id = item_id.as_str(),
-            "connector import pending user confirmation",
-        );
-        Ok(session)
-    }
-
-    /// Return pending imports waiting for user confirmation.
-    #[must_use]
-    pub fn pending_imports(&self) -> Vec<PendingImportSession> {
-        self.pending.list()
-    }
-
-    /// Confirm a pending import and write it to `All/` with selected categories.
-    /// # Errors
-    ///
-    /// Returns an error when the operation cannot be completed.
-    pub fn confirm_pending_import(
-        &self,
-        id: u64,
-        confirmation: PendingImportConfirmation,
-    ) -> Result<ImportOutcome> {
-        let record = self
-            .pending
-            .take(id)
-            .ok_or(LocalrefError::MissingField("pending import"))?;
-        let categories = confirmation
-            .categories
-            .unwrap_or_else(|| record.session.suggested_categories.clone());
-        let mut task = self.enqueue(DaemonTask::ImportConnector {
-            title: record.import.item.title.clone(),
-        });
-        self.mark_running(task.id);
-        let result = self
-            .ensure_task_allowed(&task.task)
-            .and_then(|()| {
-                ImportPipeline::new(&self.library_root)
-                    .import_connector_item_with_categories(
-                        &record.import,
-                        categories,
-                    )
-            })
-            .and_then(|outcome| {
-                self.storage.rebuild_from_all()?;
-                task.indexed_items = Some(self.storage.list_items()?.len());
-                task.message = Some(format!(
-                    "confirmed pending import {}",
-                    outcome.item_id.as_str()
-                ));
-                Ok(outcome)
-            });
-        match result {
-            Ok(outcome) => {
-                task.state = DaemonTaskState::Completed;
-                self.finish(task);
-                Ok(outcome)
-            }
-            Err(error) => {
-                task.state = DaemonTaskState::Failed;
-                task.message = Some(error.to_string());
-                self.finish(task);
-                Err(error)
-            }
-        }
-    }
-
-    /// Cancel a pending import without writing it to `All/`.
-    /// # Errors
-    ///
-    /// Returns an error when the operation cannot be completed.
-    pub fn cancel_pending_import(
-        &self,
-        id: u64,
-    ) -> Result<PendingImportSession> {
-        let record = self
-            .pending
-            .take(id)
-            .ok_or(LocalrefError::MissingField("pending import"))?;
-        tracing::warn!(
-            event_kind = LogKind::ImportCancelled.as_str(),
-            "pending import cancelled",
-        );
-        Ok(record.session)
     }
 
     /// Enqueue and execute one late connector attachment save.

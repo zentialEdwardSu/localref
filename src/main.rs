@@ -306,10 +306,9 @@ fn run_tray_action(config: &LocalrefConfig, action: TrayAction) {
         }
         Ok(TrayCommandResult::Snapshot(snapshot)) => {
             println!(
-                "Localref: items={} categories={} pending={} logs={}",
+                "Localref: items={} categories={} logs={}",
                 snapshot.item_count,
                 snapshot.category_count,
-                snapshot.pending_count,
                 snapshot.log_count
             );
         }

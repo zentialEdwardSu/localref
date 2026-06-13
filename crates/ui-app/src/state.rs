@@ -54,8 +54,6 @@ pub struct UiModel {
     pub(crate) categories: Vec<CategorySummary>,
     /// Stored events.
     pub(crate) events: Vec<LogEntry>,
-    /// Stored pending count.
-    pub(crate) pending_count: usize,
     /// Stored selected ids.
     pub(crate) selected_ids: Vec<String>,
     /// Stored category target ids.
@@ -115,7 +113,6 @@ impl UiModel {
         );
         let categories = daemon.list_categories()?;
         let events = daemon.events()?;
-        let pending_count = daemon.pending_imports().len();
         let selected_ids = selected_ids(&query);
         let active_id = query
             .active
@@ -161,7 +158,6 @@ impl UiModel {
             items,
             categories,
             events,
-            pending_count,
             selected_ids,
             category_target_ids,
             active_id,

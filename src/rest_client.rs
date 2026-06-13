@@ -23,25 +23,8 @@ pub struct DashboardSnapshot {
     pub item_count: usize,
     /// Category count.
     pub category_count: usize,
-    /// Pending import count.
-    pub pending_count: usize,
     /// Recent log entry count.
     pub log_count: usize,
-}
-
-/// Pending import summary returned by the REST API.
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct PendingImportSummary {
-    /// Pending import id.
-    pub id: u64,
-    /// Item title.
-    pub title: String,
-    /// Imported item type, when known.
-    pub item_type: Option<String>,
-    /// Source URI, when known.
-    pub uri: Option<String>,
-    /// Rule-suggested categories.
-    pub suggested_categories: Vec<String>,
 }
 
 /// Request body used to patch one metadata document.
@@ -125,7 +108,6 @@ impl RestClient {
         Ok(DashboardSnapshot {
             item_count: self.list_items()?.len(),
             category_count: self.list_categories()?.len(),
-            pending_count: self.list_pending_imports()?.len(),
             log_count: self.list_logs()?.len(),
         })
     }
@@ -248,13 +230,6 @@ impl RestClient {
             encode_path(item_id),
             encode_path_preserving_slash(category)
         ))
-    }
-
-    /// Return pending connector imports waiting for user confirmation.
-    pub fn list_pending_imports(
-        &self,
-    ) -> Result<Vec<PendingImportSummary>, String> {
-        self.get_json("/api/import/pending")
     }
 
     /// Return recent log entries from the ring buffer.

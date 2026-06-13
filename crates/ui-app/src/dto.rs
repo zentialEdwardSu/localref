@@ -31,7 +31,6 @@ pub(crate) fn app_state_from_model(
             .map(category_summary)
             .collect(),
         events: model.events.into_iter().map(event_summary).collect(),
-        pending_count: model.pending_count,
         selected_ids: model.selected_ids,
         category_target_ids: model.category_target_ids,
         active_detail: model.active_metadata.as_ref().map(active_detail),

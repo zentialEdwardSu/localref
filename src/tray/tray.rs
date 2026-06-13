@@ -22,8 +22,6 @@ pub enum TrayStatus {
     Busy,
     /// One or more daemon pause modes are active.
     Paused(Vec<String>),
-    /// There are pending imports or events that may need user attention.
-    PendingUserAction,
     /// REST API could not be reached.
     Error(String),
 }
@@ -143,9 +141,6 @@ impl TrayController {
             return TrayStatus::Busy;
         }
         match self.client.dashboard_snapshot() {
-            Ok(snapshot) if snapshot.pending_count > 0 => {
-                TrayStatus::PendingUserAction
-            }
             Ok(_) => TrayStatus::Running,
             Err(message) => TrayStatus::Error(message),
         }
@@ -206,10 +201,9 @@ pub fn notification_for_command(
         Ok(TrayCommandResult::Snapshot(snapshot)) => TrayNotification {
             title: "Localref scan completed".to_string(),
             body: format!(
-                "items={} categories={} pending={} events={}",
+                "items={} categories={} events={}",
                 snapshot.item_count,
                 snapshot.category_count,
-                snapshot.pending_count,
                 snapshot.log_count
             ),
             kind: TrayNotificationKind::Success,
@@ -252,9 +246,6 @@ pub fn status_label(status: &TrayStatus) -> String {
         TrayStatus::Busy => "Localref: busy".to_string(),
         TrayStatus::Paused(modes) => {
             format!("Localref: paused ({})", modes.join(", "))
-        }
-        TrayStatus::PendingUserAction => {
-            "Localref: pending user action".to_string()
         }
         TrayStatus::Error(message) => format!("Localref: error: {message}"),
     }
@@ -306,7 +297,6 @@ mod tests {
             &Ok(TrayCommandResult::Snapshot(DashboardSnapshot {
                 item_count: 2,
                 category_count: 3,
-                pending_count: 1,
                 log_count: 4,
             })),
         );
@@ -314,7 +304,7 @@ mod tests {
         assert_eq!(notification.title, "Localref scan completed");
         assert_eq!(notification.kind, TrayNotificationKind::Success);
         assert!(notification.body.contains("items=2"));
-        assert!(notification.body.contains("pending=1"));
+        assert!(notification.body.contains("categories=3"));
     }
 
     #[test]

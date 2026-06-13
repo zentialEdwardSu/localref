@@ -17,8 +17,6 @@ pub struct UiState {
     pub categories: Vec<CategorySummary>,
     /// Recent daemon events.
     pub events: Vec<EventSummary>,
-    /// Number of pending imports.
-    pub pending_count: usize,
     /// Checkbox-selected item ids.
     pub selected_ids: Vec<String>,
     /// Item ids targeted by category controls.
