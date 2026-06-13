@@ -81,6 +81,9 @@ use serde_json::{Value, json};
 
 use localref_core::types::{ConnectorAttachment, ConnectorItem};
 
+mod daemon_sink;
+pub use daemon_sink::DaemonConnectorSink;
+
 /// The connector API version advertised by current Zotero Connectors.
 ///
 /// Zotero source behavior: the extension sends this value in the
