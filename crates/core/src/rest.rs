@@ -896,6 +896,44 @@ title = "Drop Target"
         );
     }
 
+    #[test]
+    fn filing_unmatched_item_into_real_category_removes_unmatched() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        daemon
+            .import_connector_item(ConnectorImport {
+                item: ConnectorItem {
+                    session_id: Some("s".to_string()),
+                    uri: None,
+                    connector_item_id: Some("refile-1".to_string()),
+                    item_type: Some("journalArticle".to_string()),
+                    title: "Refile Me".to_string(),
+                    abstract_note: None,
+                    doi: None,
+                    raw: json!({"title": "Refile Me"}),
+                },
+                attachments: Vec::new(),
+            })
+            .unwrap();
+        // Sanity: it starts in unmatched.
+        let before = daemon.get_item("lr:zotero:refile-1").unwrap().unwrap();
+        assert_eq!(before.categories, vec!["unmatched"]);
+
+        daemon
+            .create_category(CategoryPath::new("Inbox").unwrap())
+            .unwrap();
+        daemon
+            .add_item_category("lr:zotero:refile-1", CategoryPath::new("Inbox").unwrap())
+            .unwrap();
+
+        let after = daemon.get_item("lr:zotero:refile-1").unwrap().unwrap();
+        assert_eq!(
+            after.categories,
+            vec!["Inbox"],
+            "filing an unmatched item into a real category must drop 'unmatched'",
+        );
+    }
+
     #[tokio::test]
     async fn category_write_endpoints_update_cat_links() {
         let temp = tempfile::tempdir().unwrap();

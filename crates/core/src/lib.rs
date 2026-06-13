@@ -764,8 +764,8 @@ impl LocalrefDaemon {
                 .get_item(item_id)?
                 .ok_or(LocalrefError::MissingField("item"))?;
             let item_dir = self.library_root.join(&item.object_path);
-            let link = LibraryFs::new(&self.library_root)
-                .create_category_link(category, &item_dir)?;
+            let fs = LibraryFs::new(&self.library_root);
+            let link = fs.create_category_link(category, &item_dir)?;
             tracing::debug!(
                 event_kind = LogKind::CatLinkCreated.as_str(),
                 item_id = item_id,
@@ -773,6 +773,9 @@ impl LocalrefDaemon {
                 "category link created: {}",
                 category.as_str(),
             );
+            if category.as_str() != UNMATCHED_CATEGORY {
+                Self::clear_unmatched_link(&fs, &item_dir)?;
+            }
             self.storage.rebuild_from_all()?;
             category_summary_for(&self.storage, category)
         });
@@ -810,6 +813,9 @@ impl LocalrefDaemon {
                     "category link created: {}",
                     category.as_str(),
                 );
+                if category.as_str() != UNMATCHED_CATEGORY {
+                    Self::clear_unmatched_link(&fs, &item_dir)?;
+                }
             }
             self.storage.rebuild_from_all()?;
             category_summary_for(&self.storage, category)
@@ -857,6 +863,22 @@ impl LocalrefDaemon {
             category_summary_for(&self.storage, category)
         });
         self.finish_task_result(record, result)
+    }
+
+    /// Remove an item's `unmatched` link once it has a real category.
+    ///
+    /// An item is either `unmatched` or filed under real categories, never
+    /// both, so filing into a real category clears any `unmatched` link.
+    /// Removing a non-existent link is a harmless no-op.
+    fn clear_unmatched_link(fs: &LibraryFs, item_dir: &Path) -> Result<()> {
+        let entry_name = item_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(LocalrefError::MissingField("item directory name"))?;
+        let unmatched = CategoryPath::new(UNMATCHED_CATEGORY)
+            .expect("UNMATCHED_CATEGORY is a valid category path");
+        fs.remove_category_link(&unmatched, entry_name)?;
+        Ok(())
     }
 
     /// Remove multiple indexed items from one category with one index rebuild.
