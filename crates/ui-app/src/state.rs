@@ -10,11 +10,12 @@ use localref_core::{DaemonStatus, LocalrefDaemon, PauseMode};
 use localref_plugin::discovery::DiscoveredPlugin;
 
 use crate::route::encode_query;
-use localref_plugin::manifest::{ActionMount, PageMount};
+use localref_plugin::manifest::{UiMount, UiTarget};
 use serde::Deserialize;
 
 use crate::model::{
-    PluginButtonDef, PluginMenuItemDef, PluginSlotHtml, PluginTabDef,
+    PluginButtonDef, PluginDisplayDef, PluginFieldDef, PluginMenuItemDef,
+    PluginPageDef, PluginPreviewDef, PluginTabDef,
 };
 
 /// URL query state used by the browser UI.
@@ -80,10 +81,10 @@ pub struct UiModel {
     pub(crate) plugin_buttons: Vec<PluginButtonDef>,
     /// Stored plugin menu items.
     pub(crate) plugin_menu_items: Vec<PluginMenuItemDef>,
-    /// Stored plugin slots.
-    pub(crate) plugin_slots: Vec<PluginSlotHtml>,
-    /// Stored plugin page html.
-    pub(crate) plugin_page_html: Option<String>,
+    /// Stored declarative plugin pages for fixed slots.
+    pub(crate) plugin_slots: Vec<PluginPageDef>,
+    /// Stored active declarative plugin page.
+    pub(crate) plugin_active_page: Option<PluginPageDef>,
 }
 
 /// Floating feedback shown after saving automatic-classification rules.
@@ -172,7 +173,7 @@ impl UiModel {
             plugin_buttons,
             plugin_menu_items,
             plugin_slots: Vec::new(),
-            plugin_page_html: None,
+            plugin_active_page: None,
         })
     }
 
@@ -370,17 +371,15 @@ pub(crate) fn escape_text(value: &str) -> String {
     value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// Build plugin detail tab definitions from discovered plugins.
+/// Build plugin detail-tab defs from discovered UI specs.
 #[must_use]
 pub fn build_plugin_tabs(plugins: &[DiscoveredPlugin]) -> Vec<PluginTabDef> {
     plugins
         .iter()
         .flat_map(|plugin| {
-            plugin.manifest.pages.iter().filter_map(move |page| {
-                if page.mount != PageMount::DetailTab {
-                    return None;
-                }
-                Some(PluginTabDef {
+            let pages = plugin.ui.as_ref().map(|u| u.pages.as_slice());
+            pages.unwrap_or(&[]).iter().filter_map(move |page| {
+                (page.mount == UiMount::DetailTab).then(|| PluginTabDef {
                     plugin_name: plugin.name().to_string(),
                     page_id: page.id.clone(),
                     label: page.label.clone(),
@@ -392,7 +391,7 @@ pub fn build_plugin_tabs(plugins: &[DiscoveredPlugin]) -> Vec<PluginTabDef> {
         .collect()
 }
 
-/// Build plugin action button definitions from discovered plugins.
+/// Build plugin action-button defs from discovered UI specs.
 #[must_use]
 pub fn build_plugin_buttons(
     plugins: &[DiscoveredPlugin],
@@ -400,21 +399,21 @@ pub fn build_plugin_buttons(
     plugins
         .iter()
         .flat_map(|plugin| {
-            plugin.manifest.actions.iter().filter_map(move |action| {
-                if action.mount != ActionMount::ActionButton {
-                    return None;
-                }
-                Some(PluginButtonDef {
-                    plugin_name: plugin.name().to_string(),
-                    action_id: action.id.clone(),
-                    label: action.label.clone(),
+            let actions = plugin.ui.as_ref().map(|u| u.actions.as_slice());
+            actions.unwrap_or(&[]).iter().filter_map(move |action| {
+                (action.mount == UiMount::ActionButton).then(|| {
+                    PluginButtonDef {
+                        plugin_name: plugin.name().to_string(),
+                        action_id: action.id.clone(),
+                        label: action.label.clone(),
+                    }
                 })
             })
         })
         .collect()
 }
 
-/// Build plugin context menu item definitions from discovered plugins.
+/// Build plugin context-menu defs from discovered UI specs.
 #[must_use]
 pub fn build_plugin_menu_items(
     plugins: &[DiscoveredPlugin],
@@ -422,17 +421,93 @@ pub fn build_plugin_menu_items(
     plugins
         .iter()
         .flat_map(|plugin| {
-            plugin.manifest.actions.iter().filter_map(move |action| {
-                if action.mount != ActionMount::ContextMenu {
-                    return None;
-                }
-                Some(PluginMenuItemDef {
-                    plugin_name: plugin.name().to_string(),
-                    action_id: action.id.clone(),
-                    label: action.label.clone(),
+            let actions = plugin.ui.as_ref().map(|u| u.actions.as_slice());
+            actions.unwrap_or(&[]).iter().filter_map(move |action| {
+                (action.mount == UiMount::ContextMenu).then(|| {
+                    PluginMenuItemDef {
+                        plugin_name: plugin.name().to_string(),
+                        action_id: action.id.clone(),
+                        label: action.label.clone(),
+                    }
                 })
             })
         })
         .collect()
+}
+
+/// Stable JSON name for a UI mount.
+#[must_use]
+pub fn ui_mount_name(mount: UiMount) -> &'static str {
+    match mount {
+        UiMount::ActionButton => "action_button",
+        UiMount::ContextMenu => "context_menu",
+        UiMount::DetailTab => "detail_tab",
+        UiMount::MetadataPage => "metadata_page",
+        UiMount::SelectionPage => "selection_page",
+    }
+}
+
+/// Stable JSON name for a target mode.
+#[must_use]
+pub fn ui_target_name(target: UiTarget) -> &'static str {
+    match target {
+        UiTarget::Selection => "selection",
+        UiTarget::Active => "active",
+        UiTarget::None => "none",
+    }
+}
+
+/// Stable JSON name for a field kind.
+#[must_use]
+pub fn field_kind_name(kind: localref_plugin::manifest::FieldKind) -> &'static str {
+    use localref_plugin::manifest::FieldKind;
+    match kind {
+        FieldKind::Text => "text",
+        FieldKind::Textarea => "textarea",
+        FieldKind::Number => "number",
+        FieldKind::Checkbox => "checkbox",
+        FieldKind::Select => "select",
+        FieldKind::Radio => "radio",
+    }
+}
+
+/// Convert a parsed `UiPage` into the serializable `PluginPageDef`.
+#[must_use]
+pub fn page_def(plugin_name: &str, page: &localref_plugin::manifest::UiPage) -> PluginPageDef {
+    PluginPageDef {
+        mount: ui_mount_name(page.mount).to_string(),
+        plugin_name: plugin_name.to_string(),
+        page_id: page.id.clone(),
+        label: page.label.clone(),
+        action_id: page.action.clone(),
+        target: ui_target_name(page.target).to_string(),
+        fields: page
+            .fields
+            .iter()
+            .map(|f| PluginFieldDef {
+                name: f.name.clone(),
+                label: f.label.clone(),
+                kind: field_kind_name(f.kind).to_string(),
+                options: f.options.clone(),
+                default: f.default.clone(),
+                required: f.required,
+                show_if: f.show_if.clone(),
+                enabled_if: f.enabled_if.clone(),
+            })
+            .collect(),
+        displays: page
+            .display
+            .iter()
+            .map(|d| PluginDisplayDef {
+                id: d.id.clone(),
+                text: d.text.clone(),
+            })
+            .collect(),
+        preview: page.preview.as_ref().map(|p| PluginPreviewDef {
+            action: p.action.clone(),
+            debounce_ms: p.debounce_ms,
+            into: p.into.clone(),
+        }),
+    }
 }
 
