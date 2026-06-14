@@ -15,6 +15,33 @@
 pub use localref_core::model::ItemDocument;
 use localref_core::model::{ItemFilesDocument, MetadataDocument, SearchHit};
 use localref_core::storage::CategorySummary;
+use serde::{Deserialize, Serialize};
+
+/// Daemon queue and pause status (mirrors `/api/daemon/status`).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+pub struct DaemonStatus {
+    /// Whether a daemon task is currently running.
+    pub running: bool,
+    /// Number of queued daemon tasks.
+    pub queued_tasks: usize,
+    /// Recent task records as raw JSON.
+    #[serde(default)]
+    pub recent_tasks: Vec<serde_json::Value>,
+    /// Active pause modes.
+    #[serde(default)]
+    pub paused_modes: Vec<String>,
+}
+
+/// Aggregate counts for the tray dashboard.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+pub struct DashboardSnapshot {
+    /// Indexed item count.
+    pub item_count: usize,
+    /// Category count.
+    pub category_count: usize,
+    /// Recent log entry count.
+    pub log_count: usize,
+}
 
 /// Errors surfaced by the REST client.
 #[derive(Debug, thiserror::Error)]
@@ -172,6 +199,44 @@ impl LocalrefClient {
         self.get_json(&format!("/api/search?q={}", encode_segment(term)))
             .await
     }
+
+    /// Return daemon queue and pause status.
+    pub async fn daemon_status(&self) -> Result<DaemonStatus, ClientError> {
+        self.get_json("/api/daemon/status").await
+    }
+
+    /// Pause one daemon mode.
+    pub async fn pause(&self, mode: &str) -> Result<DaemonStatus, ClientError> {
+        self.post_json("/api/daemon/pause", &serde_json::json!({ "mode": mode })).await
+    }
+
+    /// Resume one daemon mode.
+    pub async fn resume(&self, mode: &str) -> Result<DaemonStatus, ClientError> {
+        self.post_json("/api/daemon/resume", &serde_json::json!({ "mode": mode })).await
+    }
+
+    /// Request a daemon scan.
+    pub async fn scan(&self) -> Result<serde_json::Value, ClientError> {
+        self.post_json("/api/daemon/scan", &serde_json::Value::Null).await
+    }
+
+    /// Recent log entries from the ring buffer.
+    pub async fn events(
+        &self,
+    ) -> Result<Vec<localref_core::logging::LogEntry>, ClientError> {
+        self.get_json("/api/events").await
+    }
+
+    /// Aggregate dashboard counts (items, categories, recent events).
+    pub async fn dashboard_snapshot(
+        &self,
+    ) -> Result<DashboardSnapshot, ClientError> {
+        Ok(DashboardSnapshot {
+            item_count: self.list_items().await?.len(),
+            category_count: self.categories_tree().await?.len(),
+            log_count: self.events().await?.len(),
+        })
+    }
 }
 
 /// Percent-encode a single path segment / query value (conservative set).
@@ -224,6 +289,17 @@ mod tests {
         let client = LocalrefClient::new(endpoint);
         let err = client.get_item("does-not-exist").await.unwrap_err();
         assert!(matches!(err, ClientError::Status { status: 404, .. }));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn daemon_status_and_scan_round_trip() {
+        let (endpoint, server) = spawn_daemon_router().await;
+        let client = LocalrefClient::new(endpoint);
+        let status = client.daemon_status().await.expect("status");
+        assert!(!status.running || status.queued_tasks == 0);
+        let snap = client.dashboard_snapshot().await.expect("snapshot");
+        assert_eq!(snap.item_count, 0);
         server.abort();
     }
 }
