@@ -58,6 +58,9 @@ pub fn parse_args(
                     _ => {}
                 }
             }
+            if endpoint.is_empty() {
+                return None;
+            }
             Some(Invocation::Run { action, endpoint, selected, active, params })
         }
         _ => None,
@@ -125,5 +128,23 @@ mod tests {
             parse_args(argv.into_iter()),
             Some(Invocation::Manifest)
         ));
+    }
+
+    #[test]
+    fn parse_args_empty_returns_none() {
+        let argv: [String; 0] = [];
+        assert!(parse_args(argv.into_iter()).is_none());
+    }
+
+    #[test]
+    fn parse_args_unknown_subcommand_returns_none() {
+        let argv = ["frobnicate".to_string()];
+        assert!(parse_args(argv.into_iter()).is_none());
+    }
+
+    #[test]
+    fn parse_args_run_without_action_returns_none() {
+        let argv = ["run".to_string()];
+        assert!(parse_args(argv.into_iter()).is_none());
     }
 }
