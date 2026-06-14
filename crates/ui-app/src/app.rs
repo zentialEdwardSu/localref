@@ -192,7 +192,7 @@ pub fn render_topbar(
                                 <form method="post" action=format!("/plugin/{}/action", btn.plugin_name)>
                                     <input type="hidden" name="return_to" value=return_to/>
                                     <input type="hidden" name="plugin_action" value=btn.action_id.clone()/>
-                                    <input type="hidden" name="item_ids" value=ids/>
+                                    <input type="hidden" name="selected" value=ids/>
                                     <button class="button secondary" type="submit">{btn.label.clone()}</button>
                                 </form>
                             }
@@ -490,6 +490,8 @@ pub fn render_item_context_menu(
                 state,
                 &menu,
                 &return_to,
+                set_state,
+                set_events_open,
                 set_context_menu,
             )}
         </aside>
@@ -513,6 +515,8 @@ pub fn render_context_plugin_items(
     state: &UiState,
     menu: &ItemContextMenu,
     return_to: &str,
+    set_state: WriteSignal<UiState>,
+    set_events_open: WriteSignal<bool>,
     set_context_menu: WriteSignal<Option<ItemContextMenu>>,
 ) -> AnyView {
     if state.plugin_menu_items.is_empty() {
@@ -534,11 +538,12 @@ pub fn render_context_plugin_items(
                         on:submit=move |event| {
                             event.prevent_default();
                             set_context_menu.set(None);
+                            submit_action(event, set_state, set_events_open);
                         }
                     >
                         <input type="hidden" name="return_to" value=plugin_return_to/>
                         <input type="hidden" name="plugin_action" value=plugin_item.action_id/>
-                        <input type="hidden" name="item_ids" value=menu_item_id/>
+                        <input type="hidden" name="selected" value=menu_item_id/>
                         <button class="context-menu-button" type="submit">{plugin_item.label}</button>
                     </form>
                 }
@@ -600,13 +605,15 @@ pub fn render_detail(
         && let Some(page) = state.plugin_active_page.clone()
     {
         let return_to = state.return_to.clone();
+        let selected_csv = state.selected_ids.join(",");
+        let active_value = state.active_id.clone().unwrap_or_default();
         let error_view = state.plugin_error.clone().map(|msg| view! {
             <div class="plugin-error" role="alert"><h3>"Plugin error"</h3><p>{msg}</p></div>
         });
         return view! {
             <div class="plugin-page-active">
                 {error_view}
-                {render_plugin_page(page, return_to)}
+                {render_plugin_page(page, return_to, selected_csv, active_value)}
             </div>
         }
         .into_any();
@@ -677,7 +684,12 @@ fn render_metadata(
 /// Render one declarative plugin page as a native form.
 #[allow(clippy::single_call_fn)] // called from render_plugin_slots and render_detail
 #[allow(clippy::needless_pass_by_value)] // owned values needed to avoid lifetime escapes in view! closures
-fn render_plugin_page(page: PluginPageDef, return_to: String) -> impl IntoView {
+fn render_plugin_page(
+    page: PluginPageDef,
+    return_to: String,
+    selected_csv: String,
+    active_value: String,
+) -> impl IntoView {
     let action_url = format!("/plugin/{}/action", page.plugin_name);
     let action_id = page.action_id.clone().unwrap_or_default();
     let fields = page.fields.clone();
@@ -698,6 +710,8 @@ fn render_plugin_page(page: PluginPageDef, return_to: String) -> impl IntoView {
         >
             <input type="hidden" name="plugin_action" value=action_id/>
             <input type="hidden" name="return_to" value=return_to/>
+            <input type="hidden" name="selected" value=selected_csv/>
+            <input type="hidden" name="active" value=active_value/>
             <h3>{page.label.clone()}</h3>
             {displays.into_iter().map(|d| view! {
                 <p class="plugin-display" data-display=d.id.clone()
@@ -772,6 +786,8 @@ fn render_plugin_field(field: PluginFieldDef) -> impl IntoView {
 /// Render plugin pages mounted into one fixed host page slot.
 fn render_plugin_slots(state: &UiState, mount: &'static str) -> impl IntoView {
     let return_to = state.return_to.clone();
+    let selected_csv = state.selected_ids.join(",");
+    let active_value = state.active_id.clone().unwrap_or_default();
     let slots: Vec<_> = state
         .plugin_slots
         .iter()
@@ -781,12 +797,14 @@ fn render_plugin_slots(state: &UiState, mount: &'static str) -> impl IntoView {
     view! {
         {slots.into_iter().map(move |slot| {
             let rt = return_to.clone();
+            let selected = selected_csv.clone();
+            let active = active_value.clone();
             let plugin_name = slot.plugin_name.clone();
             let page_id = slot.page_id.clone();
             view! {
                 <section class="plugin-slot" data-plugin=plugin_name
                          data-plugin-page=page_id>
-                    {render_plugin_page(slot, rt)}
+                    {render_plugin_page(slot, rt, selected, active)}
                 </section>
             }
         }).collect_view()}

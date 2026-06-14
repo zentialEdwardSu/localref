@@ -816,6 +816,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn renders_selection_page_plugin_form_with_selected_ids() {
+        use localref_core::types::{ConnectorImport, ConnectorItem};
+        use localref_plugin::manifest::{
+            PluginManifest, PluginUiSpec, UiMount, UiPage,
+        };
+        use serde_json::json;
+
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        for suffix in ["one", "two"] {
+            daemon
+                .import_connector_item(ConnectorImport {
+                    item: ConnectorItem {
+                        session_id: Some(format!("session-{suffix}")),
+                        uri: None,
+                        connector_item_id: Some(suffix.to_string()),
+                        item_type: Some("journalArticle".to_string()),
+                        title: format!("Paper {suffix}"),
+                        abstract_note: None,
+                        doi: None,
+                        raw: json!({"title": format!("Paper {suffix}")}),
+                    },
+                    attachments: Vec::new(),
+                })
+                .unwrap();
+        }
+
+        let plugins = Arc::new(vec![DiscoveredPlugin {
+            dir: PathBuf::from("plugins/bibtexer"),
+            manifest: PluginManifest {
+                name: "bibtexer".to_string(),
+                executable: None,
+                description: None,
+                ui: None,
+            },
+            ui: Some(PluginUiSpec {
+                actions: Vec::new(),
+                pages: vec![UiPage {
+                    id: "export_selection".to_string(),
+                    label: "Export Selection".to_string(),
+                    mount: UiMount::SelectionPage,
+                    route: "export".to_string(),
+                    action: Some("export_bibtex".to_string()),
+                    target: UiTarget::Selection,
+                    preview: None,
+                    fields: Vec::new(),
+                    display: Vec::new(),
+                }],
+            }),
+            executable: PathBuf::from("plugins/bibtexer/bibtexer"),
+        }]);
+        let app = router_with_daemon_and_repo_name(daemon, "Localref", plugins);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/?selected=lr:zotero:one,lr:zotero:two&tab=metadata")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        // The plugin form must carry the host selection so that
+        // `build_action_args` (and the Tier-1 `{selection.count}` /
+        // Tier-2 preview glue) actually receive the selected ids.
+        assert!(html.contains(r#"data-plugin="bibtexer""#));
+        assert!(html.contains(r#"name="selected""#));
+        assert!(html.contains(r#"value="lr:zotero:one,lr:zotero:two""#));
+    }
+
+    #[tokio::test]
     async fn renders_dashboard_and_category_form() {
         let temp = tempfile::tempdir().unwrap();
         let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
