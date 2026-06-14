@@ -88,14 +88,11 @@ mod tests {
     }
 
     #[test]
-    fn action_args_collects_ids_and_params() {
-        let args = ActionArgs {
-            endpoint: "http://127.0.0.1:8787".to_string(),
-            selected: vec!["a".to_string(), "b".to_string()],
-            active: None,
-            params: vec![("format".to_string(), "bibtex".to_string())],
-        };
-        assert_eq!(args.selected.len(), 2);
-        assert_eq!(args.params[0], ("format".to_string(), "bibtex".to_string()));
+    fn action_args_default_is_empty() {
+        let args = ActionArgs::default();
+        assert!(args.endpoint.is_empty());
+        assert!(args.selected.is_empty());
+        assert!(args.active.is_none());
+        assert!(args.params.is_empty());
     }
 }

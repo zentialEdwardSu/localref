@@ -56,17 +56,17 @@ pub fn discover_plugins(plugins_dir: &Path) -> Vec<DiscoveredPlugin> {
                     let path = dir.join(&manifest.name);
                     path.is_file().then_some(path)
                 })?;
-            let ui_name =
-                manifest.ui.clone().unwrap_or_else(|| "ui.toml".to_string());
-            let ui = std::fs::read_to_string(dir.join(&ui_name))
+            let ui_name = manifest.ui.as_deref().unwrap_or("ui.toml");
+            let ui = std::fs::read_to_string(dir.join(ui_name))
                 .ok()
                 .and_then(|text| match PluginUiSpec::parse(&text) {
                     Ok(spec) => Some(spec),
                     Err(error) => {
                         tracing::warn!(
                             plugin = %manifest.name,
+                            ui_file = %ui_name,
                             %error,
-                            "skipping invalid ui.toml; plugin loads without UI"
+                            "skipping invalid ui spec; plugin loads without UI"
                         );
                         None
                     }

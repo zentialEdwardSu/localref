@@ -17,22 +17,24 @@ use crate::state::{ActionArgs, RunOutput};
 // logic is unit-tested directly rather than through a process spawn.
 #[allow(clippy::single_call_fn)]
 fn build_argv(action: &str, args: &ActionArgs) -> Vec<String> {
-    let mut argv = vec!["run".to_string(), action.to_string()];
-    argv.push("--endpoint".to_string());
-    argv.push(args.endpoint.clone());
+    let mut out = vec!["run".to_string(), action.to_string()];
+    out.push("--endpoint".to_string());
+    out.push(args.endpoint.clone());
     if !args.selected.is_empty() {
-        argv.push("--selected".to_string());
-        argv.push(args.selected.join(","));
+        out.push("--selected".to_string());
+        // Item ids never contain ',' (format: lr:<connector>:<id>), so a CSV
+        // join is unambiguous; the plugin SDK splits this back on ','.
+        out.push(args.selected.join(","));
     }
     if let Some(active) = &args.active {
-        argv.push("--active".to_string());
-        argv.push(active.clone());
+        out.push("--active".to_string());
+        out.push(active.clone());
     }
     for (key, value) in &args.params {
-        argv.push("--param".to_string());
-        argv.push(format!("{key}={value}"));
+        out.push("--param".to_string());
+        out.push(format!("{key}={value}"));
     }
-    argv
+    out
 }
 
 /// Spawn a plugin action and parse its single JSON result envelope.
