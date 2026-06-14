@@ -23,7 +23,8 @@ pub use discovery::{DiscoveredPlugin, discover_plugins};
 pub use error::PluginError;
 pub use invoke::{invoke_render, invoke_run};
 pub use manifest::{
-    ActionMount, ActionSpec, PageMount, PageSpec, PluginManifest,
+    FieldKind, PluginManifest, PluginUiSpec, PreviewSpec, UiAction, UiDisplay,
+    UiField, UiMount, UiPage, UiTarget,
 };
 pub use state::{
     PluginActiveDetail, PluginCategorySummary, PluginItemSummary,
