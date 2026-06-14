@@ -13,8 +13,10 @@ use crate::state::{ActionArgs, RunOutput};
 ///
 /// Each value is a separate vector entry — the spawn API passes them as
 /// distinct OS args, so spaces / `=` / newlines never trigger shell parsing.
-#[must_use]
-pub(crate) fn build_argv(action: &str, args: &ActionArgs) -> Vec<String> {
+// Single caller today (`invoke_action`); kept separate so the argv-construction
+// logic is unit-tested directly rather than through a process spawn.
+#[allow(clippy::single_call_fn)]
+fn build_argv(action: &str, args: &ActionArgs) -> Vec<String> {
     let mut argv = vec!["run".to_string(), action.to_string()];
     argv.push("--endpoint".to_string());
     argv.push(args.endpoint.clone());
@@ -43,16 +45,17 @@ pub async fn invoke_action(
     action: &str,
     args: &ActionArgs,
 ) -> Result<RunOutput, PluginError> {
-    let argv = build_argv(action, args);
+    let cmd_args = build_argv(action, args);
 
     let mut command = Command::new(executable);
     command
-        .args(&argv)
+        .args(&cmd_args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     {
+        #[allow(unused_imports)]
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);

@@ -21,12 +21,9 @@ pub mod state;
 
 pub use discovery::{DiscoveredPlugin, discover_plugins};
 pub use error::PluginError;
-pub use invoke::{invoke_render, invoke_run};
+pub use invoke::invoke_action;
 pub use manifest::{
     FieldKind, PluginManifest, PluginUiSpec, PreviewSpec, UiAction, UiDisplay,
     UiField, UiMount, UiPage, UiTarget,
 };
-pub use state::{
-    PluginActiveDetail, PluginCategorySummary, PluginItemSummary,
-    PluginUiState, RenderOutput, RunOutput,
-};
+pub use state::{ActionArgs, RunOutput};

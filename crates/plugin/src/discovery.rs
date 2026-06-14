@@ -2,19 +2,19 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::manifest::PluginManifest;
+use crate::manifest::{PluginManifest, PluginUiSpec};
 
-/// A discovered plugin with its manifest and filesystem paths.
+/// A discovered plugin with its identity, optional UI spec, and paths.
 #[derive(Clone, Debug)]
 pub struct DiscoveredPlugin {
     /// Plugin root directory containing plugin.toml.
     pub dir: PathBuf,
-    /// Parsed plugin manifest.
+    /// Parsed plugin identity manifest.
     pub manifest: PluginManifest,
+    /// Parsed declarative UI spec, when a ui.toml is present and valid.
+    pub ui: Option<PluginUiSpec>,
     /// Full path to the plugin executable.
     pub executable: PathBuf,
-    /// Plugin static asset directory.
-    pub static_dir: PathBuf,
 }
 
 /// Scan the plugins directory and return discovered plugins.
@@ -56,8 +56,22 @@ pub fn discover_plugins(plugins_dir: &Path) -> Vec<DiscoveredPlugin> {
                     let path = dir.join(&manifest.name);
                     path.is_file().then_some(path)
                 })?;
-            let static_dir = dir.join("static");
-            Some(DiscoveredPlugin { dir, manifest, executable, static_dir })
+            let ui_name =
+                manifest.ui.clone().unwrap_or_else(|| "ui.toml".to_string());
+            let ui = std::fs::read_to_string(dir.join(&ui_name))
+                .ok()
+                .and_then(|text| match PluginUiSpec::parse(&text) {
+                    Ok(spec) => Some(spec),
+                    Err(error) => {
+                        tracing::warn!(
+                            plugin = %manifest.name,
+                            %error,
+                            "skipping invalid ui.toml; plugin loads without UI"
+                        );
+                        None
+                    }
+                });
+            Some(DiscoveredPlugin { dir, manifest, ui, executable })
         })
         .collect()
 }
@@ -75,24 +89,44 @@ mod tests {
     use super::discover_plugins;
 
     #[test]
-    fn discovery_uses_manifest_executable_path() {
+    fn discovery_loads_optional_ui_spec() {
         let temp = tempfile::tempdir().unwrap();
-        let plugin_dir = temp.path().join("cite");
-        let bin_dir = plugin_dir.join("bin");
-        std::fs::create_dir_all(&bin_dir).unwrap();
+        let dir = temp.path().join("bibtexer");
+        std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            plugin_dir.join("plugin.toml"),
-            r#"
-name = "cite"
-executable = "bin/cite-cli"
-"#,
+            dir.join("plugin.toml"),
+            "name = \"bibtexer\"\nexecutable = \"bibtexer\"\n",
         )
         .unwrap();
-        std::fs::write(bin_dir.join("cite-cli"), b"").unwrap();
+        std::fs::write(
+            dir.join("ui.toml"),
+            "[[actions]]\nid = \"x\"\nlabel = \"X\"\nmount = \"action_button\"\n",
+        )
+        .unwrap();
+        let exe = if cfg!(windows) { "bibtexer.exe" } else { "bibtexer" };
+        std::fs::write(dir.join(exe), b"").unwrap();
 
         let plugins = discover_plugins(temp.path());
-
         assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].executable, bin_dir.join("cite-cli"));
+        let ui = plugins[0].ui.as_ref().expect("ui spec loaded");
+        assert_eq!(ui.actions.len(), 1);
+    }
+
+    #[test]
+    fn discovery_without_ui_spec_is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("plain");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("plugin.toml"),
+            "name = \"plain\"\nexecutable = \"plain\"\n",
+        )
+        .unwrap();
+        let exe = if cfg!(windows) { "plain.exe" } else { "plain" };
+        std::fs::write(dir.join(exe), b"").unwrap();
+
+        let plugins = discover_plugins(temp.path());
+        assert_eq!(plugins.len(), 1);
+        assert!(plugins[0].ui.is_none());
     }
 }
