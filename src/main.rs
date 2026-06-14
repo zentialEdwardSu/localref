@@ -7,7 +7,6 @@
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-mod rest_client;
 mod tray;
 mod ui;
 

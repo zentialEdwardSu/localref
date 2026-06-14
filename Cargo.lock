@@ -1955,6 +1955,7 @@ dependencies = [
  "axum",
  "clap",
  "csc",
+ "localref-client",
  "localref-core",
  "localref-plugin",
  "native-win32",

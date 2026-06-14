@@ -13,6 +13,7 @@ native-tray = ["desktop", "dep:tao", "dep:tray-icon"]
 axum = { workspace = true }
 clap = { workspace = true }
 csc = { path = "crates/csc" }
+localref_client = { package = "localref-client", path = "crates/client" }
 localref_core = { package = "localref-core", path = "crates/core" }
 localref_plugin = { package = "localref-plugin", path = "crates/plugin" }
 native-win32 = { path = "crates/native-win32" }
