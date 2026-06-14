@@ -1,8 +1,11 @@
 //! Browser-side hydration and HTTP helpers for the Localref Leptos app.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen::prelude::JsValue;
+use wasm_bindgen::prelude::{Closure, JsValue};
 
 use crate::app;
 use crate::model::UiState;
@@ -12,6 +15,84 @@ use crate::route::{RouteState, state_url};
 pub fn hydrate() -> Result<(), JsValue> {
     let state = initial_state()?;
     leptos::mount::hydrate_body(move || app::body_app(state));
+    attach_plugin_form_listeners()?;
+    Ok(())
+}
+
+/// Wire Tier-1 display refresh and Tier-2 preview listeners on all plugin forms.
+///
+/// Called once after hydrate_body. Each `form.plugin-form` gets an `input`
+/// listener that refreshes display readouts and debounces preview fetches.
+// Called only from `hydrate`; kept separate to isolate the listener wiring.
+#[allow(clippy::single_call_fn)]
+fn attach_plugin_form_listeners() -> Result<(), JsValue> {
+    let document = document()?;
+    let forms = document.query_selector_all("form.plugin-form")?;
+    for i in 0..forms.length() {
+        let Some(node) = forms.item(i) else { continue };
+        let Ok(form_el) = node.dyn_into::<web_sys::HtmlFormElement>() else {
+            continue;
+        };
+        // Initial Tier-1 render.
+        refresh_plugin_displays(form_el.as_ref());
+
+        let preview_attr = form_el.get_attribute("data-plugin-preview");
+        let debounce_ms = preview_attr
+            .as_deref()
+            .and_then(|attr| attr.split(':').nth(1))
+            .and_then(|ms| ms.parse::<i32>().ok())
+            .unwrap_or(300);
+        let has_preview = preview_attr
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+
+        // Shared timer handle: -1 means no pending timer.
+        let timer_handle: Rc<Cell<i32>> = Rc::new(Cell::new(-1));
+
+        let form_for_listener = form_el.clone();
+        let timer_for_listener = timer_handle.clone();
+
+        let listener: Closure<dyn Fn(web_sys::Event)> =
+            Closure::new(move |_event: web_sys::Event| {
+                refresh_plugin_displays(form_for_listener.as_ref());
+
+                if !has_preview {
+                    return;
+                }
+
+                // Clear any pending debounce timer.
+                let old_handle = timer_for_listener.get();
+                if old_handle >= 0 {
+                    if let Ok(win) = window() {
+                        win.clear_timeout_with_handle(old_handle);
+                    }
+                }
+
+                // Schedule a new debounced preview fetch.
+                let form_for_timeout = form_for_listener.clone();
+                let timeout_cb: Closure<dyn Fn()> =
+                    Closure::new(move || run_plugin_preview(form_for_timeout.clone()));
+                let Ok(win) = window() else { return };
+                match win
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(
+                        timeout_cb.as_ref().unchecked_ref(),
+                        debounce_ms,
+                    ) {
+                    Ok(handle) => timer_for_listener.set(handle),
+                    Err(error) => web_sys::console::error_1(&error),
+                }
+                // The timeout fires once; forget the closure to avoid dropping it early.
+                timeout_cb.forget();
+            });
+
+        form_el
+            .add_event_listener_with_callback(
+                "input",
+                listener.as_ref().unchecked_ref(),
+            )?;
+        // Leak the listener — it lives for the page lifetime.
+        listener.forget();
+    }
     Ok(())
 }
 
@@ -137,6 +218,148 @@ pub fn clear_rules_notice_query() {
     if let Err(error) = clear_rules_notice_query_inner() {
         web_sys::console::error_1(&error);
     }
+}
+
+/// Recompute every `data-display` readout in a plugin form from its template.
+///
+/// Supported tokens: `{selection.count}` from the hidden `selected` input
+/// (comma-separated list) and `{field.<name>}` from each field's current value.
+fn refresh_plugin_displays(form: &web_sys::Element) {
+    let selected_count = form
+        .query_selector("input[name=selected]")
+        .ok()
+        .flatten()
+        .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
+        .map(|el| el.value())
+        .map_or(0, |v| v.split(',').filter(|s| !s.is_empty()).count());
+
+    let Ok(displays) = form.query_selector_all("[data-display]") else {
+        return;
+    };
+    for i in 0..displays.length() {
+        let Some(node) = displays.item(i) else { continue };
+        let Some(el) = node.dyn_ref::<web_sys::Element>() else { continue };
+        let Some(template) = el.get_attribute("data-template") else {
+            continue;
+        };
+        let mut text =
+            template.replace("{selection.count}", &selected_count.to_string());
+        if let Ok(fields) = form.query_selector_all("[data-field]") {
+            for j in 0..fields.length() {
+                let Some(fnode) = fields.item(j) else { continue };
+                let Some(fel) = fnode.dyn_ref::<web_sys::Element>() else {
+                    continue;
+                };
+                let Some(name) = fel.get_attribute("data-field") else {
+                    continue;
+                };
+                let value = input_value_within(fel).unwrap_or_default();
+                text = text.replace(&format!("{{field.{name}}}"), &value);
+            }
+        }
+        el.set_text_content(Some(&text));
+    }
+}
+
+/// Read the current value of the input/select/textarea inside a field wrapper.
+// Called only from `refresh_plugin_displays`; split out for readability.
+#[allow(clippy::single_call_fn)]
+fn input_value_within(field: &web_sys::Element) -> Option<String> {
+    let control = field.query_selector(".plugin-field-input").ok().flatten()?;
+    if let Some(input) = control.dyn_ref::<web_sys::HtmlInputElement>() {
+        return Some(input.value());
+    }
+    if let Some(select) = control.dyn_ref::<web_sys::HtmlSelectElement>() {
+        return Some(select.value());
+    }
+    if let Some(area) = control.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+        return Some(area.value());
+    }
+    None
+}
+
+/// Fire a Tier-2 preview for a plugin form and drop the text into its pane.
+///
+/// Reads `data-plugin-preview` (`"<action>:<debounce_ms>:<into>"`). The
+/// debounce is handled by the caller; this performs one fetch.
+// Called only from the debounced timeout closure in `attach_plugin_form_listeners`.
+#[allow(clippy::single_call_fn)]
+fn run_plugin_preview(form: web_sys::HtmlFormElement) {
+    let Some(attr) = form.get_attribute("data-plugin-preview") else {
+        return;
+    };
+    let mut parts = attr.split(':');
+    let (Some(action), Some(_ms), Some(into)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        return;
+    };
+    let plugin = form.get_attribute("data-plugin").unwrap_or_default();
+    let action = action.to_string();
+    let into = into.to_string();
+    wasm_bindgen_futures::spawn_local(async move {
+        let Ok(params) = form_encoded_with_action(&form, &action) else {
+            return;
+        };
+        let url = format!("/plugin/{plugin}/preview");
+        match post_form_encoded_text(&url, &params).await {
+            Ok(text) => set_preview_pane(form.as_ref(), &into, &text),
+            Err(error) => web_sys::console::error_1(&error),
+        }
+    });
+}
+
+/// Drop preview JSON (`{"text":"..."}`) into the named `data-display` pane.
+// Called only from `run_plugin_preview`; split out for readability.
+#[allow(clippy::single_call_fn)]
+fn set_preview_pane(form: &web_sys::Element, into: &str, json: &str) {
+    let text = serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| {
+            v.get("text").and_then(|t| t.as_str()).map(str::to_string)
+        })
+        .unwrap_or_default();
+    if let Ok(Some(node)) =
+        form.query_selector(&format!("[data-display=\"{into}\"]"))
+    {
+        node.set_text_content(Some(&text));
+    }
+}
+
+/// Serialize a form's named inputs as `application/x-www-form-urlencoded`,
+/// appending `plugin_action=<action>`.
+// Called only from `run_plugin_preview`; split out for readability.
+#[allow(clippy::single_call_fn)]
+fn form_encoded_with_action(
+    form: &web_sys::HtmlFormElement,
+    action: &str,
+) -> Result<web_sys::UrlSearchParams, JsValue> {
+    let form_data = web_sys::FormData::new_with_form(form)?;
+    let params =
+        web_sys::UrlSearchParams::new_with_str_sequence_sequence(&form_data.into())?;
+    params.append("plugin_action", action);
+    Ok(params)
+}
+
+/// POST `application/x-www-form-urlencoded` and return the raw response text.
+// Called only from `run_plugin_preview`; split out for readability.
+#[allow(clippy::single_call_fn)]
+async fn post_form_encoded_text(
+    url: &str,
+    params: &web_sys::UrlSearchParams,
+) -> Result<String, JsValue> {
+    let response = post_form_encoded(url, params).await?;
+    if !response.ok() {
+        return Err(JsValue::from_str(&format!(
+            "preview failed: {}",
+            response.status()
+        )));
+    }
+    let text_value =
+        wasm_bindgen_futures::JsFuture::from(response.text()?).await?;
+    text_value
+        .as_string()
+        .ok_or_else(|| JsValue::from_str("preview body is not text"))
 }
 
 fn initial_state() -> Result<UiState, JsValue> {
