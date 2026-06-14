@@ -23,8 +23,8 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use localref_core::LocalrefDaemon;
 use localref_plugin::discovery::DiscoveredPlugin;
-use localref_plugin::manifest::PageMount;
-use localref_plugin::state::{PluginUiState, RunOutput};
+use localref_plugin::manifest::{UiMount, UiTarget};
+use localref_plugin::{ActionArgs, RunOutput};
 
 /// Build the server-rendered UI router for one daemon facade.
 pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
@@ -63,7 +63,7 @@ pub fn router_with_daemon_repo_plugins_and_context(
         .route("/ui/action", post(action))
         .route("/ui/upload", post(upload))
         .route("/plugin/{name}/action", post(plugin_action))
-        .route("/plugin/{name}/static/{*path}", get(plugin_static))
+        .route("/plugin/{name}/preview", post(plugin_preview))
         .with_state(ServerState {
             daemon,
             repo_name: repo_name.into(),
@@ -198,7 +198,7 @@ pub async fn upload(
     Redirect::to(return_path(&return_to_value).as_str()).into_response()
 }
 
-/// Handle a plugin action submitted from the UI.
+/// Handle a plugin action submitted from the UI: build argv, spawn, respond.
 pub async fn plugin_action(
     State(state): State<ServerState>,
     Path(name): Path<String>,
@@ -207,7 +207,6 @@ pub async fn plugin_action(
     let Some(plugin) = state.plugins.iter().find(|p| p.name() == name) else {
         return (StatusCode::NOT_FOUND, "plugin not found").into_response();
     };
-
     let action_name = form
         .get("plugin_action")
         .or_else(|| form.get("action"))
@@ -216,173 +215,149 @@ pub async fn plugin_action(
     let return_to =
         form.get("return_to").cloned().unwrap_or_else(|| "/".to_string());
 
-    // Build minimal plugin state for the action.
-    let query: UiQuery = return_to
-        .split('?')
-        .nth(1)
-        .map(parse_query_string)
-        .unwrap_or_default();
-    match load_model(&state, query).await {
-        Ok(model) => {
-            let plugin_state = build_plugin_ui_state(
-                &model,
-                &state,
-                plugin.manifest.needs_items,
-                plugin.manifest.needs_active_detail,
-            );
-            match localref_plugin::invoke::invoke_run(
-                &plugin.executable,
-                &action_name,
-                &form,
-                &plugin_state,
-            )
-            .await
-            {
-                Ok(output) => {
-                    plugin_action_response(&return_to, &action_name, &output)
-                }
-                Err(error) => {
-                    redirect_with_plugin_error(&return_to, &error.to_string())
-                }
-            }
-        }
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-            .into_response(),
+    let args = action_args_from_form(&state, plugin, &action_name, &form);
+    match localref_plugin::invoke_action(
+        &plugin.executable,
+        &action_name,
+        &args,
+    )
+    .await
+    {
+        Ok(output) => plugin_action_response(&return_to, &action_name, &output),
+        Err(error) => redirect_with_plugin_error(&return_to, &error.to_string()),
     }
 }
 
-/// Load the UI model and render active plugin tab content when needed.
+/// Handle a plugin preview request: build argv, spawn, return JSON.
+pub async fn plugin_preview(
+    State(state): State<ServerState>,
+    Path(name): Path<String>,
+    Form(form): Form<BTreeMap<String, String>>,
+) -> Response {
+    let Some(plugin) = state.plugins.iter().find(|p| p.name() == name) else {
+        return (StatusCode::NOT_FOUND, "plugin not found").into_response();
+    };
+    let action_name =
+        form.get("plugin_action").cloned().unwrap_or_default();
+    let args = action_args_from_form(&state, plugin, &action_name, &form);
+    match localref_plugin::invoke_action(
+        &plugin.executable,
+        &action_name,
+        &args,
+    )
+    .await
+    {
+        Ok(output) if output.status == "ok" => {
+            Json(serde_json::json!({
+                "status": "ok",
+                "text": output.result.unwrap_or_default(),
+            }))
+            .into_response()
+        }
+        Ok(output) => Json(serde_json::json!({
+            "status": "error",
+            "message": output.message.unwrap_or_default(),
+        }))
+        .into_response(),
+        Err(error) => Json(serde_json::json!({
+            "status": "error",
+            "message": error.to_string(),
+        }))
+        .into_response(),
+    }
+}
+
+/// Build argv inputs from a posted form: endpoint + targeted ids + params.
+fn action_args_from_form(
+    state: &ServerState,
+    plugin: &DiscoveredPlugin,
+    action_name: &str,
+    form: &BTreeMap<String, String>,
+) -> ActionArgs {
+    // Resolve the action's declared target from the UI spec.
+    let target = plugin
+        .ui
+        .as_ref()
+        .map(|ui| {
+            ui.actions
+                .iter()
+                .find(|a| a.id == action_name)
+                .map(|a| a.target)
+                .or_else(|| {
+                    ui.pages
+                        .iter()
+                        .find(|p| p.action.as_deref() == Some(action_name))
+                        .map(|p| p.target)
+                })
+                .unwrap_or(UiTarget::None)
+        })
+        .unwrap_or(UiTarget::None);
+
+    let selected_csv =
+        form.get("selected").cloned().unwrap_or_default();
+    let selected: Vec<String> = selected_csv
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    let active = form.get("active").cloned().filter(|s| !s.is_empty());
+
+    // Reserved control keys never become plugin params.
+    const RESERVED: [&str; 5] =
+        ["plugin_action", "action", "return_to", "selected", "active"];
+    let params: Vec<(String, String)> = form
+        .iter()
+        .filter(|(k, _)| !RESERVED.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    ActionArgs {
+        endpoint: state.plugin_context.rest_endpoint.clone(),
+        selected: matches!(target, UiTarget::Selection)
+            .then_some(selected)
+            .unwrap_or_default(),
+        active: matches!(target, UiTarget::Active).then_some(active).flatten(),
+        params,
+    }
+}
+
+/// Load the UI model and populate active plugin page when needed.
 async fn load_model(
     state: &ServerState,
     query: UiQuery,
 ) -> localref_core::error::Result<UiModel> {
     let mut model = UiModel::load(&state.daemon, query, &state.plugins)?;
-    render_fixed_plugin_slots(&mut model, state).await;
-    if let Some((plugin, page_id)) = active_plugin_page(&model, &state.plugins)
-    {
-        let plugin_state = build_plugin_ui_state(
-            &model,
-            state,
-            plugin.manifest.needs_items,
-            plugin.manifest.needs_active_detail,
-        );
-        let mut html = match localref_plugin::invoke::invoke_render(
-            &plugin.executable,
-            page_id,
-            &plugin_state,
-        )
-        .await
-        {
-            Ok(output) if output.status == "ok" => output.html,
-            Ok(output) => {
-                let message = output
-                    .message
-                    .unwrap_or_else(|| "plugin render failed".to_string());
-                plugin_error_html(&message)
+    render_fixed_plugin_slots(&mut model, state);
+    if let Some((plugin, page_id)) = active_plugin_page(&model, &state.plugins) {
+        if let Some(ui) = plugin.ui.as_ref() {
+            if let Some(page) = ui.pages.iter().find(|p| p.id == page_id) {
+                model.plugin_active_page =
+                    Some(crate::state::page_def(plugin.name(), page));
             }
-            Err(error) => plugin_error_html(&error.to_string()),
-        };
-        if let Some(message) = model.query.plugin_error.as_deref() {
-            html = format!("{}{html}", plugin_error_html(message));
         }
-        model.plugin_page_html = Some(html);
     }
     Ok(model)
 }
 
-/// Render plugin pages mounted into fixed host UI slots.
-///
-/// Each matching slot is rendered in its own task so a slow plugin cannot
-/// block its siblings; results are sorted deterministically for stable SSR.
-pub async fn render_fixed_plugin_slots(
-    model: &mut UiModel,
-    state: &ServerState,
-) {
+/// Collect declarative plugin pages for the active fixed slot.
+pub fn render_fixed_plugin_slots(model: &mut UiModel, state: &ServerState) {
     let target_mount = if model.selected_ids.is_empty() {
-        PageMount::MetadataPage
+        UiMount::MetadataPage
     } else {
-        PageMount::SelectionPage
+        UiMount::SelectionPage
     };
-    let target_mount_name = page_mount_name(&target_mount).to_string();
-
-    let mut set: tokio::task::JoinSet<crate::model::PluginSlotHtml> =
-        tokio::task::JoinSet::new();
+    let mut slots: Vec<crate::model::PluginPageDef> = Vec::new();
     for plugin in state.plugins.iter() {
-        for page in plugin
-            .manifest
-            .pages
-            .iter()
-            .filter(|page| page.mount == target_mount)
-        {
-            let executable = plugin.executable.clone();
-            let page_id = page.id.clone();
-            let mount = page_mount_name(&page.mount).to_string();
-            let plugin_name = plugin.name().to_string();
-            let label = page.label.clone();
-            let plugin_state = build_plugin_ui_state(
-                model,
-                state,
-                plugin.manifest.needs_items,
-                plugin.manifest.needs_active_detail,
-            );
-            set.spawn(async move {
-                let html = match localref_plugin::invoke::invoke_render(
-                    &executable,
-                    &page_id,
-                    &plugin_state,
-                )
-                .await
-                {
-                    Ok(output) if output.status == "ok" => output.html,
-                    Ok(output) => plugin_error_html(
-                        output
-                            .message
-                            .as_deref()
-                            .unwrap_or("plugin render failed"),
-                    ),
-                    Err(error) => plugin_error_html(&error.to_string()),
-                };
-                crate::model::PluginSlotHtml {
-                    mount,
-                    plugin_name,
-                    page_id,
-                    label,
-                    html,
-                }
-            });
+        let Some(ui) = plugin.ui.as_ref() else { continue };
+        for page in ui.pages.iter().filter(|p| p.mount == target_mount) {
+            slots.push(crate::state::page_def(plugin.name(), page));
         }
     }
-
-    let mut rendered: Vec<crate::model::PluginSlotHtml> = Vec::new();
-    while let Some(joined) = set.join_next().await {
-        match joined {
-            Ok(slot) => rendered.push(slot),
-            Err(error) => rendered.push(crate::model::PluginSlotHtml {
-                mount: target_mount_name.clone(),
-                plugin_name: String::new(),
-                page_id: String::new(),
-                label: String::new(),
-                html: plugin_error_html(&format!(
-                    "plugin slot task failed: {error}"
-                )),
-            }),
-        }
-    }
-    rendered.sort_by(|a, b| {
+    slots.sort_by(|a, b| {
         (a.plugin_name.as_str(), a.page_id.as_str())
             .cmp(&(b.plugin_name.as_str(), b.page_id.as_str()))
     });
-    model.plugin_slots.extend(rendered);
-}
-
-/// Return the stable JSON name for a plugin page mount.
-#[must_use]
-pub fn page_mount_name(mount: &PageMount) -> &'static str {
-    match mount {
-        PageMount::DetailTab => "detail_tab",
-        PageMount::MetadataPage => "metadata_page",
-        PageMount::SelectionPage => "selection_page",
-    }
+    model.plugin_slots.extend(slots);
 }
 
 /// Return the plugin and page id for the active plugin tab.
@@ -403,8 +378,8 @@ pub fn plugin_page_from_tab<'a>(
     let rest = tab.strip_prefix("plugin:")?;
     let (plugin_name, page_id) = rest.split_once(':')?;
     plugins.iter().find_map(|plugin| {
-        let page =
-            plugin.manifest.pages.iter().find(|page| page.id == page_id)?;
+        let ui = plugin.ui.as_ref()?;
+        let page = ui.pages.iter().find(|p| p.id == page_id)?;
         (plugin.name() == plugin_name).then_some((plugin, page.id.as_str()))
     })
 }
@@ -526,118 +501,6 @@ pub fn append_query_param(path: &str, param: &str) -> String {
     format!("{path}{separator}{param}")
 }
 
-/// Serve a static file from a plugin's `static/` directory.
-pub async fn plugin_static(
-    Path((name, path)): Path<(String, String)>,
-    State(state): State<ServerState>,
-) -> Response {
-    let Some(plugin) = state.plugins.iter().find(|p| p.name() == name) else {
-        return (StatusCode::NOT_FOUND, "plugin not found").into_response();
-    };
-    let file_path = plugin.static_dir.join(&path);
-    // Security: prevent directory traversal.
-    let Ok(canonical) = file_path.canonicalize() else {
-        return (StatusCode::NOT_FOUND, "file not found").into_response();
-    };
-    let Ok(static_canonical) = plugin.static_dir.canonicalize() else {
-        return (StatusCode::NOT_FOUND, "file not found").into_response();
-    };
-    if !canonical.starts_with(&static_canonical) {
-        return (StatusCode::FORBIDDEN, "forbidden").into_response();
-    }
-    match tokio::fs::read(&canonical).await {
-        Ok(bytes) => {
-            let content_type =
-                mime_guess::from_path(&canonical).first_or_octet_stream();
-            (
-                [(axum::http::header::CONTENT_TYPE, content_type.as_ref())],
-                bytes,
-            )
-                .into_response()
-        }
-        Err(_) => (StatusCode::NOT_FOUND, "file not found").into_response(),
-    }
-}
-
-/// Build plugin UI state from the current server model.
-fn build_plugin_ui_state(
-    model: &UiModel,
-    server_state: &ServerState,
-    needs_items: bool,
-    needs_active_detail: bool,
-) -> PluginUiState {
-    use localref_plugin::state::{
-        PluginActiveDetail, PluginCategorySummary, PluginItemSummary,
-        PluginUiState,
-    };
-
-    PluginUiState {
-        repo_name: server_state.repo_name.clone(),
-        search: model.query.q.clone(),
-        category: model.query.category.clone(),
-        items: if needs_items {
-            model
-                .items
-                .iter()
-                .map(|item| PluginItemSummary {
-                    id: item.id.clone(),
-                    title: item.title.clone(),
-                    authors: item.authors.clone(),
-                    item_type: item.item_type.clone(),
-                    categories: item.categories.clone(),
-                    main_file: item.main_file.clone(),
-                    files: {
-                        let mut paths: Vec<String> = Vec::new();
-                        if let Some(ref main) = item.main_file {
-                            paths.push(main.clone());
-                        }
-                        paths.extend(item.extra_files.clone());
-                        paths
-                    },
-                })
-                .collect()
-        } else {
-            Vec::new()
-        },
-        categories: model
-            .categories
-            .iter()
-            .map(|c| PluginCategorySummary {
-                path: c.path.clone(),
-                item_count: c.item_ids.len(),
-            })
-            .collect(),
-        selected_ids: model.selected_ids.clone(),
-        active_id: model.active_id.clone(),
-        active_detail: if needs_active_detail {
-            model.active_metadata.as_ref().map(|doc| {
-                PluginActiveDetail {
-                    metadata_revision: doc.metadata_revision.clone(),
-                    title: doc.metadata.title.clone(),
-                    authors: crate::state::author_summary(&doc.metadata),
-                    item_type: doc.metadata.item_type.clone(),
-                    year: doc.metadata.year,
-                    doi: doc.metadata.doi.clone(),
-                    venue: doc.metadata.venue.clone(),
-                    language: doc.metadata.language.clone(),
-                    uri: doc.metadata.uri.clone(),
-                    abstract_note: doc.metadata.abstract_note.clone(),
-                }
-            })
-        } else {
-            None
-        },
-        tab: model.tab.clone(),
-        status_label: model.status_label(),
-        library_root: server_state
-            .plugin_context
-            .library_root
-            .to_string_lossy()
-            .into_owned(),
-        rest_endpoint: server_state.plugin_context.rest_endpoint.clone(),
-    }
-}
-
 /// Parse URL query string into key-value pairs.
 #[must_use]
 pub fn parse_query_string(query: &str) -> UiQuery {
@@ -724,30 +587,37 @@ mod tests {
     use axum::http::Request;
     use localref_core::storage::CategorySummary;
     use localref_core::types::CategoryPath;
-    use localref_plugin::manifest::{PageMount, PageSpec, PluginManifest};
     use std::path::PathBuf;
     use tower::ServiceExt;
 
     #[test]
     fn plugin_tab_selects_declared_plugin_page() {
+        use localref_plugin::manifest::{
+            PluginManifest, PluginUiSpec, UiMount, UiPage,
+        };
         let plugins = vec![DiscoveredPlugin {
             dir: PathBuf::from("plugins/bibtexer"),
             manifest: PluginManifest {
                 name: "bibtexer".to_string(),
                 executable: None,
                 description: None,
+                ui: None,
+            },
+            ui: Some(PluginUiSpec {
                 actions: Vec::new(),
-                pages: vec![PageSpec {
+                pages: vec![UiPage {
                     id: "export_form".to_string(),
                     label: "Export".to_string(),
-                    mount: PageMount::DetailTab,
+                    mount: UiMount::DetailTab,
                     route: "export".to_string(),
+                    action: None,
+                    target: UiTarget::None,
+                    preview: None,
+                    fields: Vec::new(),
+                    display: Vec::new(),
                 }],
-                needs_items: false,
-                needs_active_detail: false,
-            },
+            }),
             executable: PathBuf::from("plugins/bibtexer/bibtexer"),
-            static_dir: PathBuf::from("plugins/bibtexer/static"),
         }];
 
         let Some((plugin, page_id)) =
