@@ -48,12 +48,12 @@ pub struct UiState {
     /// Plugin context menu items.
     #[serde(default)]
     pub plugin_menu_items: Vec<PluginMenuItemDef>,
-    /// Inline plugin pages mounted on fixed host pages.
+    /// Plugin form pages mounted into fixed host slots (native render).
     #[serde(default)]
-    pub plugin_slots: Vec<PluginSlotHtml>,
-    /// Rendered HTML for the currently active plugin page.
+    pub plugin_slots: Vec<PluginPageDef>,
+    /// The active plugin page (when a `plugin:` tab is selected).
     #[serde(default)]
-    pub plugin_page_html: Option<String>,
+    pub plugin_active_page: Option<PluginPageDef>,
 }
 
 /// Metadata fields for the active detail pane.
@@ -207,17 +207,66 @@ pub struct PluginMenuItemDef {
     pub label: String,
 }
 
-/// Rendered plugin HTML mounted into a fixed host page slot.
+/// A declarative plugin form page the host renders natively.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct PluginSlotHtml {
-    /// Fixed slot where this plugin HTML should be displayed.
+pub struct PluginPageDef {
+    /// Fixed slot (`detail_tab` / `metadata_page` / `selection_page`).
     pub mount: String,
     /// Plugin machine name.
     pub plugin_name: String,
-    /// Plugin page identifier.
+    /// Page id.
     pub page_id: String,
-    /// User-visible slot label.
+    /// Page label.
     pub label: String,
-    /// Rendered HTML fragment returned by the plugin CLI.
-    pub html: String,
+    /// Action id spawned on submit, when any.
+    pub action_id: Option<String>,
+    /// Target ids passing mode: "selection" | "active" | "none".
+    pub target: String,
+    /// Declarative form fields.
+    pub fields: Vec<PluginFieldDef>,
+    /// Live readouts (Tier-1 bindings).
+    pub displays: Vec<PluginDisplayDef>,
+    /// Optional Tier-2 preview hook.
+    pub preview: Option<PluginPreviewDef>,
+}
+
+/// One declarative form field.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PluginFieldDef {
+    /// Field name (`--param name=value`).
+    pub name: String,
+    /// Display label.
+    pub label: String,
+    /// Control kind: text|textarea|number|checkbox|select|radio.
+    pub kind: String,
+    /// Options for select/radio.
+    pub options: Vec<String>,
+    /// Default value.
+    pub default: Option<String>,
+    /// Whether the field is required.
+    pub required: bool,
+    /// Tier-1 show condition.
+    pub show_if: Option<String>,
+    /// Tier-1 enable condition.
+    pub enabled_if: Option<String>,
+}
+
+/// A live-updating readout.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PluginDisplayDef {
+    /// Display id (and Tier-2 target pane).
+    pub id: String,
+    /// Template text with `{selection.count}` / `{field.<name>}`.
+    pub text: String,
+}
+
+/// A Tier-2 preview hook.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PluginPreviewDef {
+    /// Action id spawned to compute the preview.
+    pub action: String,
+    /// Debounce window in ms.
+    pub debounce_ms: u64,
+    /// Display id the preview text is dropped into.
+    pub into: String,
 }
