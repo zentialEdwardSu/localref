@@ -49,6 +49,7 @@ pub(crate) fn app_state_from_model(
         plugin_menu_items: model.plugin_menu_items,
         plugin_slots: model.plugin_slots,
         plugin_active_page: model.plugin_active_page,
+        plugin_error: model.query.plugin_error.clone(),
     }
 }
 

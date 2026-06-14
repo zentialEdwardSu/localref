@@ -600,8 +600,12 @@ pub fn render_detail(
         && let Some(page) = state.plugin_active_page.clone()
     {
         let return_to = state.return_to.clone();
+        let error_view = state.plugin_error.clone().map(|msg| view! {
+            <div class="plugin-error" role="alert"><h3>"Plugin error"</h3><p>{msg}</p></div>
+        });
         return view! {
             <div class="plugin-page-active">
+                {error_view}
                 {render_plugin_page(page, return_to)}
             </div>
         }
@@ -621,9 +625,13 @@ fn render_metadata(
     set_state: WriteSignal<UiState>,
     set_events_open: WriteSignal<bool>,
 ) -> AnyView {
+    let error_view = state.plugin_error.clone().map(|msg| view! {
+        <div class="plugin-error" role="alert"><h3>"Plugin error"</h3><p>{msg}</p></div>
+    });
     if !state.selected_ids.is_empty() {
         return view! {
             <div class="metadata-layout">
+                {error_view}
                 {render_category_summary(state, set_state, set_events_open)}
                 {render_plugin_slots(state, "selection_page")}
             </div>
@@ -657,6 +665,7 @@ fn render_metadata(
     });
     view! {
         <div class="metadata-layout">
+            {error_view}
             {render_category_summary(state, set_state, set_events_open)}
             {fields.unwrap_or_else(|| empty_metadata_form(state).into_any())}
             {render_plugin_slots(state, "metadata_page")}
@@ -704,15 +713,16 @@ fn render_plugin_page(page: PluginPageDef, return_to: String) -> impl IntoView {
 #[allow(clippy::single_call_fn)] // called from render_plugin_page via map
 fn render_plugin_field(field: PluginFieldDef) -> impl IntoView {
     let default = field.default.clone().unwrap_or_default();
+    let required = field.required;
     let control = match field.kind.as_str() {
         "textarea" => view! {
-            <textarea name=field.name.clone() class="plugin-field-input">
+            <textarea name=field.name.clone() class="plugin-field-input" required=required>
                 {default.clone()}
             </textarea>
         }
         .into_any(),
         "select" => view! {
-            <select name=field.name.clone() class="plugin-field-input">
+            <select name=field.name.clone() class="plugin-field-input" required=required>
                 {field.options.clone().into_iter().map(|opt| {
                     let selected = opt == default;
                     view! { <option value=opt.clone() selected=selected>{opt.clone()}</option> }
@@ -737,17 +747,17 @@ fn render_plugin_field(field: PluginFieldDef) -> impl IntoView {
         .into_any(),
         "checkbox" => view! {
             <input type="checkbox" name=field.name.clone()
-                   class="plugin-field-input" value="true"/>
+                   class="plugin-field-input" value="true" required=required/>
         }
         .into_any(),
         "number" => view! {
             <input type="number" name=field.name.clone()
-                   class="plugin-field-input" value=default.clone()/>
+                   class="plugin-field-input" value=default.clone() required=required/>
         }
         .into_any(),
         _ => view! {
             <input type="text" name=field.name.clone()
-                   class="plugin-field-input" value=default.clone()/>
+                   class="plugin-field-input" value=default.clone() required=required/>
         }
         .into_any(),
     };

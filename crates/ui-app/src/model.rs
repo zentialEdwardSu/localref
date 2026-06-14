@@ -54,6 +54,9 @@ pub struct UiState {
     /// The active plugin page (when a `plugin:` tab is selected).
     #[serde(default)]
     pub plugin_active_page: Option<PluginPageDef>,
+    /// Error message from the most recent plugin action, when any.
+    #[serde(default)]
+    pub plugin_error: Option<String>,
 }
 
 /// Metadata fields for the active detail pane.

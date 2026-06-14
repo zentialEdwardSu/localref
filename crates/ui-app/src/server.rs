@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::actions::{UiAction, run_action};
@@ -75,8 +74,6 @@ pub fn router_with_daemon_repo_plugins_and_context(
 /// Host values passed to plugins during render and action invocations.
 #[derive(Clone, Debug, Default)]
 pub struct PluginHostContext {
-    /// Absolute path to the configured library root.
-    pub library_root: PathBuf,
     /// Public REST endpoint configured for browser-side callbacks.
     pub rest_endpoint: String,
 }
@@ -274,29 +271,42 @@ fn action_args_from_form(
     action_name: &str,
     form: &BTreeMap<String, String>,
 ) -> ActionArgs {
+    build_action_args(
+        plugin.ui.as_ref(),
+        action_name,
+        &state.plugin_context.rest_endpoint,
+        form,
+    )
+}
+
+/// Pure core of [`action_args_from_form`]: resolve the action's declared
+/// target from the UI spec, then collect targeted ids and non-reserved params.
+#[allow(clippy::single_call_fn)] // split out as the pure, unit-testable core
+fn build_action_args(
+    ui: Option<&localref_plugin::manifest::PluginUiSpec>,
+    action_name: &str,
+    endpoint: &str,
+    form: &BTreeMap<String, String>,
+) -> ActionArgs {
     // Reserved control keys never become plugin params.
     const RESERVED: [&str; 5] =
         ["plugin_action", "action", "return_to", "selected", "active"];
     // Resolve the action's declared target from the UI spec.
-    let target = plugin
-        .ui
-        .as_ref()
-        .map_or(UiTarget::None, |ui| {
-            ui.actions
-                .iter()
-                .find(|a| a.id == action_name)
-                .map(|a| a.target)
-                .or_else(|| {
-                    ui.pages
-                        .iter()
-                        .find(|p| p.action.as_deref() == Some(action_name))
-                        .map(|p| p.target)
-                })
-                .unwrap_or(UiTarget::None)
-        });
+    let target = ui.map_or(UiTarget::None, |ui| {
+        ui.actions
+            .iter()
+            .find(|a| a.id == action_name)
+            .map(|a| a.target)
+            .or_else(|| {
+                ui.pages
+                    .iter()
+                    .find(|p| p.action.as_deref() == Some(action_name))
+                    .map(|p| p.target)
+            })
+            .unwrap_or(UiTarget::None)
+    });
 
-    let selected_csv =
-        form.get("selected").cloned().unwrap_or_default();
+    let selected_csv = form.get("selected").cloned().unwrap_or_default();
     let selected: Vec<String> = selected_csv
         .split(',')
         .filter(|s| !s.is_empty())
@@ -311,7 +321,7 @@ fn action_args_from_form(
         .collect();
 
     ActionArgs {
-        endpoint: state.plugin_context.rest_endpoint.clone(),
+        endpoint: endpoint.to_string(),
         selected: matches!(target, UiTarget::Selection)
             .then_some(selected)
             .unwrap_or_default(),
@@ -622,6 +632,148 @@ mod tests {
             plugin_page_from_tab("plugin:bibtexer:missing", &plugins)
                 .is_none()
         );
+    }
+
+    /// Build a UI spec with one action and one form page for arg tests.
+    fn arg_test_ui() -> localref_plugin::manifest::PluginUiSpec {
+        use localref_plugin::manifest::{
+            FieldKind, PluginUiSpec, UiAction as SpecAction, UiField, UiMount,
+            UiPage,
+        };
+        PluginUiSpec {
+            actions: vec![SpecAction {
+                id: "export_ris".to_string(),
+                label: "Export RIS".to_string(),
+                mount: UiMount::ContextMenu,
+                target: UiTarget::Selection,
+            }],
+            pages: vec![UiPage {
+                id: "active_form".to_string(),
+                label: "Active Form".to_string(),
+                mount: UiMount::DetailTab,
+                route: "active".to_string(),
+                action: Some("export_active".to_string()),
+                target: UiTarget::Active,
+                preview: None,
+                fields: vec![UiField {
+                    name: "format".to_string(),
+                    label: "Format".to_string(),
+                    kind: FieldKind::Text,
+                    options: Vec::new(),
+                    default: None,
+                    required: false,
+                    show_if: None,
+                    enabled_if: None,
+                }],
+                display: Vec::new(),
+            }],
+        }
+    }
+
+    fn form(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn build_action_args_selection_target_splits_and_trims_ids() {
+        let ui = arg_test_ui();
+        let args = build_action_args(
+            Some(&ui),
+            "export_ris",
+            "http://127.0.0.1:7777",
+            &form(&[("selected", "a,,b,"), ("format", "bibtex")]),
+        );
+
+        assert_eq!(args.endpoint, "http://127.0.0.1:7777");
+        assert_eq!(args.selected, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(args.active, None);
+        assert_eq!(
+            args.params,
+            vec![("format".to_string(), "bibtex".to_string())]
+        );
+    }
+
+    #[test]
+    fn build_action_args_active_target_takes_active_and_ignores_selected() {
+        let ui = arg_test_ui();
+        let args = build_action_args(
+            Some(&ui),
+            "export_active",
+            "",
+            &form(&[("active", "lr:zotero:one"), ("selected", "a,b")]),
+        );
+
+        assert!(args.selected.is_empty());
+        assert_eq!(args.active.as_deref(), Some("lr:zotero:one"));
+    }
+
+    #[test]
+    fn build_action_args_unknown_action_targets_nothing() {
+        let ui = arg_test_ui();
+        let args = build_action_args(
+            Some(&ui),
+            "does_not_exist",
+            "",
+            &form(&[("active", "lr:zotero:one"), ("selected", "a,b")]),
+        );
+
+        assert!(args.selected.is_empty());
+        assert_eq!(args.active, None);
+    }
+
+    #[test]
+    fn build_action_args_no_ui_spec_targets_nothing() {
+        let args = build_action_args(
+            None,
+            "export_ris",
+            "",
+            &form(&[("selected", "a,b"), ("active", "x")]),
+        );
+
+        assert!(args.selected.is_empty());
+        assert_eq!(args.active, None);
+    }
+
+    #[test]
+    fn build_action_args_excludes_reserved_keys_from_params() {
+        let ui = arg_test_ui();
+        let args = build_action_args(
+            Some(&ui),
+            "export_ris",
+            "",
+            &form(&[
+                ("plugin_action", "export_ris"),
+                ("action", "export_ris"),
+                ("return_to", "/?tab=x"),
+                ("selected", "a"),
+                ("active", "b"),
+                ("format", "bibtex"),
+            ]),
+        );
+
+        assert_eq!(
+            args.params,
+            vec![("format".to_string(), "bibtex".to_string())]
+        );
+    }
+
+    #[test]
+    fn build_action_args_page_action_fallback_resolves_target() {
+        // `export_active` is only a page action (not a top-level UiAction),
+        // so the target must come from the page's declared target (Active).
+        let ui = arg_test_ui();
+        let args = build_action_args(
+            Some(&ui),
+            "export_active",
+            "",
+            &form(&[("active", "lr:zotero:one"), ("selected", "a,b")]),
+        );
+
+        assert_eq!(args.active.as_deref(), Some("lr:zotero:one"));
+        assert!(args.selected.is_empty());
     }
 
     #[test]

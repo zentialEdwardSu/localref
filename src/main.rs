@@ -198,7 +198,6 @@ fn rest_app(
     plugins: Arc<Vec<localref_plugin::DiscoveredPlugin>>,
 ) -> axum::Router {
     let plugin_context = ui_app::PluginHostContext {
-        library_root: config.library_root().to_path_buf(),
         rest_endpoint: config.rest_endpoint().to_string(),
     };
     localref_core::rest::router_with_daemon(daemon.clone()).merge(
