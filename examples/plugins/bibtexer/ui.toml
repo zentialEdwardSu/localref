@@ -1,0 +1,29 @@
+[[pages]]
+id = "export"
+label = "Export"
+mount = "selection_page"
+route = "export"
+action = "export_bibtex"
+target = "selection"
+preview = { action = "preview_export", debounce_ms = 300, into = "preview_pane" }
+
+[[pages.fields]]
+name = "format"
+label = "Format"
+kind = "select"
+options = ["bibtex", "ris"]
+default = "bibtex"
+
+[[pages.display]]
+id = "count"
+text = "Exporting {selection.count} item(s)"
+
+[[pages.display]]
+id = "preview_pane"
+text = ""
+
+[[actions]]
+id = "export_ris"
+label = "Export RIS"
+mount = "context_menu"
+target = "selection"

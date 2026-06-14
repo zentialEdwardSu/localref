@@ -9,6 +9,5 @@ name = "bibtexer"
 path = "src/main.rs"
 
 [dependencies]
-localref-plugin = { path = "../../../crates/plugin" }
-serde = { workspace = true }
-serde_json = { workspace = true }
+localref-plugin-sdk = { path = "../../../crates/plugin-sdk" }
+tokio = { workspace = true }

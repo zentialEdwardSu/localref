@@ -2022,9 +2022,8 @@ dependencies = [
 name = "localref-plugin-bibtexer"
 version = "0.1.0"
 dependencies = [
- "localref-plugin",
- "serde",
- "serde_json",
+ "localref-plugin-sdk",
+ "tokio",
 ]
 
 [[package]]
