@@ -343,6 +343,7 @@ pub fn replace_author_creators(
 }
 
 /// Summarize author creators for a form input.
+#[allow(clippy::single_call_fn)] // used in dto.rs for model-to-state conversion
 pub(crate) fn author_summary(metadata: &Metadata) -> String {
     metadata
         .creators
@@ -378,14 +379,12 @@ pub fn build_plugin_tabs(plugins: &[DiscoveredPlugin]) -> Vec<PluginTabDef> {
         .iter()
         .flat_map(|plugin| {
             let pages = plugin.ui.as_ref().map(|u| u.pages.as_slice());
-            pages.unwrap_or(&[]).iter().filter_map(move |page| {
-                (page.mount == UiMount::DetailTab).then(|| PluginTabDef {
-                    plugin_name: plugin.name().to_string(),
-                    page_id: page.id.clone(),
-                    label: page.label.clone(),
-                    route: page.route.clone(),
-                    tab_key: format!("plugin:{}:{}", plugin.name(), page.id),
-                })
+            pages.unwrap_or(&[]).iter().filter(|page| page.mount == UiMount::DetailTab).map(move |page| PluginTabDef {
+                plugin_name: plugin.name().to_string(),
+                page_id: page.id.clone(),
+                label: page.label.clone(),
+                route: page.route.clone(),
+                tab_key: format!("plugin:{}:{}", plugin.name(), page.id),
             })
         })
         .collect()
@@ -400,14 +399,10 @@ pub fn build_plugin_buttons(
         .iter()
         .flat_map(|plugin| {
             let actions = plugin.ui.as_ref().map(|u| u.actions.as_slice());
-            actions.unwrap_or(&[]).iter().filter_map(move |action| {
-                (action.mount == UiMount::ActionButton).then(|| {
-                    PluginButtonDef {
-                        plugin_name: plugin.name().to_string(),
-                        action_id: action.id.clone(),
-                        label: action.label.clone(),
-                    }
-                })
+            actions.unwrap_or(&[]).iter().filter(|action| action.mount == UiMount::ActionButton).map(move |action| PluginButtonDef {
+                plugin_name: plugin.name().to_string(),
+                action_id: action.id.clone(),
+                label: action.label.clone(),
             })
         })
         .collect()
@@ -422,14 +417,10 @@ pub fn build_plugin_menu_items(
         .iter()
         .flat_map(|plugin| {
             let actions = plugin.ui.as_ref().map(|u| u.actions.as_slice());
-            actions.unwrap_or(&[]).iter().filter_map(move |action| {
-                (action.mount == UiMount::ContextMenu).then(|| {
-                    PluginMenuItemDef {
-                        plugin_name: plugin.name().to_string(),
-                        action_id: action.id.clone(),
-                        label: action.label.clone(),
-                    }
-                })
+            actions.unwrap_or(&[]).iter().filter(|action| action.mount == UiMount::ContextMenu).map(move |action| PluginMenuItemDef {
+                plugin_name: plugin.name().to_string(),
+                action_id: action.id.clone(),
+                label: action.label.clone(),
             })
         })
         .collect()

@@ -100,7 +100,7 @@ pub async fn home(
     Query(query): Query<UiQuery>,
 ) -> Response {
     let repo_name = state.repo_name.clone();
-    match load_model(&state, query).await {
+    match load_model(&state, query) {
         Ok(model) => {
             Html(crate::render_page(app_state_from_model(model, repo_name)))
                 .into_response()
@@ -121,7 +121,7 @@ pub async fn ui_state(
     Query(query): Query<UiQuery>,
 ) -> Response {
     let repo_name = state.repo_name.clone();
-    match load_model(&state, query).await {
+    match load_model(&state, query) {
         Ok(model) => {
             Json(app_state_from_model(model, repo_name)).into_response()
         }
@@ -274,11 +274,14 @@ fn action_args_from_form(
     action_name: &str,
     form: &BTreeMap<String, String>,
 ) -> ActionArgs {
+    // Reserved control keys never become plugin params.
+    const RESERVED: [&str; 5] =
+        ["plugin_action", "action", "return_to", "selected", "active"];
     // Resolve the action's declared target from the UI spec.
     let target = plugin
         .ui
         .as_ref()
-        .map(|ui| {
+        .map_or(UiTarget::None, |ui| {
             ui.actions
                 .iter()
                 .find(|a| a.id == action_name)
@@ -290,8 +293,7 @@ fn action_args_from_form(
                         .map(|p| p.target)
                 })
                 .unwrap_or(UiTarget::None)
-        })
-        .unwrap_or(UiTarget::None);
+        });
 
     let selected_csv =
         form.get("selected").cloned().unwrap_or_default();
@@ -302,9 +304,6 @@ fn action_args_from_form(
         .collect();
     let active = form.get("active").cloned().filter(|s| !s.is_empty());
 
-    // Reserved control keys never become plugin params.
-    const RESERVED: [&str; 5] =
-        ["plugin_action", "action", "return_to", "selected", "active"];
     let params: Vec<(String, String)> = form
         .iter()
         .filter(|(k, _)| !RESERVED.contains(&k.as_str()))
@@ -322,19 +321,18 @@ fn action_args_from_form(
 }
 
 /// Load the UI model and populate active plugin page when needed.
-async fn load_model(
+fn load_model(
     state: &ServerState,
     query: UiQuery,
 ) -> localref_core::error::Result<UiModel> {
     let mut model = UiModel::load(&state.daemon, query, &state.plugins)?;
     render_fixed_plugin_slots(&mut model, state);
-    if let Some((plugin, page_id)) = active_plugin_page(&model, &state.plugins) {
-        if let Some(ui) = plugin.ui.as_ref() {
-            if let Some(page) = ui.pages.iter().find(|p| p.id == page_id) {
-                model.plugin_active_page =
-                    Some(crate::state::page_def(plugin.name(), page));
-            }
-        }
+    if let Some((plugin, page_id)) = active_plugin_page(&model, &state.plugins)
+        && let Some(ui) = plugin.ui.as_ref()
+        && let Some(page) = ui.pages.iter().find(|p| p.id == page_id)
+    {
+        model.plugin_active_page =
+            Some(crate::state::page_def(plugin.name(), page));
     }
     Ok(model)
 }
@@ -382,14 +380,6 @@ pub fn plugin_page_from_tab<'a>(
         let page = ui.pages.iter().find(|p| p.id == page_id)?;
         (plugin.name() == plugin_name).then_some((plugin, page.id.as_str()))
     })
-}
-
-/// Build an escaped plugin error fragment for the detail pane.
-fn plugin_error_html(message: &str) -> String {
-    format!(
-        r#"<div class="plugin-error" role="alert"><h3>Plugin error</h3><p>{}</p></div>"#,
-        escape_text(message)
-    )
 }
 
 /// Convert a plugin action result into the redirect visible to the user.

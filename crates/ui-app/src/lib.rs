@@ -34,8 +34,9 @@ pub mod state;
 
 pub use model::{
     ActiveDetail, CategorySummary, EventSummary, FileEntry, ItemSummary,
-    PluginButtonDef, PluginMenuItemDef, PluginSlotHtml, PluginTabDef,
-    RuleSummary, RulesNotice, UiState,
+    PluginButtonDef, PluginDisplayDef, PluginFieldDef, PluginMenuItemDef,
+    PluginPageDef, PluginPreviewDef, PluginTabDef, RuleSummary, RulesNotice,
+    UiState,
 };
 pub use route::RouteState;
 #[cfg(feature = "ssr")]

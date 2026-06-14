@@ -3,7 +3,8 @@
 use leptos::prelude::*;
 
 use crate::model::{
-    CategorySummary, FileEntry, ItemSummary, RulesNotice, UiState,
+    CategorySummary, FileEntry, ItemSummary, PluginFieldDef, PluginPageDef,
+    RulesNotice, UiState,
 };
 use crate::route::{RouteState, optional_text};
 
@@ -595,17 +596,14 @@ pub fn render_detail(
         return render_metadata(state, set_state, set_events_open);
     }
     // Render plugin page content when a plugin tab is active.
-    if state.tab.starts_with("plugin:") && state.plugin_page_html.is_some() {
-        let srcdoc = plugin_frame_srcdoc(
-            &state.plugin_page_html.clone().unwrap_or_default(),
-        );
+    if state.tab.starts_with("plugin:")
+        && let Some(page) = state.plugin_active_page.clone()
+    {
+        let return_to = state.return_to.clone();
         return view! {
-            <iframe
-                class="plugin-page"
-                title="Plugin page"
-                srcdoc=srcdoc
-                style="width: 100%; min-height: 640px; border: 0;"
-            ></iframe>
+            <div class="plugin-page-active">
+                {render_plugin_page(page, return_to)}
+            </div>
         }
         .into_any();
     }
@@ -615,13 +613,6 @@ pub fn render_detail(
         "events" => render_events(state).into_any(),
         _ => render_metadata(state, set_state, set_events_open),
     }
-}
-
-/// Internal helper for plugin frame srcdoc.
-fn plugin_frame_srcdoc(fragment: &str) -> String {
-    format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><base target="_top"><link rel="stylesheet" href="/assets/localref-ui.css"></head><body>{fragment}</body></html>"#
-    )
 }
 
 /// Render metadata and category controls for active or selected items.
@@ -674,33 +665,121 @@ fn render_metadata(
     .into_any()
 }
 
+/// Render one declarative plugin page as a native form.
+#[allow(clippy::single_call_fn)] // called from render_plugin_slots and render_detail
+#[allow(clippy::needless_pass_by_value)] // owned values needed to avoid lifetime escapes in view! closures
+fn render_plugin_page(page: PluginPageDef, return_to: String) -> impl IntoView {
+    let action_url = format!("/plugin/{}/action", page.plugin_name);
+    let action_id = page.action_id.clone().unwrap_or_default();
+    let fields = page.fields.clone();
+    let displays = page.displays.clone();
+    let preview_attr = page
+        .preview
+        .as_ref()
+        .map(|p| format!("{}:{}:{}", p.action, p.debounce_ms, p.into))
+        .unwrap_or_default();
+    view! {
+        <form
+            class="plugin-form"
+            method="post"
+            action=action_url
+            data-plugin=page.plugin_name.clone()
+            data-plugin-page=page.page_id.clone()
+            data-plugin-preview=preview_attr
+        >
+            <input type="hidden" name="plugin_action" value=action_id/>
+            <input type="hidden" name="return_to" value=return_to/>
+            <h3>{page.label.clone()}</h3>
+            {displays.into_iter().map(|d| view! {
+                <p class="plugin-display" data-display=d.id.clone()
+                   data-template=d.text.clone()>{d.text.clone()}</p>
+            }).collect_view()}
+            {fields.into_iter().map(render_plugin_field).collect_view()}
+            <button class="button primary" type="submit">"Run"</button>
+        </form>
+    }
+}
+
+/// Render one declarative field as a native control.
+#[allow(clippy::single_call_fn)] // called from render_plugin_page via map
+fn render_plugin_field(field: PluginFieldDef) -> impl IntoView {
+    let default = field.default.clone().unwrap_or_default();
+    let control = match field.kind.as_str() {
+        "textarea" => view! {
+            <textarea name=field.name.clone() class="plugin-field-input">
+                {default.clone()}
+            </textarea>
+        }
+        .into_any(),
+        "select" => view! {
+            <select name=field.name.clone() class="plugin-field-input">
+                {field.options.clone().into_iter().map(|opt| {
+                    let selected = opt == default;
+                    view! { <option value=opt.clone() selected=selected>{opt.clone()}</option> }
+                }).collect_view()}
+            </select>
+        }
+        .into_any(),
+        "radio" => view! {
+            <div class="plugin-field-radio">
+                {field.options.clone().into_iter().map(|opt| {
+                    let checked = opt == default;
+                    view! {
+                        <label>
+                            <input type="radio" name=field.name.clone()
+                                   value=opt.clone() checked=checked/>
+                            {opt}
+                        </label>
+                    }
+                }).collect_view()}
+            </div>
+        }
+        .into_any(),
+        "checkbox" => view! {
+            <input type="checkbox" name=field.name.clone()
+                   class="plugin-field-input" value="true"/>
+        }
+        .into_any(),
+        "number" => view! {
+            <input type="number" name=field.name.clone()
+                   class="plugin-field-input" value=default.clone()/>
+        }
+        .into_any(),
+        _ => view! {
+            <input type="text" name=field.name.clone()
+                   class="plugin-field-input" value=default.clone()/>
+        }
+        .into_any(),
+    };
+    view! {
+        <label class="plugin-field" data-field=field.name.clone()>
+            <span class="plugin-field-label">{field.label}</span>
+            {control}
+        </label>
+    }
+}
+
 /// Render plugin pages mounted into one fixed host page slot.
 fn render_plugin_slots(state: &UiState, mount: &'static str) -> impl IntoView {
-    let slots = state
+    let return_to = state.return_to.clone();
+    let slots: Vec<_> = state
         .plugin_slots
         .iter()
         .filter(|slot| slot.mount == mount)
         .cloned()
-        .collect::<Vec<_>>();
+        .collect();
     view! {
-        {slots.into_iter().map(|slot| {
-            let srcdoc = plugin_frame_srcdoc(&slot.html);
+        {slots.into_iter().map(move |slot| {
+            let rt = return_to.clone();
+            let plugin_name = slot.plugin_name.clone();
+            let page_id = slot.page_id.clone();
             view! {
-                <section
-                    class="plugin-slot"
-                    data-plugin=slot.plugin_name
-                    data-plugin-page=slot.page_id
-                >
-                    <h3>{slot.label}</h3>
-                    <iframe
-                        class="plugin-page"
-                        title="Plugin page"
-                        srcdoc=srcdoc
-                        style="width: 100%; min-height: 360px; border: 0;"
-                    ></iframe>
+                <section class="plugin-slot" data-plugin=plugin_name
+                         data-plugin-page=page_id>
+                    {render_plugin_page(slot, rt)}
                 </section>
             }
-        }).collect::<Vec<_>>()}
+        }).collect_view()}
     }
 }
 
