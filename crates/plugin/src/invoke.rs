@@ -1,103 +1,71 @@
-//! Subprocess invocation of plugin CLI binaries.
+//! Argv-driven invocation of plugin CLI binaries.
 //!
-//! Plugins communicate via stdin JSON and stdout JSON. Each invocation is
-//! stateless — the plugin receives the full state it needs and returns a
-//! single result.
+//! The host spawns the plugin with `run <action> --endpoint … [--selected …]
+//! [--active …] [--param k=v …]`, captures one JSON `RunOutput` from stdout,
+//! and never pipes a state blob. The same argv runs identically from a shell.
 
 use tokio::process::Command;
 
 use crate::error::PluginError;
-use crate::state::{PluginUiState, RenderOutput, RunOutput};
+use crate::state::{ActionArgs, RunOutput};
 
-/// Invoke a plugin in `render` mode to produce an SSR HTML fragment.
+/// Build the argv (excluding the executable) for an action invocation.
 ///
-/// # Errors
-///
-/// Returns an error when the plugin cannot be spawned, times out, exits with a
-/// non-zero status, or emits invalid JSON.
-pub async fn invoke_render(
-    executable: &std::path::Path,
-    page: &str,
-    state: &PluginUiState,
-) -> Result<RenderOutput, PluginError> {
-    let input = serde_json::json!({
-        "mode": "render",
-        "page": page,
-        "state": state,
-    });
-    let output = run_plugin(executable, &input).await?;
-    serde_json::from_str(&output)
-        .map_err(|error| PluginError::Parse(error.to_string()))
+/// Each value is a separate vector entry — the spawn API passes them as
+/// distinct OS args, so spaces / `=` / newlines never trigger shell parsing.
+#[must_use]
+pub(crate) fn build_argv(action: &str, args: &ActionArgs) -> Vec<String> {
+    let mut argv = vec!["run".to_string(), action.to_string()];
+    argv.push("--endpoint".to_string());
+    argv.push(args.endpoint.clone());
+    if !args.selected.is_empty() {
+        argv.push("--selected".to_string());
+        argv.push(args.selected.join(","));
+    }
+    if let Some(active) = &args.active {
+        argv.push("--active".to_string());
+        argv.push(active.clone());
+    }
+    for (key, value) in &args.params {
+        argv.push("--param".to_string());
+        argv.push(format!("{key}={value}"));
+    }
+    argv
 }
 
-/// Invoke a plugin in `run` mode to process an action.
+/// Spawn a plugin action and parse its single JSON result envelope.
 ///
 /// # Errors
-///
-/// Returns an error when the plugin cannot be spawned, times out, exits with a
-/// non-zero status, or emits invalid JSON.
-pub async fn invoke_run<P: serde::Serialize + Sync + ?Sized>(
+/// Returns an error when the plugin cannot be spawned, times out, exits
+/// non-zero, or emits invalid JSON.
+pub async fn invoke_action(
     executable: &std::path::Path,
     action: &str,
-    params: &P,
-    state: &PluginUiState,
+    args: &ActionArgs,
 ) -> Result<RunOutput, PluginError> {
-    let input = serde_json::json!({
-        "mode": "run",
-        "action": action,
-        "params": params,
-        "state": state,
-    });
-    let output = run_plugin(executable, &input).await?;
-    serde_json::from_str(&output)
-        .map_err(|error| PluginError::Parse(error.to_string()))
-}
-
-/// Spawn a plugin process, write stdin JSON, and collect stdout with a timeout.
-async fn run_plugin(
-    executable: &std::path::Path,
-    input: &serde_json::Value,
-) -> Result<String, PluginError> {
-    let serialized = serde_json::to_string(input)
-        .map_err(|error| PluginError::Parse(error.to_string()))?;
+    let argv = build_argv(action, args);
 
     let mut command = Command::new(executable);
     command
-        .stdin(std::process::Stdio::piped())
+        .args(&argv)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let mut child = command.spawn().map_err(|error| {
-        PluginError::Subprocess(format!("failed to spawn plugin: {error}"))
+    let child = command.spawn().map_err(|e| {
+        PluginError::Subprocess(format!("failed to spawn plugin: {e}"))
     })?;
 
-    // Write stdin using tokio async I/O, then drop to close the pipe.
-    {
-        use tokio::io::AsyncWriteExt;
-        let mut stdin = child.stdin.take().ok_or_else(|| {
-            PluginError::Subprocess("failed to open plugin stdin".to_string())
-        })?;
-        stdin.write_all(serialized.as_bytes()).await.map_err(|error| {
-            PluginError::Subprocess(format!("stdin write failed: {error}"))
-        })?;
-        stdin.shutdown().await.map_err(|error| {
-            PluginError::Subprocess(format!("stdin close failed: {error}"))
-        })?;
-    }
-
-    // Wait with timeout.
-    let timeout_duration = std::time::Duration::from_secs(30);
-    let output =
-        tokio::time::timeout(timeout_duration, child.wait_with_output())
-            .await
-            .map_err(|_| PluginError::Timeout)?
-            .map_err(|error| {
-                PluginError::Subprocess(format!("wait failed: {error}"))
-            })?;
+    let timeout = std::time::Duration::from_secs(30);
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .map_err(|_| PluginError::Timeout)?
+        .map_err(|e| PluginError::Subprocess(format!("wait failed: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -108,37 +76,60 @@ async fn run_plugin(
         )));
     }
 
-    String::from_utf8(output.stdout).map_err(|error| {
-        PluginError::Parse(format!("non-UTF-8 output: {error}"))
-    })
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|e| PluginError::Parse(format!("non-UTF-8 output: {e}")))?;
+    serde_json::from_str(stdout.trim())
+        .map_err(|e| PluginError::Parse(e.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::build_argv;
+    use crate::state::ActionArgs;
 
-    #[tokio::test]
-    async fn invoke_render_detects_missing_executable() {
-        let state = PluginUiState {
-            repo_name: "Test".to_string(),
-            search: None,
-            category: None,
-            items: Vec::new(),
-            categories: Vec::new(),
-            selected_ids: Vec::new(),
-            active_id: None,
-            active_detail: None,
-            tab: "metadata".to_string(),
-            status_label: "Running".to_string(),
-            library_root: "/nonexistent".to_string(),
-            rest_endpoint: "http://127.0.0.1:0".to_string(),
+    #[test]
+    fn argv_includes_endpoint_selected_and_params() {
+        let args = ActionArgs {
+            endpoint: "http://127.0.0.1:8787".to_string(),
+            selected: vec!["a".to_string(), "b".to_string()],
+            active: None,
+            params: vec![("format".to_string(), "bibtex".to_string())],
         };
-        let result = invoke_render(
-            std::path::Path::new("/nonexistent/plugin-bin"),
-            "main",
-            &state,
-        )
-        .await;
-        assert!(result.is_err());
+        let argv = build_argv("export_bibtex", &args);
+        assert_eq!(argv[0], "run");
+        assert_eq!(argv[1], "export_bibtex");
+        assert!(argv.contains(&"--endpoint".to_string()));
+        assert!(argv.contains(&"http://127.0.0.1:8787".to_string()));
+        assert!(argv.contains(&"--selected".to_string()));
+        assert!(argv.contains(&"a,b".to_string()));
+        assert!(argv.contains(&"--param".to_string()));
+        assert!(argv.contains(&"format=bibtex".to_string()));
+    }
+
+    #[test]
+    fn argv_passes_special_chars_as_intact_entries() {
+        let args = ActionArgs {
+            endpoint: "http://x".to_string(),
+            selected: vec![],
+            active: Some("id1".to_string()),
+            params: vec![("note".to_string(), "a = b\nc d".to_string())],
+        };
+        let argv = build_argv("act", &args);
+        assert!(argv.contains(&"--active".to_string()));
+        assert!(argv.contains(&"id1".to_string()));
+        assert!(argv.contains(&"note=a = b\nc d".to_string()));
+    }
+
+    #[test]
+    fn argv_omits_selected_when_empty() {
+        let args = ActionArgs {
+            endpoint: "http://x".to_string(),
+            selected: vec![],
+            active: None,
+            params: vec![],
+        };
+        let argv = build_argv("act", &args);
+        assert!(!argv.contains(&"--selected".to_string()));
+        assert!(!argv.contains(&"--active".to_string()));
     }
 }
