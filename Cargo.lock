@@ -2031,9 +2031,11 @@ dependencies = [
 name = "localref-plugin-sdk"
 version = "0.1.0"
 dependencies = [
+ "localref-client",
  "localref-plugin",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

@@ -1,172 +1,129 @@
-//! CLI protocol runtime: stdin JSON → dispatch → stdout JSON.
+//! Argv parsing and the action-handler entry point for Rust plugins.
 
-use std::io::Read;
+use std::collections::HashMap;
 
-use serde::Deserialize;
-
-use crate::plugin::Plugin;
-
-/// Input envelope received on stdin.
-#[derive(Debug, Deserialize)]
-struct PluginInput {
-    /// Protocol operation to execute.
-    mode: String,
-    /// Page identifier used by render requests.
-    #[serde(default)]
-    page: String,
-    /// Action identifier used by run requests.
-    #[serde(default)]
-    action: String,
-    /// Parameters supplied to an action.
-    #[serde(default)]
-    params: std::collections::HashMap<String, String>,
-    /// Serialized host UI state.
-    #[serde(default)]
-    state: Option<serde_json::Value>,
+/// A parsed plugin invocation.
+#[derive(Debug)]
+pub enum Invocation {
+    /// `run <action> --endpoint … [--selected …] [--active …] [--param k=v]`.
+    Run {
+        /// Action id.
+        action: String,
+        /// Daemon REST base URL.
+        endpoint: String,
+        /// Selected item ids.
+        selected: Vec<String>,
+        /// Active item id.
+        active: Option<String>,
+        /// Form parameters.
+        params: HashMap<String, String>,
+    },
+    /// `manifest` — author self-check; prints identity and exits.
+    Manifest,
 }
 
-/// Run the plugin CLI protocol loop.
-///
-/// Reads one JSON object from stdin, dispatches to the plugin's handler,
-/// and writes the JSON result to stdout.
-pub fn run(plugin: &impl Plugin) {
-    let mut input = String::new();
-    if std::io::stdin().read_to_string(&mut input).is_err() {
-        print_error("failed to read stdin");
-        return;
-    }
-    let input = input.trim().to_string();
-    if input.is_empty() {
-        print_error("empty input");
-        return;
-    }
-
-    let parsed: PluginInput = match serde_json::from_str(&input) {
-        Ok(v) => v,
-        Err(e) => {
-            print_error(&format!("invalid JSON: {e}"));
-            return;
-        }
-    };
-    let parse_state = || {
-        parsed
-            .state
-            .as_ref()
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-    };
-
-    match parsed.mode.as_str() {
-        "manifest" => {
-            let manifest = serde_json::json!({
-                "name": plugin.name(),
-                "description": plugin.description(),
-                "actions": plugin.actions().into_iter().map(|a| {
-                    let mount = match a.mount {
-                        crate::plugin::ActionMount::ActionButton => "action_button",
-                        crate::plugin::ActionMount::ContextMenu => "context_menu",
-                    };
-                    serde_json::json!({
-                        "id": a.id,
-                        "label": a.label,
-                        "mount": mount,
-                    })
-                }).collect::<Vec<_>>(),
-                "pages": plugin.pages().into_iter().map(|p| {
-                    let mount = match p.mount {
-                        crate::plugin::PageMount::DetailTab => "detail_tab",
-                        crate::plugin::PageMount::MetadataPage => "metadata_page",
-                        crate::plugin::PageMount::SelectionPage => "selection_page",
-                    };
-                    serde_json::json!({
-                        "id": p.id,
-                        "label": p.label,
-                        "mount": mount,
-                        "route": p.route,
-                    })
-                }).collect::<Vec<_>>(),
-            });
-            println!(
-                "{}",
-                serde_json::to_string(&manifest).unwrap_or_default()
-            );
-        }
-        "render" => {
-            let Some(state) = parse_state() else {
-                print_error("invalid state in render input");
-                return;
-            };
-
-            match plugin.render(&parsed.page, &state) {
-                Ok(output) => println!(
-                    "{}",
-                    serde_json::to_string(&output).unwrap_or_default()
-                ),
-                Err(error) => {
-                    let output =
-                        localref_plugin::state::RenderOutput::error(error);
-                    println!(
-                        "{}",
-                        serde_json::to_string(&output).unwrap_or_default()
-                    );
-                }
-            }
-        }
+/// Parse an argv stream (excluding the executable) into an `Invocation`.
+#[must_use]
+pub fn parse_args(
+    mut args: impl Iterator<Item = String>,
+) -> Option<Invocation> {
+    match args.next()?.as_str() {
+        "manifest" => Some(Invocation::Manifest),
         "run" => {
-            let Some(state) = parse_state() else {
-                print_error("invalid state in run input");
-                return;
-            };
-
-            match plugin.run(&parsed.action, &parsed.params, &state) {
-                Ok(output) => println!(
-                    "{}",
-                    serde_json::to_string(&output).unwrap_or_default()
-                ),
-                Err(error) => {
-                    let output =
-                        localref_plugin::state::RunOutput::error(error);
-                    println!(
-                        "{}",
-                        serde_json::to_string(&output).unwrap_or_default()
-                    );
+            let action = args.next()?;
+            let mut endpoint = String::new();
+            let mut selected = Vec::new();
+            let mut active = None;
+            let mut params = HashMap::new();
+            while let Some(flag) = args.next() {
+                match flag.as_str() {
+                    "--endpoint" => endpoint = args.next().unwrap_or_default(),
+                    "--selected" => {
+                        selected = args
+                            .next()
+                            .unwrap_or_default()
+                            .split(',')
+                            .filter(|s| !s.is_empty())
+                            .map(ToOwned::to_owned)
+                            .collect();
+                    }
+                    "--active" => active = args.next(),
+                    "--param" => {
+                        if let Some(kv) = args.next() {
+                            if let Some((k, v)) = kv.split_once('=') {
+                                params.insert(k.to_string(), v.to_string());
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
+            Some(Invocation::Run { action, endpoint, selected, active, params })
         }
-        mode => print_error(&format!("unknown mode: {mode}")),
+        _ => None,
     }
 }
 
-/// Print a protocol error response to stdout.
-fn print_error(message: &str) {
-    let err = serde_json::json!({
-        "status": "error",
-        "message": message,
-    });
-    println!("{}", serde_json::to_string(&err).unwrap_or_default());
+/// Form parameters passed to an action handler.
+pub type Params = HashMap<String, String>;
+
+/// Context handed to an action handler: ids + a ready REST client.
+pub struct ActionContext {
+    /// Selected item ids (empty when not targeted).
+    pub selected: Vec<String>,
+    /// Active item id (when targeted).
+    pub active: Option<String>,
+    /// Parsed form parameters.
+    pub params: Params,
+    /// REST client bound to the daemon endpoint.
+    pub client: localref_client::LocalrefClient,
 }
 
-/// Declare the plugin entry point.
-///
-/// Generates a `main()` function that wires the plugin type into the CLI
-/// protocol runtime.  The type must implement `Default + Plugin`.
-///
-/// # Example
-///
-/// ```ignore
-/// use localref_plugin_sdk::prelude::*;
-///
-/// #[derive(Default)]
-/// struct MyPlugin;
-/// impl Plugin for MyPlugin { /* ... */ }
-///
-/// localref_plugin_main!(MyPlugin);
-/// ```
-#[macro_export]
-macro_rules! localref_plugin_main {
-    ($plugin_ty:ty) => {
-        fn main() {
-            let plugin = <$plugin_ty as Default>::default();
-            localref_plugin_sdk::run(&plugin);
-        }
-    };
+/// Print one `RunOutput` envelope to stdout.
+pub fn emit(output: &localref_plugin::RunOutput) {
+    println!(
+        "{}",
+        serde_json::to_string(output).unwrap_or_else(|_| {
+            "{\"status\":\"error\",\"message\":\"serialize failed\"}"
+                .to_string()
+        })
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Invocation, parse_args};
+
+    #[test]
+    fn parses_run_action_with_ids_and_params() {
+        let argv = [
+            "run", "export_bibtex",
+            "--endpoint", "http://127.0.0.1:8787",
+            "--selected", "a,b",
+            "--param", "format=bibtex",
+            "--param", "note=a = b",
+        ]
+        .map(str::to_string);
+        let Invocation::Run { action, endpoint, selected, active, params } =
+            parse_args(argv.into_iter()).expect("parse run")
+        else {
+            panic!("expected run invocation");
+        };
+        assert_eq!(action, "export_bibtex");
+        assert_eq!(endpoint, "http://127.0.0.1:8787");
+        assert_eq!(selected, vec!["a".to_string(), "b".to_string()]);
+        assert!(active.is_none());
+        assert_eq!(params.get("format").map(String::as_str), Some("bibtex"));
+        // A '=' inside the value is preserved (split on first '=' only).
+        assert_eq!(params.get("note").map(String::as_str), Some("a = b"));
+    }
+
+    #[test]
+    fn parses_manifest_subcommand() {
+        let argv = ["manifest"].map(str::to_string);
+        assert!(matches!(
+            parse_args(argv.into_iter()),
+            Some(Invocation::Manifest)
+        ));
+    }
 }

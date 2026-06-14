@@ -12,9 +12,8 @@
 #![warn(clippy::excessive_precision)]
 #![warn(clippy::missing_docs_in_private_items)]
 
-use localref_core::model::{
-    ItemDocument, ItemFilesDocument, MetadataDocument, SearchHit,
-};
+pub use localref_core::model::ItemDocument;
+use localref_core::model::{ItemFilesDocument, MetadataDocument, SearchHit};
 use localref_core::storage::CategorySummary;
 
 /// Errors surfaced by the REST client.
