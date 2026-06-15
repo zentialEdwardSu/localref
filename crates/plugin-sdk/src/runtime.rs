@@ -18,6 +18,24 @@ pub enum Invocation {
         /// Form parameters.
         params: HashMap<String, String>,
     },
+    /// `hook <event> --endpoint … [--item …] [--category …]`.
+    Hook {
+        /// Lifecycle event name (e.g. `item_imported`).
+        event: String,
+        /// Daemon REST base URL.
+        endpoint: String,
+        /// Affected item id, when the event names one.
+        item: Option<String>,
+        /// Affected category path, when the event names one.
+        category: Option<String>,
+    },
+    /// `cron <job> --endpoint …`.
+    Cron {
+        /// Scheduled job id declared in the manifest.
+        job: String,
+        /// Daemon REST base URL.
+        endpoint: String,
+    },
     /// `manifest` — author self-check; prints identity and exits.
     Manifest,
 }
@@ -29,6 +47,37 @@ pub fn parse_args(
 ) -> Option<Invocation> {
     match args.next()?.as_str() {
         "manifest" => Some(Invocation::Manifest),
+        "hook" => {
+            let event = args.next()?;
+            let mut endpoint = String::new();
+            let mut item = None;
+            let mut category = None;
+            while let Some(flag) = args.next() {
+                match flag.as_str() {
+                    "--endpoint" => endpoint = args.next().unwrap_or_default(),
+                    "--item" => item = args.next(),
+                    "--category" => category = args.next(),
+                    _ => {}
+                }
+            }
+            if endpoint.is_empty() {
+                return None;
+            }
+            Some(Invocation::Hook { event, endpoint, item, category })
+        }
+        "cron" => {
+            let job = args.next()?;
+            let mut endpoint = String::new();
+            while let Some(flag) = args.next() {
+                if flag == "--endpoint" {
+                    endpoint = args.next().unwrap_or_default();
+                }
+            }
+            if endpoint.is_empty() {
+                return None;
+            }
+            Some(Invocation::Cron { job, endpoint })
+        }
         "run" => {
             let action = args.next()?;
             let mut endpoint = String::new();
@@ -119,6 +168,46 @@ mod tests {
         assert_eq!(params.get("format").map(String::as_str), Some("bibtex"));
         // A '=' inside the value is preserved (split on first '=' only).
         assert_eq!(params.get("note").map(String::as_str), Some("a = b"));
+    }
+
+    #[test]
+    fn parses_hook_with_item_and_category() {
+        let argv = [
+            "hook", "item_imported",
+            "--endpoint", "http://127.0.0.1:24817",
+            "--item", "lr:zotero:abc",
+            "--category", "Wireless/RIS",
+        ]
+        .map(str::to_string);
+        let Invocation::Hook { event, endpoint, item, category } =
+            parse_args(argv.into_iter()).expect("parse hook")
+        else {
+            panic!("expected hook invocation");
+        };
+        assert_eq!(event, "item_imported");
+        assert_eq!(endpoint, "http://127.0.0.1:24817");
+        assert_eq!(item.as_deref(), Some("lr:zotero:abc"));
+        assert_eq!(category.as_deref(), Some("Wireless/RIS"));
+    }
+
+    #[test]
+    fn parses_cron_job() {
+        let argv =
+            ["cron", "nightly_sync", "--endpoint", "http://127.0.0.1:24817"]
+                .map(str::to_string);
+        let Invocation::Cron { job, endpoint } =
+            parse_args(argv.into_iter()).expect("parse cron")
+        else {
+            panic!("expected cron invocation");
+        };
+        assert_eq!(job, "nightly_sync");
+        assert_eq!(endpoint, "http://127.0.0.1:24817");
+    }
+
+    #[test]
+    fn hook_without_endpoint_returns_none() {
+        let argv = ["hook".to_string(), "item_imported".to_string()];
+        assert!(parse_args(argv.into_iter()).is_none());
     }
 
     #[test]

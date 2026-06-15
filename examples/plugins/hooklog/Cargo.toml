@@ -1,0 +1,13 @@
+[package]
+name = "localref-plugin-hooklog"
+version = "0.1.0"
+edition = "2024"
+description = "Example Localref plugin: append a line on each hook and cron run"
+
+[[bin]]
+name = "hooklog"
+path = "src/main.rs"
+
+[dependencies]
+localref-plugin-sdk = { path = "../../../crates/plugin-sdk" }
+tokio = { workspace = true }

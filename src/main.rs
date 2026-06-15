@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+mod scheduler;
 mod tray;
 mod ui;
 
@@ -153,6 +154,11 @@ fn start_api_runtime(
                 .build()
                 .expect("failed to start Localref API runtime");
             tokio_rt.block_on(async move {
+                scheduler::spawn_plugin_workers(
+                    &runtime.daemon,
+                    runtime.plugins.clone(),
+                    runtime.config.rest_endpoint().to_string(),
+                );
                 let rest = serve_rest_with_daemon(
                     runtime.config.clone(),
                     runtime.daemon.clone(),

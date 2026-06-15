@@ -15,6 +15,17 @@ pub struct ActionArgs {
     pub params: Vec<(String, String)>,
 }
 
+/// Inputs the host passes to a spawned plugin hook via argv.
+#[derive(Clone, Debug, Default)]
+pub struct HookArgs {
+    /// Daemon REST base URL (`--endpoint`).
+    pub endpoint: String,
+    /// Affected item id (`--item id`), when the event names one.
+    pub item: Option<String>,
+    /// Affected category path (`--category path`), when the event names one.
+    pub category: Option<String>,
+}
+
 /// Output from a plugin action invocation (printed as one JSON object).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunOutput {

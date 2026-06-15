@@ -16,6 +16,59 @@ pub struct PluginManifest {
     /// Optional UI-spec filename override (defaults to `ui.toml`).
     #[serde(default)]
     pub ui: Option<String>,
+    /// Lifecycle events this plugin runs after (`plugin hook <event>`).
+    #[serde(default)]
+    pub hooks: Vec<HookBinding>,
+    /// Scheduled jobs this plugin runs on a cron timer (`plugin cron <id>`).
+    #[serde(default)]
+    pub cron: Vec<CronJob>,
+}
+
+/// One declared hook: the plugin is spawned after this event completes.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+pub struct HookBinding {
+    /// Daemon event this hook fires on.
+    pub event: HookEvent,
+}
+
+/// Daemon lifecycle events a plugin can bind a hook to. Names match the
+/// wire token passed as `plugin hook <event>`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum HookEvent {
+    /// A new item was imported and indexed.
+    ItemImported,
+    /// A category was created, renamed, merged, or (un)assigned.
+    CategoryChanged,
+    /// An indexed item was deleted.
+    ItemDeleted,
+    /// An item's metadata was patched.
+    MetadataPatched,
+    /// A full library scan finished.
+    ScanCompleted,
+}
+
+impl HookEvent {
+    /// Stable `snake_case` wire name, matching `DaemonEvent::event_name`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ItemImported => "item_imported",
+            Self::CategoryChanged => "category_changed",
+            Self::ItemDeleted => "item_deleted",
+            Self::MetadataPatched => "metadata_patched",
+            Self::ScanCompleted => "scan_completed",
+        }
+    }
+}
+
+/// One scheduled job: the plugin is spawned as `plugin cron <id>` on schedule.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct CronJob {
+    /// Job id passed back to the plugin as `cron <id>`.
+    pub id: String,
+    /// Cron expression (6 fields: sec min hour day-of-month month day-of-week).
+    pub schedule: String,
 }
 
 impl PluginManifest {
@@ -199,6 +252,43 @@ mod tests {
         assert_eq!(m.name, "bibtexer");
         assert_eq!(m.executable.as_deref(), Some("bibtexer"));
         assert_eq!(m.ui.as_deref(), None);
+        // Hooks and cron are opt-in; absence parses to empty, preserving
+        // backward compatibility with existing manifests.
+        assert!(m.hooks.is_empty());
+        assert!(m.cron.is_empty());
+    }
+
+    #[test]
+    fn plugin_manifest_parses_hooks_and_cron() {
+        let m = PluginManifest::parse(
+            r#"
+name = "archiver"
+executable = "archiver"
+
+[[hooks]]
+event = "item_imported"
+
+[[hooks]]
+event = "item_deleted"
+
+[[cron]]
+id = "nightly_sync"
+schedule = "0 0 3 * * *"
+"#,
+        )
+        .expect("parse hooks + cron");
+        assert_eq!(
+            m.hooks,
+            vec![
+                super::HookBinding { event: super::HookEvent::ItemImported },
+                super::HookBinding { event: super::HookEvent::ItemDeleted },
+            ],
+        );
+        assert_eq!(m.cron.len(), 1);
+        assert_eq!(m.cron[0].id, "nightly_sync");
+        assert_eq!(m.cron[0].schedule, "0 0 3 * * *");
+        // Wire name stays in lock-step with the daemon's event name.
+        assert_eq!(super::HookEvent::ItemImported.as_str(), "item_imported");
     }
 
     #[test]

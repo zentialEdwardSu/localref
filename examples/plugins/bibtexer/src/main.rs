@@ -30,6 +30,10 @@ async fn main() {
             };
             emit(&run(&action, &ctx).await);
         }
+        // bibtexer is interactive-only; it declares no hooks or cron jobs.
+        Invocation::Hook { .. } | Invocation::Cron { .. } => {
+            emit(&RunOutput::error("bibtexer has no hook or cron entry points"));
+        }
     }
 }
 

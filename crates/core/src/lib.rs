@@ -47,6 +47,7 @@ use crate::types::{
 };
 use lock::LockManager;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 
 /// Category assigned to connector imports that match no classification rule.
 const UNMATCHED_CATEGORY: &str = "unmatched";
@@ -201,6 +202,53 @@ pub struct DaemonStatus {
     pub paused_modes: Vec<PauseMode>,
 }
 
+/// A library mutation that completed successfully, published to hook
+/// subscribers so the host can spawn plugins bound to the matching event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DaemonEvent {
+    /// A new item was imported and indexed.
+    ItemImported {
+        /// Imported item id.
+        item_id: String,
+    },
+    /// An indexed item directory was deleted.
+    ItemDeleted {
+        /// Deleted item id.
+        item_id: String,
+    },
+    /// An item's metadata was patched.
+    MetadataPatched {
+        /// Patched item id.
+        item_id: String,
+    },
+    /// A category was created, renamed, merged, or (un)assigned to items.
+    CategoryChanged {
+        /// Affected item id(s), when the change targeted specific items.
+        item_id: Option<String>,
+        /// Affected category path, when known.
+        category: Option<String>,
+    },
+    /// A full library scan finished.
+    ScanCompleted {
+        /// Number of indexed items after the scan.
+        indexed_items: usize,
+    },
+}
+
+impl DaemonEvent {
+    /// Stable `snake_case` wire name passed to plugins as `hook <event>`.
+    #[must_use]
+    pub fn event_name(&self) -> &'static str {
+        match self {
+            Self::ItemImported { .. } => "item_imported",
+            Self::ItemDeleted { .. } => "item_deleted",
+            Self::MetadataPatched { .. } => "metadata_patched",
+            Self::CategoryChanged { .. } => "category_changed",
+            Self::ScanCompleted { .. } => "scan_completed",
+        }
+    }
+}
+
 /// Core daemon facade used by user-facing APIs.
 #[derive(Clone)]
 pub struct LocalrefDaemon {
@@ -210,6 +258,8 @@ pub struct LocalrefDaemon {
     library_root: PathBuf,
     /// Stored queue.
     queue: Arc<Mutex<TaskQueueState>>,
+    /// Completion-event publisher; subscribers drive plugin hooks.
+    event_tx: broadcast::Sender<DaemonEvent>,
 }
 
 #[derive(Debug)]
@@ -232,6 +282,7 @@ impl LocalrefDaemon {
     #[must_use]
     pub fn new(storage: StorageDb) -> Self {
         let library_root = storage.library_root().to_path_buf();
+        let (event_tx, _) = broadcast::channel(256);
         Self {
             library_root,
             storage,
@@ -242,7 +293,22 @@ impl LocalrefDaemon {
                 history: Vec::new(),
                 paused_modes: BTreeSet::new(),
             })),
+            event_tx,
         }
+    }
+
+    /// Subscribe to daemon completion events.
+    ///
+    /// Each successful mutating action publishes a [`DaemonEvent`]; the host
+    /// uses this stream to spawn plugins bound to the matching hook event.
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<DaemonEvent> {
+        self.event_tx.subscribe()
+    }
+
+    /// Publish one completion event, ignoring the case of no live subscribers.
+    fn emit_event(&self, event: DaemonEvent) {
+        let _ = self.event_tx.send(event);
     }
 
     /// Open storage for a library root and create a daemon facade.
@@ -373,6 +439,9 @@ impl LocalrefDaemon {
         match result {
             Ok(outcome) => {
                 record.state = DaemonTaskState::Completed;
+                self.emit_event(DaemonEvent::ItemImported {
+                    item_id: outcome.item_id.as_str().to_string(),
+                });
                 self.finish(record);
                 Ok(outcome)
             }
@@ -474,6 +543,9 @@ impl LocalrefDaemon {
                 record.state = DaemonTaskState::Completed;
                 record.message =
                     Some(format!("patched metadata for {item_id}"));
+                self.emit_event(DaemonEvent::MetadataPatched {
+                    item_id: item_id.to_string(),
+                });
                 self.finish(record);
                 Ok(item)
             }
@@ -521,6 +593,9 @@ impl LocalrefDaemon {
         match result {
             Ok(outcome) => {
                 record.state = DaemonTaskState::Completed;
+                self.emit_event(DaemonEvent::ItemImported {
+                    item_id: outcome.item_id.as_str().to_string(),
+                });
                 self.finish(record);
                 Ok(outcome)
             }
@@ -562,6 +637,9 @@ impl LocalrefDaemon {
         match result {
             Ok(outcome) => {
                 record.state = DaemonTaskState::Completed;
+                self.emit_event(DaemonEvent::ItemImported {
+                    item_id: outcome.item_id.as_str().to_string(),
+                });
                 self.finish(record);
                 Ok(outcome)
             }
@@ -1167,6 +1245,31 @@ impl LocalrefDaemon {
         match result {
             Ok(value) => {
                 record.state = DaemonTaskState::Completed;
+                // Category and delete tasks carry their ids in the task
+                // payload, so derive the completion event from it directly.
+                match &record.task {
+                    DaemonTask::DeleteItem { item_id } => {
+                        self.emit_event(DaemonEvent::ItemDeleted {
+                            item_id: item_id.clone(),
+                        });
+                    }
+                    DaemonTask::CreateCategory { category }
+                    | DaemonTask::RenameCategory { to: category, .. }
+                    | DaemonTask::MergeCategory { to: category, .. } => {
+                        self.emit_event(DaemonEvent::CategoryChanged {
+                            item_id: None,
+                            category: Some(category.as_str().to_string()),
+                        });
+                    }
+                    DaemonTask::AddCategory { item_id, category }
+                    | DaemonTask::RemoveCategory { item_id, category } => {
+                        self.emit_event(DaemonEvent::CategoryChanged {
+                            item_id: Some(item_id.clone()),
+                            category: Some(category.as_str().to_string()),
+                        });
+                    }
+                    _ => {}
+                }
                 self.finish(record);
                 Ok(value)
             }
@@ -1258,6 +1361,11 @@ impl LocalrefDaemon {
         match result {
             Ok(()) => {
                 record.state = DaemonTaskState::Completed;
+                if matches!(record.task, DaemonTask::ScanAll) {
+                    self.emit_event(DaemonEvent::ScanCompleted {
+                        indexed_items: record.indexed_items.unwrap_or(0),
+                    });
+                }
                 self.finish(record.clone());
                 Ok(record)
             }

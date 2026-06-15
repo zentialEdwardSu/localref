@@ -11,7 +11,9 @@ native-tray = ["desktop", "dep:tao", "dep:tray-icon"]
 
 [dependencies]
 axum = { workspace = true }
+chrono = { workspace = true }
 clap = { workspace = true }
+cron = { workspace = true }
 csc = { path = "crates/csc" }
 localref_client = { package = "localref-client", path = "crates/client" }
 localref_core = { package = "localref-core", path = "crates/core" }
@@ -41,6 +43,7 @@ members = [
 	"crates/plugin-sdk",
 	"crates/ui-app",
 	"examples/plugins/bibtexer",
+	"examples/plugins/hooklog",
 ]
 
 [workspace.package]
@@ -50,7 +53,9 @@ version = "0.1.0"
 
 [workspace.dependencies]
 axum = { version = "0.8", features = ["multipart"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
+cron = "0.15"
 http = "1"
 leptos = { version = "0.8", default-features = false }
 redb = "3"

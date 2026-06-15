@@ -31,6 +31,48 @@ A plugin with no `ui.toml` (and no `ui` override that resolves to a file) is
 discoverable by the host but exposes nothing in the UI. It is still invocable
 from the command line.
 
+### Hooks — `[[hooks]]`
+
+A hook binds the plugin to a daemon lifecycle event. After the event completes,
+the host spawns the plugin as `plugin-bin hook <event> …`, fire-and-forget: the
+result is logged but never blocks or fails the action that triggered it.
+
+```toml
+[[hooks]]
+event = "item_imported"
+
+[[hooks]]
+event = "item_deleted"
+```
+
+| Key     | Type | Required | Values |
+|---------|------|----------|--------|
+| `event` | enum | yes      | `item_imported` · `category_changed` · `item_deleted` · `metadata_patched` · `scan_completed` |
+
+A plugin may declare any number of hooks. The same plugin can bind to several
+events; it dispatches on the `<event>` argument at runtime.
+
+### Cron jobs — `[[cron]]`
+
+A cron job runs the plugin on a schedule. The host spawns it as
+`plugin-bin cron <id> …` when due, fire-and-forget.
+
+```toml
+[[cron]]
+id       = "nightly_sync"
+schedule = "0 0 3 * * *"
+```
+
+| Key        | Type   | Required | Notes |
+|------------|--------|----------|-------|
+| `id`       | string | yes      | Job id passed back to the plugin as `cron <id>` |
+| `schedule` | string | yes      | Cron expression, six fields: `sec min hour day-of-month month day-of-week` |
+
+There is **no catch-up**: jobs fire only while Localref is running, and the next
+fire time is always computed forward from the present. Jobs are skipped while
+the daemon is fully paused. Invalid expressions are logged and skipped at
+startup; the rest of the plugin still loads.
+
 ---
 
 ## 2. Declarative UI spec — `ui.toml`
@@ -200,6 +242,34 @@ bibtexer run export_bibtex \
     --param format=bibtex
 ```
 
+### Hook and cron invocation
+
+Besides `run`, the host spawns plugins through two more subcommands. Both are
+fire-and-forget: the host reads the same result envelope only to log it.
+
+```
+plugin-bin hook <event> --endpoint <url> [--item <id>] [--category <path>]
+plugin-bin cron <id>    --endpoint <url>
+```
+
+| Segment / flag | Notes |
+|----------------|-------|
+| `hook`         | Literal subcommand |
+| `<event>`      | The event name that fired (one of the five hook events) |
+| `--item`       | Affected item id, present for item-scoped events (`item_imported`, `item_deleted`, `metadata_patched`, and item-targeted category changes) |
+| `--category`   | Affected category path, present for `category_changed` events that name one |
+| `cron`         | Literal subcommand |
+| `<id>`         | The cron job id declared in `plugin.toml` |
+| `--endpoint`   | Daemon REST base URL, as with `run` |
+
+`scan_completed` hooks carry neither `--item` nor `--category`. As with `run`,
+the same argv works from a shell:
+
+```sh
+hooklog hook item_imported --endpoint http://127.0.0.1:24817 --item lr:zotero:a
+hooklog cron heartbeat     --endpoint http://127.0.0.1:24817
+```
+
 ---
 
 ## 4. The result envelope
@@ -312,6 +382,10 @@ match invocation {
         emit(&run(&action, &ctx).await);
     }
     Invocation::Manifest => { /* self-check only; host reads plugin.toml */ }
+    // Interactive-only plugins still match these arms exhaustively.
+    Invocation::Hook { .. } | Invocation::Cron { .. } => {
+        emit(&RunOutput::error("bibtexer has no hook or cron entry points"));
+    }
 }
 ```
 
@@ -324,3 +398,44 @@ The `run` function dispatches on `action`:
   host shows the text inline rather than opening a save dialog.
 
 See `examples/plugins/bibtexer/src/main.rs` for the full implementation.
+
+---
+
+## 7. Worked example — hooklog
+
+The `examples/plugins/hooklog/` directory is a reference plugin for the `hook`
+and `cron` entry points. It declares two hooks and one cron job, and appends a
+line to a log file on every invocation so the behaviour is observable.
+
+### `plugin.toml`
+
+```toml
+name        = "hooklog"
+executable  = "hooklog"
+description = "Append a line to a log file on each lifecycle hook and cron tick"
+
+[[hooks]]
+event = "item_imported"
+
+[[hooks]]
+event = "item_deleted"
+
+[[cron]]
+id       = "heartbeat"
+schedule = "0 * * * * *"
+```
+
+### `src/main.rs` — dispatch sketch
+
+```rust
+match invocation {
+    Invocation::Hook { event, item, category, .. } => { /* append a hook line */ }
+    Invocation::Cron { job, .. }                   => { /* append a cron line */ }
+    Invocation::Run { action, .. }                 => { /* append a run line  */ }
+    Invocation::Manifest                           => { /* self-check only    */ }
+}
+```
+
+The log file defaults to `<temp dir>/localref-hooklog.txt`; set `HOOKLOG_FILE`
+to override it. See `examples/plugins/hooklog/src/main.rs` for the full
+implementation.

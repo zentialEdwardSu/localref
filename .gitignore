@@ -14,3 +14,8 @@ cargo-lock/
 # JetBrains IDEs (RustRover, CLion, etc.)
 __pycache__/
 output/
+docs/superpowers/
+
+*.wasm
+*.d.ts
+*bindings.js

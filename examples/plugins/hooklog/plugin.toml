@@ -1,0 +1,15 @@
+name = "hooklog"
+executable = "hooklog"
+description = "Append a line to a log file on each lifecycle hook and cron tick"
+
+# Run this plugin after items are imported and after they are deleted.
+[[hooks]]
+event = "item_imported"
+
+[[hooks]]
+event = "item_deleted"
+
+# Also run a heartbeat every minute (cron: sec min hour day-of-month month dow).
+[[cron]]
+id = "heartbeat"
+schedule = "0 * * * * *"

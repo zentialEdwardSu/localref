@@ -7,7 +7,7 @@
 use tokio::process::Command;
 
 use crate::error::PluginError;
-use crate::state::{ActionArgs, RunOutput};
+use crate::state::{ActionArgs, HookArgs, RunOutput};
 
 /// Build the argv (excluding the executable) for an action invocation.
 ///
@@ -37,21 +37,49 @@ fn build_argv(action: &str, args: &ActionArgs) -> Vec<String> {
     out
 }
 
-/// Spawn a plugin action and parse its single JSON result envelope.
+/// Build the argv (excluding the executable) for a hook invocation.
+// Single caller (`invoke_hook`); kept separate so the argv layout is
+// unit-tested directly rather than through a process spawn.
+#[allow(clippy::single_call_fn)]
+fn build_hook_argv(event: &str, args: &HookArgs) -> Vec<String> {
+    let mut out = vec!["hook".to_string(), event.to_string()];
+    out.push("--endpoint".to_string());
+    out.push(args.endpoint.clone());
+    if let Some(item) = &args.item {
+        out.push("--item".to_string());
+        out.push(item.clone());
+    }
+    if let Some(category) = &args.category {
+        out.push("--category".to_string());
+        out.push(category.clone());
+    }
+    out
+}
+
+/// Build the argv (excluding the executable) for a cron invocation.
+// Single caller (`invoke_cron`); kept separate for direct unit testing.
+#[allow(clippy::single_call_fn)]
+fn build_cron_argv(job: &str, endpoint: &str) -> Vec<String> {
+    vec![
+        "cron".to_string(),
+        job.to_string(),
+        "--endpoint".to_string(),
+        endpoint.to_string(),
+    ]
+}
+
+/// Spawn a plugin with the given argv and parse its single JSON envelope.
 ///
 /// # Errors
 /// Returns an error when the plugin cannot be spawned, times out, exits
 /// non-zero, or emits invalid JSON.
-pub async fn invoke_action(
+async fn spawn_and_parse(
     executable: &std::path::Path,
-    action: &str,
-    args: &ActionArgs,
+    cmd_args: &[String],
 ) -> Result<RunOutput, PluginError> {
-    let cmd_args = build_argv(action, args);
-
     let mut command = Command::new(executable);
     command
-        .args(&cmd_args)
+        .args(cmd_args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -87,10 +115,87 @@ pub async fn invoke_action(
         .map_err(|e| PluginError::Parse(e.to_string()))
 }
 
+/// Spawn a plugin action and parse its single JSON result envelope.
+///
+/// # Errors
+/// Returns an error when the plugin cannot be spawned, times out, exits
+/// non-zero, or emits invalid JSON.
+pub async fn invoke_action(
+    executable: &std::path::Path,
+    action: &str,
+    args: &ActionArgs,
+) -> Result<RunOutput, PluginError> {
+    spawn_and_parse(executable, &build_argv(action, args)).await
+}
+
+/// Spawn a plugin hook for a completed daemon event.
+///
+/// # Errors
+/// Returns an error when the plugin cannot be spawned, times out, exits
+/// non-zero, or emits invalid JSON.
+pub async fn invoke_hook(
+    executable: &std::path::Path,
+    event: &str,
+    args: &HookArgs,
+) -> Result<RunOutput, PluginError> {
+    spawn_and_parse(executable, &build_hook_argv(event, args)).await
+}
+
+/// Spawn a plugin's scheduled cron job.
+///
+/// # Errors
+/// Returns an error when the plugin cannot be spawned, times out, exits
+/// non-zero, or emits invalid JSON.
+pub async fn invoke_cron(
+    executable: &std::path::Path,
+    job: &str,
+    endpoint: &str,
+) -> Result<RunOutput, PluginError> {
+    spawn_and_parse(executable, &build_cron_argv(job, endpoint)).await
+}
+
 #[cfg(test)]
 mod tests {
-    use super::build_argv;
-    use crate::state::ActionArgs;
+    use super::{build_argv, build_cron_argv, build_hook_argv};
+    use crate::state::{ActionArgs, HookArgs};
+
+    #[test]
+    fn hook_argv_includes_event_endpoint_item_and_category() {
+        let args = HookArgs {
+            endpoint: "http://127.0.0.1:24817".to_string(),
+            item: Some("lr:zotero:abc".to_string()),
+            category: Some("Wireless/RIS".to_string()),
+        };
+        let argv = build_hook_argv("item_imported", &args);
+        assert_eq!(argv[0], "hook");
+        assert_eq!(argv[1], "item_imported");
+        assert!(argv.contains(&"--endpoint".to_string()));
+        assert!(argv.contains(&"--item".to_string()));
+        assert!(argv.contains(&"lr:zotero:abc".to_string()));
+        assert!(argv.contains(&"--category".to_string()));
+        assert!(argv.contains(&"Wireless/RIS".to_string()));
+    }
+
+    #[test]
+    fn hook_argv_omits_absent_item_and_category() {
+        let args = HookArgs {
+            endpoint: "http://x".to_string(),
+            item: None,
+            category: None,
+        };
+        let argv = build_hook_argv("scan_completed", &args);
+        assert!(!argv.contains(&"--item".to_string()));
+        assert!(!argv.contains(&"--category".to_string()));
+    }
+
+    #[test]
+    fn cron_argv_carries_job_and_endpoint() {
+        let argv = build_cron_argv("nightly_sync", "http://127.0.0.1:24817");
+        assert_eq!(argv[0], "cron");
+        assert_eq!(argv[1], "nightly_sync");
+        assert!(argv.contains(&"--endpoint".to_string()));
+        assert!(argv.contains(&"http://127.0.0.1:24817".to_string()));
+    }
 
     #[test]
     fn argv_includes_endpoint_selected_and_params() {

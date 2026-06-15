@@ -63,7 +63,23 @@ def build_commands(root: Path, release: bool) -> list[list[str]]:
             str(wasm),
         ],
         native_build,
+        *plugin_commands(root, release),
     ]
+
+
+def plugin_commands(root: Path, release: bool) -> list[list[str]]:
+    """Return one build command per example plugin under examples/plugins.
+
+    Each plugin is its own workspace member; discovering them by manifest keeps
+    new example plugins building without editing this script.
+    """
+    commands = []
+    for manifest in sorted(root.glob("examples/plugins/*/Cargo.toml")):
+        build = ["cargo", "build", "--manifest-path", str(manifest)]
+        if release:
+            build.append("--release")
+        commands.append(build)
+    return commands
 
 
 def npm_command() -> str:
