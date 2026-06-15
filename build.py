@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(__file__).resolve().parent
     for command in build_commands(root, args.release):
         run_checked(command, root)
+    stage_builtin_plugins(root, args.release)
     return 0
 
 
@@ -80,6 +82,48 @@ def plugin_commands(root: Path, release: bool) -> list[list[str]]:
             build.append("--release")
         commands.append(build)
     return commands
+
+
+def exe_suffix() -> str:
+    """Return the platform executable suffix Cargo emits."""
+    return ".exe" if sys.platform == "win32" else ""
+
+
+def stage_plugin_files(root: Path, release: bool) -> list[tuple[Path, Path]]:
+    """Return (source, dest) copy pairs that assemble built-in plugin bundles.
+
+    Each example plugin is staged into
+    `target/<profile>/builtin-plugins/<name>/` with its `plugin.toml`, optional
+    `ui.toml`, and the freshly built executable. `localref init` copies these
+    bundles into the library's plugins directory. Plugins whose executable has
+    not been built yet are skipped so staging never fails a partial build.
+    """
+    profile = "release" if release else "debug"
+    target = root / "target" / profile
+    staging_root = target / "builtin-plugins"
+    suffix = exe_suffix()
+    pairs: list[tuple[Path, Path]] = []
+    for manifest in sorted(root.glob("examples/plugins/*/plugin.toml")):
+        plugin_dir = manifest.parent
+        name = plugin_dir.name
+        executable = target / f"{name}{suffix}"
+        if not executable.is_file():
+            continue
+        dest = staging_root / name
+        pairs.append((manifest, dest / "plugin.toml"))
+        ui = plugin_dir / "ui.toml"
+        if ui.is_file():
+            pairs.append((ui, dest / "ui.toml"))
+        pairs.append((executable, dest / f"{name}{suffix}"))
+    return pairs
+
+
+def stage_builtin_plugins(root: Path, release: bool) -> None:
+    """Copy built-in plugin bundles into the target staging directory."""
+    for source, dest in stage_plugin_files(root, release):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        print(f"$ copy {source} -> {dest}", flush=True)
+        shutil.copy2(source, dest)
 
 
 def npm_command() -> str:

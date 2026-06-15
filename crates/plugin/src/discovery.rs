@@ -20,60 +20,148 @@ pub struct DiscoveredPlugin {
 /// Scan the plugins directory and return discovered plugins.
 ///
 /// Each subdirectory that contains a valid `plugin.toml` and a matching
-/// executable is registered as a plugin.
+/// executable is registered as a plugin. Subdirectories that fail to load
+/// (unreadable or invalid manifest, missing executable) are logged and skipped
+/// rather than aborting discovery.
 #[must_use]
 pub fn discover_plugins(plugins_dir: &Path) -> Vec<DiscoveredPlugin> {
-    let Ok(entries) = std::fs::read_dir(plugins_dir) else {
-        return Vec::new();
+    let entries = match std::fs::read_dir(plugins_dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            // A missing plugins dir is normal on a fresh install; note it at
+            // debug so `init` / first-run flows stay quiet by default.
+            tracing::debug!(
+                target: "localref::plugins",
+                dir = %plugins_dir.display(),
+                %error,
+                "no plugins directory; skipping plugin discovery",
+            );
+            return Vec::new();
+        }
     };
-    entries
+    tracing::info!(
+        target: "localref::plugins",
+        dir = %plugins_dir.display(),
+        "discovering plugins",
+    );
+    let plugins: Vec<DiscoveredPlugin> = entries
         .filter_map(std::result::Result::ok)
         .filter(|entry| {
             entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
         })
-        .filter_map(|entry| {
-            let dir = entry.path();
-            let manifest_path = dir.join("plugin.toml");
-            let toml_text = std::fs::read_to_string(&manifest_path).ok()?;
-            let manifest = PluginManifest::parse(&toml_text).ok()?;
-            let executable = manifest
-                .executable
-                .as_deref()
-                .map(|name| dir.join(name))
-                .filter(|path| path.is_file())
-                .or_else(|| {
-                    #[cfg(windows)]
-                    {
-                        let path = dir.join(format!("{}.exe", manifest.name));
-                        path.is_file().then_some(path)
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        None
-                    }
-                })
-                .or_else(|| {
-                    let path = dir.join(&manifest.name);
-                    path.is_file().then_some(path)
-                })?;
-            let ui_name = manifest.ui.as_deref().unwrap_or("ui.toml");
-            let ui = std::fs::read_to_string(dir.join(ui_name))
-                .ok()
-                .and_then(|text| match PluginUiSpec::parse(&text) {
-                    Ok(spec) => Some(spec),
-                    Err(error) => {
-                        tracing::warn!(
-                            plugin = %manifest.name,
-                            ui_file = %ui_name,
-                            %error,
-                            "skipping invalid ui spec; plugin loads without UI"
-                        );
-                        None
-                    }
-                });
-            Some(DiscoveredPlugin { dir, manifest, ui, executable })
+        .filter_map(|entry| load_plugin(&entry.path()))
+        .collect();
+    let names: Vec<&str> =
+        plugins.iter().map(DiscoveredPlugin::name).collect();
+    tracing::info!(
+        target: "localref::plugins",
+        dir = %plugins_dir.display(),
+        count = plugins.len(),
+        plugins = ?names,
+        "plugin discovery complete",
+    );
+    plugins
+}
+
+/// Load one plugin directory, logging and returning `None` on any failure.
+// Single caller (`discover_plugins`); kept separate so per-plugin failure
+// logging stays readable and is unit-tested directly.
+#[allow(clippy::single_call_fn)]
+fn load_plugin(dir: &Path) -> Option<DiscoveredPlugin> {
+    let manifest_path = dir.join("plugin.toml");
+    let toml_text = match std::fs::read_to_string(&manifest_path) {
+        Ok(text) => text,
+        Err(error) => {
+            tracing::warn!(
+                target: "localref::plugins",
+                dir = %dir.display(),
+                %error,
+                "skipping directory: cannot read plugin.toml",
+            );
+            return None;
+        }
+    };
+    let manifest = match PluginManifest::parse(&toml_text) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            tracing::warn!(
+                target: "localref::plugins",
+                dir = %dir.display(),
+                %error,
+                "skipping plugin: invalid plugin.toml",
+            );
+            return None;
+        }
+    };
+    let Some(executable) = resolve_executable(dir, &manifest) else {
+        tracing::warn!(
+            target: "localref::plugins",
+            plugin = %manifest.name,
+            dir = %dir.display(),
+            "skipping plugin: no matching executable found",
+        );
+        return None;
+    };
+    let ui = load_ui_spec(dir, &manifest);
+    tracing::debug!(
+        target: "localref::plugins",
+        plugin = %manifest.name,
+        executable = %executable.display(),
+        has_ui = ui.is_some(),
+        hooks = manifest.hooks.len(),
+        cron = manifest.cron.len(),
+        "loaded plugin",
+    );
+    Some(DiscoveredPlugin { dir: dir.to_path_buf(), manifest, ui, executable })
+}
+
+/// Resolve the plugin executable path from the manifest, with name fallbacks.
+// Single caller (`load_plugin`); kept separate for clarity of the fallback
+// chain.
+#[allow(clippy::single_call_fn)]
+fn resolve_executable(dir: &Path, manifest: &PluginManifest) -> Option<PathBuf> {
+    manifest
+        .executable
+        .as_deref()
+        .map(|name| dir.join(name))
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            #[cfg(windows)]
+            {
+                let path = dir.join(format!("{}.exe", manifest.name));
+                path.is_file().then_some(path)
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
         })
-        .collect()
+        .or_else(|| {
+            let path = dir.join(&manifest.name);
+            path.is_file().then_some(path)
+        })
+}
+
+/// Load and parse the optional declarative UI spec, logging parse failures.
+// Single caller (`load_plugin`); kept separate for direct testing.
+#[allow(clippy::single_call_fn)]
+fn load_ui_spec(dir: &Path, manifest: &PluginManifest) -> Option<PluginUiSpec> {
+    let ui_name = manifest.ui.as_deref().unwrap_or("ui.toml");
+    std::fs::read_to_string(dir.join(ui_name)).ok().and_then(|text| {
+        match PluginUiSpec::parse(&text) {
+            Ok(spec) => Some(spec),
+            Err(error) => {
+                tracing::warn!(
+                    target: "localref::plugins",
+                    plugin = %manifest.name,
+                    ui_file = %ui_name,
+                    %error,
+                    "skipping invalid ui spec; plugin loads without UI"
+                );
+                None
+            }
+        }
+    })
 }
 
 impl DiscoveredPlugin {

@@ -4,9 +4,13 @@
 //! boundary. Supporting crates provide protocol, REST, tray, and UI libraries,
 //! but they do not expose their own installed binaries.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+mod init;
+#[cfg(feature = "desktop")]
+mod notify;
 mod scheduler;
 mod tray;
 mod ui;
@@ -21,6 +25,12 @@ use tray::{TrayAction, TrayCommandResult, TrayController, status_label};
 /// Start Localref in the selected mode.
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
+    // `init` bootstraps config and plugins; it must run before the normal
+    // config load + logging init, which assume an established setup.
+    if let Some(AppCommand::Init { repo, force }) = &cli.command {
+        return init::run_init(repo.clone(), *force)
+            .map_err(std::io::Error::other);
+    }
     let config =
         LocalrefConfig::load().expect("failed to load Localref configuration");
     let _log_handle = localref_core::logging::init(
@@ -40,6 +50,7 @@ fn main() -> std::io::Result<()> {
             );
             Ok(())
         }
+        AppCommand::Init { .. } => unreachable!("init handled above"),
     }
 }
 
@@ -53,12 +64,21 @@ struct Cli {
 }
 
 /// Runtime command selected from CLI arguments.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Subcommand)]
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 enum AppCommand {
     /// Start the tray-resident daemon process.
     TrayHost,
     /// Open the browser-served UI.
     Ui,
+    /// Initialize configuration and install built-in plugins.
+    Init {
+        /// Repository (library) path to store in the config.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Overwrite built-in plugins that are already installed.
+        #[arg(long)]
+        force: bool,
+    },
     /// Execute one tray action through the same binary.
     Tray {
         /// Tray action to execute. Defaults to refreshing status.
@@ -154,6 +174,8 @@ fn start_api_runtime(
                 .build()
                 .expect("failed to start Localref API runtime");
             tokio_rt.block_on(async move {
+                #[cfg(feature = "desktop")]
+                notify::start_notify_consumer();
                 scheduler::spawn_plugin_workers(
                     &runtime.daemon,
                     runtime.plugins.clone(),
@@ -205,14 +227,14 @@ fn rest_app(
     let plugin_context = ui_app::PluginHostContext {
         rest_endpoint: config.rest_endpoint().to_string(),
     };
-    localref_core::rest::router_with_daemon(daemon.clone()).merge(
-        ui_app::router_with_daemon_repo_plugins_and_context(
+    localref_core::rest::router_with_daemon(daemon.clone())
+        .merge(ui_app::router_with_daemon_repo_plugins_and_context(
             daemon,
             config.repo_name().to_string(),
             plugins,
             plugin_context,
-        ),
-    )
+        ))
+        .merge(notify::notify_router())
 }
 
 /// Build the REST listener application.

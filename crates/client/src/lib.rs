@@ -62,14 +62,55 @@ pub enum ClientError {
     Decode(String),
 }
 
+/// Severity for a plugin-originated log entry (`POST /api/plugins/log`).
+///
+/// The host caps anything above `Warn`, so there is deliberately no `Error`
+/// variant — a plugin cannot emit a host-level error record.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LogLevel {
+    /// Most verbose; diagnostic tracing.
+    Trace,
+    /// Debug-level detail.
+    Debug,
+    /// Normal informational message.
+    #[default]
+    Info,
+    /// Warning; something looked off but the plugin continued.
+    Warn,
+}
+
+impl LogLevel {
+    /// Wire string accepted by the log endpoint.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Trace => "trace",
+            Self::Debug => "debug",
+            Self::Info => "info",
+            Self::Warn => "warn",
+        }
+    }
+}
+
+/// Severity for a desktop notification (`POST /api/notify`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyKind {
+    /// Informational notification.
+    #[default]
+    Info,
+    /// Successful-operation notification.
+    Success,
+    /// Error notification.
+    Error,
+}
+
 /// Async REST client bound to one daemon endpoint.
 #[derive(Clone, Debug)]
 pub struct LocalrefClient {
     endpoint: String,
     http: reqwest::Client,
-}
-
-impl LocalrefClient {
+}impl LocalrefClient {
     /// Build a client for the given REST base URL (e.g. `http://127.0.0.1:8787`).
     #[must_use]
     pub fn new(endpoint: impl Into<String>) -> Self {
@@ -117,6 +158,35 @@ impl LocalrefClient {
             .await
             .map_err(|e| ClientError::Transport(e.to_string()))?;
         Self::decode(resp).await
+    }
+
+    /// POST a JSON body to a path, accepting a no-content response.
+    ///
+    /// Returns the HTTP status on any 2xx, plus `503 Service Unavailable` so
+    /// callers can treat an unavailable capability (e.g. notifications in a
+    /// headless build) as a soft outcome rather than an error. Other 4xx/5xx
+    /// and transport failures map to `ClientError` like the JSON helpers.
+    async fn post_unit<B: serde::Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<reqwest::StatusCode, ClientError> {
+        let url = format!("{}{path}", self.endpoint);
+        let resp = self
+            .http
+            .post(&url)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ClientError::Transport(e.to_string()))?;
+        let status = resp.status();
+        if status.is_success()
+            || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+        {
+            return Ok(status);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(ClientError::Status { status: status.as_u16(), body })
     }
 
     /// Check status, then decode the body, mapping failures to `ClientError`.
@@ -237,6 +307,76 @@ impl LocalrefClient {
             log_count: self.events().await?.len(),
         })
     }
+
+    /// Emit a log entry into the daemon's unified log under this plugin's name.
+    ///
+    /// The host records it under target `localref::plugin::<plugin>` and caps
+    /// the level at `warn`.
+    ///
+    /// # Errors
+    /// Returns an error on transport failure or a non-success HTTP status.
+    pub async fn log(
+        &self,
+        plugin: &str,
+        level: LogLevel,
+        message: &str,
+    ) -> Result<(), ClientError> {
+        self.log_with(plugin, level, message, None, None, None).await
+    }
+
+    /// Emit a log entry with optional structured fields.
+    ///
+    /// `event_kind` is a stable identifier for the kind of event, `item_id` a
+    /// related item, and `path` a library-relative path. Each is omitted from
+    /// the record when `None`.
+    ///
+    /// # Errors
+    /// Returns an error on transport failure or a non-success HTTP status.
+    pub async fn log_with(
+        &self,
+        plugin: &str,
+        level: LogLevel,
+        message: &str,
+        event_kind: Option<&str>,
+        item_id: Option<&str>,
+        path: Option<&str>,
+    ) -> Result<(), ClientError> {
+        let body = serde_json::json!({
+            "plugin": plugin,
+            "level": level.as_str(),
+            "message": message,
+            "event_kind": event_kind,
+            "item_id": item_id,
+            "path": path,
+        });
+        let _status = self.post_unit("/api/plugins/log", &body).await?;
+        Ok(())
+    }
+
+    /// Request a desktop notification from the host.
+    ///
+    /// Notifications are best-effort: when the host has no notification
+    /// capability (headless build, or notifications not started) the daemon
+    /// responds `503` and this returns `Ok(false)` so the plugin can carry on.
+    /// `Ok(true)` means the request was accepted for delivery.
+    ///
+    /// # Errors
+    /// Returns an error on transport failure or a non-success HTTP status
+    /// other than `503`.
+    pub async fn notify(
+        &self,
+        title: &str,
+        body: &str,
+        kind: NotifyKind,
+    ) -> Result<bool, ClientError> {
+        let payload = serde_json::json!({
+            "title": title,
+            "body": body,
+            "kind": kind,
+        });
+        let status = self.post_unit("/api/notify", &payload).await?;
+        Ok(status != reqwest::StatusCode::SERVICE_UNAVAILABLE)
+    }
 }
 
 /// Percent-encode a single path segment / query value (conservative set).
@@ -300,6 +440,85 @@ mod tests {
         assert!(!status.running || status.queued_tasks == 0);
         let snap = client.dashboard_snapshot().await.expect("snapshot");
         assert_eq!(snap.item_count, 0);
+        server.abort();
+    }
+
+    #[test]
+    fn log_level_wire_strings() {
+        assert_eq!(LogLevel::Trace.as_str(), "trace");
+        assert_eq!(LogLevel::Debug.as_str(), "debug");
+        assert_eq!(LogLevel::Info.as_str(), "info");
+        assert_eq!(LogLevel::Warn.as_str(), "warn");
+        assert_eq!(LogLevel::default(), LogLevel::Info);
+    }
+
+    #[test]
+    fn notify_kind_serializes_lowercase() {
+        let json = serde_json::to_string(&NotifyKind::Success).unwrap();
+        assert_eq!(json, "\"success\"");
+    }
+
+    #[tokio::test]
+    async fn log_round_trips_against_live_router() {
+        let (endpoint, server) = spawn_daemon_router().await;
+        let client = LocalrefClient::new(endpoint);
+        // The core router exposes /api/plugins/log; a successful call is Ok(()).
+        client
+            .log_with(
+                "bibtexer",
+                LogLevel::Info,
+                "exported 2 items",
+                Some("plugin_action"),
+                Some("lr:zotero:abc"),
+                None,
+            )
+            .await
+            .expect("log accepted");
+        server.abort();
+    }
+
+    /// Serve a fixed status at `/api/notify` for notify-path tests.
+    async fn spawn_notify_router(
+        status: axum::http::StatusCode,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let router = axum::Router::new().route(
+            "/api/notify",
+            axum::routing::post(move || async move { status }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, router).await.expect("serve");
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    #[tokio::test]
+    async fn notify_accepted_returns_true() {
+        let (endpoint, server) =
+            spawn_notify_router(axum::http::StatusCode::NO_CONTENT).await;
+        let client = LocalrefClient::new(endpoint);
+        let delivered = client
+            .notify("Done", "Export complete", NotifyKind::Success)
+            .await
+            .expect("notify ok");
+        assert!(delivered);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn notify_unavailable_returns_false_not_error() {
+        let (endpoint, server) =
+            spawn_notify_router(axum::http::StatusCode::SERVICE_UNAVAILABLE)
+                .await;
+        let client = LocalrefClient::new(endpoint);
+        let delivered = client
+            .notify("Done", "Export complete", NotifyKind::Info)
+            .await
+            .expect("503 is a soft outcome, not an error");
+        assert!(!delivered);
         server.abort();
     }
 }

@@ -104,29 +104,7 @@ impl LocalrefConfig {
         if !path.exists() {
             let file = ConfigFile::default();
             let config = Self::from_config_file(path, file)?;
-            if let Some(parent) = config.source_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| {
-                    format!("failed to create {}: {error}", parent.display())
-                })?;
-            }
-            let repo_name =
-                config.repo_name.replace('\\', "\\\\").replace('"', "\\\"");
-            let library_root =
-                config.library_root.to_string_lossy().replace('\'', "''");
-            let text = format!(
-                "repo_name = \"{repo_name}\"\nlibrary_root = '{library_root}'\n\n[rest]\naddr = \"{}\"\nendpoint = \"{}\"\n\n[csc]\naddr = \"{}\"\n\n[desktop]\nstart_hidden = {}\nquiet_start = {}\n",
-                config.rest_addr,
-                config.rest_endpoint,
-                config.csc_addr,
-                config.desktop_start_hidden,
-                config.desktop_quiet_start
-            );
-            std::fs::write(&config.source_path, text).map_err(|error| {
-                format!(
-                    "failed to write {}: {error}",
-                    config.source_path.display()
-                )
-            })?;
+            config.save()?;
             return Ok(config);
         }
         let text = std::fs::read_to_string(&path).map_err(|error| {
@@ -136,6 +114,44 @@ impl LocalrefConfig {
             format!("failed to parse {}: {error}", path.display())
         })?;
         Self::from_config_file(path, file)
+    }
+
+    /// Serialize this configuration to the on-disk TOML representation.
+    #[must_use]
+    fn to_toml(&self) -> String {
+        let repo_name = self.repo_name.replace('\\', "\\\\").replace('"', "\\\"");
+        let library_root = self.library_root.to_string_lossy().replace('\'', "''");
+        format!(
+            "repo_name = \"{repo_name}\"\nlibrary_root = '{library_root}'\n\n[rest]\naddr = \"{}\"\nendpoint = \"{}\"\n\n[csc]\naddr = \"{}\"\n\n[desktop]\nstart_hidden = {}\nquiet_start = {}\n",
+            self.rest_addr,
+            self.rest_endpoint,
+            self.csc_addr,
+            self.desktop_start_hidden,
+            self.desktop_quiet_start
+        )
+    }
+
+    /// Write this configuration to its `source_path`, creating parent dirs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the parent directory or file cannot be written.
+    pub fn save(&self) -> Result<(), String> {
+        if let Some(parent) = self.source_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!("failed to create {}: {error}", parent.display())
+            })?;
+        }
+        std::fs::write(&self.source_path, self.to_toml()).map_err(|error| {
+            format!("failed to write {}: {error}", self.source_path.display())
+        })
+    }
+
+    /// Point the library root at `root`, re-deriving the plugins directory.
+    pub fn set_library_root(&mut self, root: impl Into<PathBuf>) {
+        let root = root.into();
+        self.plugins_dir = root.join(".localref").join("plugins");
+        self.library_root = root;
     }
 
     /// Return the file that supplied this configuration.
@@ -346,6 +362,54 @@ quiet_start = false
         let error = LocalrefConfig::load_from_path(&temp).unwrap_err();
 
         assert!(error.contains("rest.addr must be a socket address"));
+
+        std::fs::remove_file(temp).unwrap();
+    }
+
+    #[test]
+    fn save_round_trips_all_fields() {
+        let temp = tempfile_path("localref-config-roundtrip.toml");
+        std::fs::write(
+            &temp,
+            r#"
+library_root = "D:/Vault"
+repo_name = "Round Trip"
+
+[rest]
+addr = "127.0.0.1:3001"
+endpoint = "http://localhost:3001"
+
+[csc]
+addr = "127.0.0.1:3002"
+
+[desktop]
+start_hidden = false
+quiet_start = false
+"#,
+        )
+        .unwrap();
+        let original = LocalrefConfig::load_from_path(&temp).unwrap();
+
+        original.save().unwrap();
+        let reloaded = LocalrefConfig::load_from_path(&temp).unwrap();
+
+        assert_eq!(original, reloaded);
+
+        std::fs::remove_file(temp).unwrap();
+    }
+
+    #[test]
+    fn set_library_root_rederives_plugins_dir() {
+        let temp = tempfile_path("localref-config-setroot.toml");
+        let mut config = LocalrefConfig::load_from_path(&temp).unwrap();
+
+        config.set_library_root(Path::new("E:/NewLib"));
+
+        assert_eq!(config.library_root(), Path::new("E:/NewLib"));
+        assert_eq!(
+            config.plugins_dir(),
+            Path::new("E:/NewLib/.localref/plugins")
+        );
 
         std::fs::remove_file(temp).unwrap();
     }

@@ -77,6 +77,12 @@ async fn spawn_and_parse(
     executable: &std::path::Path,
     cmd_args: &[String],
 ) -> Result<RunOutput, PluginError> {
+    tracing::trace!(
+        target: "localref::plugins",
+        executable = %executable.display(),
+        argv = ?cmd_args,
+        "spawning plugin process",
+    );
     let mut command = Command::new(executable);
     command
         .args(cmd_args)

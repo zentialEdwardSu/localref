@@ -16,6 +16,11 @@ __pycache__/
 output/
 docs/superpowers/
 
-*.wasm
-*.d.ts
-*bindings.js
+# Generated frontend assets (rebuilt by build.py / npm run build:css).
+# Sources stay tracked: localref-ui.tailwind.css (Tailwind input),
+# localref-ui.js (loader), favicon.ico.
+/assets/localref-ui.css
+/assets/localref-ui-bindgen.js
+/assets/localref-ui-bindgen.d.ts
+/assets/localref-ui-bindgen_bg.wasm
+/assets/localref-ui-bindgen_bg.wasm.d.ts

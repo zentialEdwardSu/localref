@@ -213,6 +213,13 @@ pub async fn plugin_action(
         form.get("return_to").cloned().unwrap_or_else(|| "/".to_string());
 
     let args = action_args_from_form(&state, plugin, &action_name, &form);
+    tracing::info!(
+        target: "localref::plugins",
+        plugin = %plugin.name(),
+        action = %action_name,
+        selected = args.selected.len(),
+        "running plugin action",
+    );
     match localref_plugin::invoke_action(
         &plugin.executable,
         &action_name,
@@ -220,8 +227,26 @@ pub async fn plugin_action(
     )
     .await
     {
-        Ok(output) => plugin_action_response(&return_to, &action_name, &output),
-        Err(error) => redirect_with_plugin_error(&return_to, &error.to_string()),
+        Ok(output) => {
+            tracing::info!(
+                target: "localref::plugins",
+                plugin = %plugin.name(),
+                action = %action_name,
+                status = %output.status,
+                "plugin action finished",
+            );
+            plugin_action_response(&return_to, &action_name, &output)
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "localref::plugins",
+                plugin = %plugin.name(),
+                action = %action_name,
+                %error,
+                "plugin action failed",
+            );
+            redirect_with_plugin_error(&return_to, &error.to_string())
+        }
     }
 }
 
@@ -237,6 +262,12 @@ pub async fn plugin_preview(
     let action_name =
         form.get("plugin_action").cloned().unwrap_or_default();
     let args = action_args_from_form(&state, plugin, &action_name, &form);
+    tracing::debug!(
+        target: "localref::plugins",
+        plugin = %plugin.name(),
+        action = %action_name,
+        "running plugin preview",
+    );
     match localref_plugin::invoke_action(
         &plugin.executable,
         &action_name,
@@ -251,16 +282,33 @@ pub async fn plugin_preview(
             }))
             .into_response()
         }
-        Ok(output) => Json(serde_json::json!({
-            "status": "error",
-            "message": output.message.unwrap_or_default(),
-        }))
-        .into_response(),
-        Err(error) => Json(serde_json::json!({
-            "status": "error",
-            "message": error.to_string(),
-        }))
-        .into_response(),
+        Ok(output) => {
+            tracing::debug!(
+                target: "localref::plugins",
+                plugin = %plugin.name(),
+                action = %action_name,
+                "plugin preview returned an error envelope",
+            );
+            Json(serde_json::json!({
+                "status": "error",
+                "message": output.message.unwrap_or_default(),
+            }))
+            .into_response()
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "localref::plugins",
+                plugin = %plugin.name(),
+                action = %action_name,
+                %error,
+                "plugin preview failed",
+            );
+            Json(serde_json::json!({
+                "status": "error",
+                "message": error.to_string(),
+            }))
+            .into_response()
+        }
     }
 }
 

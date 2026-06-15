@@ -11,6 +11,8 @@
 
 pub mod runtime;
 
-pub use localref_client::{ClientError, ItemDocument as ItemDoc, LocalrefClient};
+pub use localref_client::{
+    ClientError, ItemDocument as ItemDoc, LocalrefClient, LogLevel, NotifyKind,
+};
 pub use localref_plugin::RunOutput;
 pub use runtime::{ActionContext, Invocation, Params, emit, parse_args};

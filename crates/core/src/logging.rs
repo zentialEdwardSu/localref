@@ -139,6 +139,9 @@ struct LogFieldVisitor {
     item_id: Option<String>,
     /// Stored path.
     path: Option<String>,
+    /// Runtime target override (used by [`log_dynamic`] so plugin logs can
+    /// carry a per-plugin target the const tracing macro cannot express).
+    dyn_target: Option<String>,
 }
 
 impl Visit for LogFieldVisitor {
@@ -154,21 +157,32 @@ impl Visit for LogFieldVisitor {
         };
         match field.name() {
             "message" | "" => self.message = cleaned,
-            "event_kind" => self.event_kind = Some(cleaned),
-            "item_id" => self.item_id = Some(cleaned),
-            "path" => self.path = Some(cleaned),
+            "event_kind" => self.event_kind = non_empty(cleaned),
+            "item_id" => self.item_id = non_empty(cleaned),
+            "path" => self.path = non_empty(cleaned),
+            "dyn_target" => self.dyn_target = non_empty(cleaned),
             _ => {}
         }
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
         match field.name() {
-            "event_kind" => self.event_kind = Some(value.to_string()),
-            "item_id" => self.item_id = Some(value.to_string()),
-            "path" => self.path = Some(value.to_string()),
+            "event_kind" => self.event_kind = non_empty(value.to_string()),
+            "item_id" => self.item_id = non_empty(value.to_string()),
+            "path" => self.path = non_empty(value.to_string()),
+            "dyn_target" => self.dyn_target = non_empty(value.to_string()),
             _ => {}
         }
     }
+}
+
+/// `Some(value)` unless the string is empty, in which case `None`.
+///
+/// Optional structured fields are emitted as empty strings by callers that
+/// pass a fixed field set (e.g. [`log_dynamic`]); collapse those to absent so
+/// they are omitted from the serialized entry.
+fn non_empty(value: String) -> Option<String> {
+    if value.is_empty() { None } else { Some(value) }
 }
 
 /// Custom tracing layer that writes JSONL to a writer and appends to the ring
@@ -217,7 +231,10 @@ where
             "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
         );
         let level = metadata.level().to_string();
-        let target = metadata.target().to_string();
+        let target = visitor
+            .dyn_target
+            .clone()
+            .unwrap_or_else(|| metadata.target().to_string());
 
         let entry = LogEntry {
             id,
@@ -301,6 +318,63 @@ pub fn init(library_root: impl Into<PathBuf>, quiet: bool) -> LogHandle {
     }
 
     LogHandle { buffer, _guard: guard }
+}
+
+/// Emit a log record with a runtime-chosen target and level.
+///
+/// `tracing`'s macros require a const `target:` and a fixed level, but plugin
+/// logs need a per-plugin target (`localref::plugin::<name>`) and a level
+/// chosen at runtime. This shim emits under the const `localref::plugin`
+/// target while carrying the real target in the `dyn_target` field, which the
+/// [`LogLayer`] uses to override the recorded entry's target. The level is
+/// selected via a fixed match; callers are expected to cap it (plugins may not
+/// emit above `WARN`).
+pub fn log_dynamic(
+    target: &str,
+    level: tracing::Level,
+    message: &str,
+    event_kind: Option<&str>,
+    item_id: Option<&str>,
+    path: Option<&str>,
+) {
+    let event_kind = event_kind.unwrap_or_default();
+    let item_id = item_id.unwrap_or_default();
+    let path = path.unwrap_or_default();
+    match level {
+        tracing::Level::WARN => tracing::warn!(
+            target: "localref::plugin",
+            dyn_target = target,
+            event_kind = event_kind,
+            item_id = item_id,
+            path = path,
+            "{message}",
+        ),
+        tracing::Level::INFO => tracing::info!(
+            target: "localref::plugin",
+            dyn_target = target,
+            event_kind = event_kind,
+            item_id = item_id,
+            path = path,
+            "{message}",
+        ),
+        tracing::Level::DEBUG => tracing::debug!(
+            target: "localref::plugin",
+            dyn_target = target,
+            event_kind = event_kind,
+            item_id = item_id,
+            path = path,
+            "{message}",
+        ),
+        // TRACE and any unexpected level fall through to TRACE.
+        _ => tracing::trace!(
+            target: "localref::plugin",
+            dyn_target = target,
+            event_kind = event_kind,
+            item_id = item_id,
+            path = path,
+            "{message}",
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -423,5 +497,63 @@ mod tests {
             SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(86_400),
         );
         assert_eq!(next_day, "1970-01-02T00:00:00.000Z");
+    }
+
+    #[test]
+    fn log_dynamic_overrides_target_and_keeps_fields() {
+        let buffer = LogRingBuffer::new(10);
+        let layer = LogLayer {
+            writer: Arc::new(Mutex::new(Vec::<u8>::new())),
+            buffer: buffer.clone(),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            super::log_dynamic(
+                "localref::plugin::bibtexer",
+                tracing::Level::INFO,
+                "exported 3 items",
+                Some("plugin_action"),
+                Some("lr:zotero:abc"),
+                None,
+            );
+        });
+
+        let entries = buffer.entries();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.target, "localref::plugin::bibtexer");
+        assert_eq!(entry.level, "INFO");
+        assert_eq!(entry.message, "exported 3 items");
+        assert_eq!(entry.event_kind.as_deref(), Some("plugin_action"));
+        assert_eq!(entry.item_id.as_deref(), Some("lr:zotero:abc"));
+        // Absent optional field stays absent (not an empty string).
+        assert!(entry.path.is_none());
+    }
+
+    #[test]
+    fn log_dynamic_warn_level_is_recorded() {
+        let buffer = LogRingBuffer::new(10);
+        let layer = LogLayer {
+            writer: Arc::new(Mutex::new(Vec::<u8>::new())),
+            buffer: buffer.clone(),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            super::log_dynamic(
+                "localref::plugin::hooklog",
+                tracing::Level::WARN,
+                "something looked off",
+                None,
+                None,
+                None,
+            );
+        });
+
+        let entries = buffer.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].level, "WARN");
+        assert_eq!(entries[0].target, "localref::plugin::hooklog");
     }
 }

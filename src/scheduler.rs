@@ -28,6 +28,15 @@ pub fn spawn_plugin_workers(
     plugins: Arc<Vec<DiscoveredPlugin>>,
     endpoint: String,
 ) {
+    let hook_bindings: usize =
+        plugins.iter().map(|p| p.manifest.hooks.len()).sum();
+    let cron_jobs: usize = plugins.iter().map(|p| p.manifest.cron.len()).sum();
+    tracing::info!(
+        target: "localref::plugins",
+        hook_bindings,
+        cron_jobs,
+        "starting plugin workers",
+    );
     let rx = daemon.subscribe();
     // Detach both workers; they run for the process lifetime.
     drop(tokio::spawn(run_hook_dispatcher(

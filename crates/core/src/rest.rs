@@ -81,6 +81,27 @@ pub struct CategoryMoveRequest {
     pub to: CategoryPath,
 }
 
+/// Request body for a plugin-originated log entry.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct PluginLogRequest {
+    /// Originating plugin name (sanitized into the log target).
+    pub plugin: String,
+    /// Requested level: `trace`, `debug`, `info`, or `warn`. Anything higher
+    /// (or unrecognized) is capped to `warn` so a plugin cannot forge `error`.
+    pub level: String,
+    /// Human-readable log message.
+    pub message: String,
+    /// Optional stable event-kind identifier.
+    #[serde(default)]
+    pub event_kind: Option<String>,
+    /// Optional related item identifier.
+    #[serde(default)]
+    pub item_id: Option<String>,
+    /// Optional library-relative path.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
 /// Build the user-facing Localref API router.
 pub fn router(storage: StorageDb) -> Router {
     router_with_daemon(LocalrefDaemon::new(storage))
@@ -118,6 +139,7 @@ pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
         .route("/api/import/file", post(import_file))
         .route("/api/import/cat-folder", post(normalize_cat_folder))
         .route("/api/search", get(search))
+        .route("/api/plugins/log", post(plugin_log))
         .with_state(ApiState { daemon })
 }
 
@@ -161,6 +183,60 @@ pub async fn health() -> Response {
         "service": "localref-rest"
     }))
     .into_response()
+}
+
+/// Record a plugin-originated log entry in the unified log.
+///
+/// The plugin name is sanitized into a per-plugin target
+/// (`localref::plugin::<name>`) and the level is capped at `WARN` so a plugin
+/// cannot emit `error`-level records that imply a host failure. Always returns
+/// `204 No Content`.
+pub async fn plugin_log(Json(request): Json<PluginLogRequest>) -> Response {
+    let target = format!("localref::plugin::{}", sanitize_plugin(&request.plugin));
+    let level = capped_level(&request.level);
+    crate::logging::log_dynamic(
+        &target,
+        level,
+        &request.message,
+        request.event_kind.as_deref(),
+        request.item_id.as_deref(),
+        request.path.as_deref(),
+    );
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Reduce a plugin name to a target-safe `[a-z0-9_-]` slug.
+///
+/// Keeps log targets predictable and prevents a plugin from injecting `::`
+/// segments or whitespace into the target path. Empty input becomes
+/// `unknown`.
+// Single caller (`plugin_log`); kept separate for direct unit testing.
+#[allow(clippy::single_call_fn)]
+fn sanitize_plugin(name: &str) -> String {
+    let slug: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if slug.is_empty() { "unknown".to_string() } else { slug }
+}
+
+/// Parse a wire level string, capping anything above `WARN` to `WARN`.
+// Single caller (`plugin_log`); kept separate for direct unit testing.
+#[allow(clippy::single_call_fn)]
+fn capped_level(level: &str) -> tracing::Level {
+    match level.to_ascii_lowercase().as_str() {
+        "trace" => tracing::Level::TRACE,
+        "debug" => tracing::Level::DEBUG,
+        "info" => tracing::Level::INFO,
+        // "warn", "error", and anything unrecognized all cap at WARN.
+        _ => tracing::Level::WARN,
+    }
 }
 
 /// Internal helper for scan.
@@ -1023,6 +1099,53 @@ title = "Copied"
 
     async fn request_json(app: &Router, method: &str, uri: &str) -> Value {
         request_json_body(app, method, uri, Value::Null).await
+    }
+
+    #[test]
+    fn sanitize_plugin_slugs_unsafe_chars() {
+        assert_eq!(sanitize_plugin("BibTexer"), "bibtexer");
+        assert_eq!(sanitize_plugin("my plugin::x"), "my_plugin__x");
+        assert_eq!(sanitize_plugin("keep-_09"), "keep-_09");
+        assert_eq!(sanitize_plugin(""), "unknown");
+    }
+
+    #[test]
+    fn capped_level_never_exceeds_warn() {
+        assert_eq!(capped_level("trace"), tracing::Level::TRACE);
+        assert_eq!(capped_level("INFO"), tracing::Level::INFO);
+        assert_eq!(capped_level("warn"), tracing::Level::WARN);
+        // error and unknown both cap to WARN.
+        assert_eq!(capped_level("error"), tracing::Level::WARN);
+        assert_eq!(capped_level("nonsense"), tracing::Level::WARN);
+    }
+
+    #[tokio::test]
+    async fn plugin_log_returns_no_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = router_for_library(temp.path()).unwrap();
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/plugins/log")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "plugin": "bibtexer",
+                            "level": "info",
+                            "message": "exported 3 items",
+                            "item_id": "lr:zotero:abc"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     async fn request_json_body(

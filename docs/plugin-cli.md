@@ -316,6 +316,80 @@ Rust plugins can use the `localref-plugin-sdk` crate, which wraps the
 parsing argv and emitting the result envelope. Plugins in other languages make
 raw HTTP requests to the same base URL.
 
+### Logging into the unified log
+
+A plugin can write into Localref's unified log (the same JSONL log + in-memory
+ring buffer the UI surfaces) with `POST /api/plugins/log`:
+
+```jsonc
+// POST <endpoint>/api/plugins/log
+{
+  "plugin": "bibtexer",          // recorded as target localref::plugin::bibtexer
+  "level": "info",               // trace | debug | info | warn
+  "message": "exported 3 items",
+  "event_kind": "plugin_action", // optional
+  "item_id": "lr:zotero:abc",    // optional
+  "path": "All/Paper"            // optional
+}
+```
+
+- The host sanitizes `plugin` to `[a-z0-9_-]` and records the entry under the
+  per-plugin target **`localref::plugin::<plugin>`**, so plugin logs are
+  filterable on their own.
+- The level is **capped at `warn`**: a plugin cannot emit `error` (or any
+  higher level), so a misbehaving plugin can't masquerade as a host failure.
+  `error` and unrecognized levels are coerced to `warn`.
+- Returns `204 No Content`.
+
+From the SDK:
+
+```rust
+use localref_plugin_sdk::{LocalrefClient, LogLevel};
+
+let client = LocalrefClient::new(endpoint);
+client.log("bibtexer", LogLevel::Info, "exported 3 items").await?;
+// …or with structured fields:
+client.log_with("bibtexer", LogLevel::Warn, "skipped 1 item",
+    Some("plugin_action"), Some("lr:zotero:abc"), None).await?;
+```
+
+### Desktop notifications
+
+A plugin can request a desktop notification with `POST /api/notify`:
+
+```jsonc
+// POST <endpoint>/api/notify
+{
+  "title": "Export complete",
+  "body": "Wrote 3 BibTeX entries",
+  "kind": "success"   // info (default) | success | error
+}
+```
+
+- Delivery is decoupled: the host enqueues the request and a dedicated thread
+  shows it through the native notification layer. The notification is also
+  mirrored into the unified log under `localref::notify`.
+- Notifications are a **desktop capability**. In a headless build (or any
+  process where the notification consumer was never started) the daemon
+  responds **`503 Service Unavailable`**; treat that as "not available", not an
+  error.
+- On success returns `204 No Content`.
+
+From the SDK, `notify` folds the `503` into a boolean so plugins degrade
+gracefully:
+
+```rust
+use localref_plugin_sdk::{LocalrefClient, NotifyKind};
+
+let client = LocalrefClient::new(endpoint);
+let shown = client.notify("Export complete", "Wrote 3 entries", NotifyKind::Success).await?;
+// shown == false means the host has no notification capability; carry on.
+```
+
+Both calls work from any invocation mode (`run`, `hook`, `cron`) since every
+mode receives an `--endpoint`. Hooks and cron jobs are the natural place to use
+them — e.g. a nightly cron job logging its summary and notifying on completion.
+
 ---
 
 ## 6. Worked example — bibtexer
@@ -404,8 +478,11 @@ See `examples/plugins/bibtexer/src/main.rs` for the full implementation.
 ## 7. Worked example — hooklog
 
 The `examples/plugins/hooklog/` directory is a reference plugin for the `hook`
-and `cron` entry points. It declares two hooks and one cron job, and appends a
-line to a log file on every invocation so the behaviour is observable.
+and `cron` entry points. It declares two hooks and one cron job, and on every
+invocation appends a line to a log file. On hooks it also echoes back to the
+daemon — a unified-log entry via `client.log_with(…)` and a desktop
+notification via `client.notify(…)` — so the logging and notification paths are
+observable end-to-end.
 
 ### `plugin.toml`
 
@@ -429,10 +506,16 @@ schedule = "0 * * * * *"
 
 ```rust
 match invocation {
-    Invocation::Hook { event, item, category, .. } => { /* append a hook line */ }
-    Invocation::Cron { job, .. }                   => { /* append a cron line */ }
-    Invocation::Run { action, .. }                 => { /* append a run line  */ }
-    Invocation::Manifest                           => { /* self-check only    */ }
+    Invocation::Hook { event, endpoint, item, category } => {
+        // append a hook line, then echo to the daemon:
+        let client = LocalrefClient::new(&endpoint);
+        client.log_with("hooklog", LogLevel::Info, &summary,
+            Some(&event), item.as_deref(), None).await.ok();
+        client.notify("hooklog", &summary, NotifyKind::Info).await.ok();
+    }
+    Invocation::Cron { job, .. }   => { /* append a cron line */ }
+    Invocation::Run { action, .. } => { /* append a run line  */ }
+    Invocation::Manifest           => { /* self-check only    */ }
 }
 ```
 

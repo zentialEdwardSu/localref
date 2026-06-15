@@ -31,6 +31,7 @@ ui-app = { path = "crates/ui-app", features = ["ssr"], optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tower = { workspace = true }
 
 [workspace]
 resolver = "3"
