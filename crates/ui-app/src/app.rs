@@ -36,6 +36,7 @@ pub fn body_app(initial_state: UiState) -> impl IntoView {
     let (events_open, set_events_open) = signal(initial_events_open);
     let (context_menu, set_context_menu) =
         signal::<Option<ItemContextMenu>>(None);
+    start_live_refresh(state, set_state, set_events_open);
     view! {
         {move || state.with(state_json_script)}
         {move || state.with(|state| render_rules_notice(state.clone(), set_state))}
@@ -1335,6 +1336,20 @@ pub fn right_tab_class(current: &str, tab: &str) -> &'static str {
 /// Return the visual class for the active watcher radio option.
 fn watcher_class(active: bool) -> &'static str {
     if active { "radio-option is-active" } else { "radio-option" }
+}
+
+/// Start the live-refresh `EventSource` in the hydrated browser; no-op in SSR.
+#[allow(clippy::single_call_fn)] // cfg-dispatch wrapper, called once from body_app
+fn start_live_refresh(
+    state: ReadSignal<UiState>,
+    set_state: WriteSignal<UiState>,
+    set_events_open: WriteSignal<bool>,
+) {
+    #[cfg(feature = "hydrate")]
+    crate::client::start_live_refresh(state, set_state, set_events_open);
+
+    #[cfg(not(feature = "hydrate"))]
+    let _ = (state, set_state, set_events_open);
 }
 
 /// Visit a route in the hydrated browser; this is a no-op during SSR.

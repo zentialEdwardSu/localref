@@ -120,6 +120,42 @@ pub fn visit_route(
     });
 }
 
+/// Open a live `EventSource` that re-fetches the current view on any change.
+///
+/// The daemon streams a `change` SSE event for every library mutation (imports,
+/// deletes, metadata/category edits, scans) — including ones that arrive out of
+/// band via the Zotero Connector or file watcher. On each event we reconstruct
+/// the current route from live state and re-fetch it with `visit_route`, which
+/// reactively patches only the changed DOM nodes — no full-page reload. The
+/// `EventSource` lives for the page lifetime.
+pub fn start_live_refresh(
+    state: ReadSignal<UiState>,
+    set_state: WriteSignal<UiState>,
+    set_events_open: WriteSignal<bool>,
+) {
+    let Ok(source) = web_sys::EventSource::new("/ui/events") else {
+        return;
+    };
+    // Read state untracked: this runs in an event callback, not a reactive
+    // scope, so it must not register a dependency.
+    let on_change: Closure<dyn Fn(web_sys::MessageEvent)> =
+        Closure::new(move |_event: web_sys::MessageEvent| {
+            let route = state.with_untracked(RouteState::from_ui_state);
+            visit_route(route, set_state, set_events_open, false);
+        });
+    // Named SSE events dispatch to listeners, not `onmessage`.
+    if let Err(error) = source.add_event_listener_with_callback(
+        "change",
+        on_change.as_ref().unchecked_ref(),
+    ) {
+        web_sys::console::error_1(&error);
+        return;
+    }
+    // Leak the listener and the source — both live for the page lifetime.
+    on_change.forget();
+    std::mem::forget(source);
+}
+
 /// Submit a form action and hydrate state from the redirected HTML response.
 pub fn submit_action(
     event: leptos::ev::SubmitEvent,

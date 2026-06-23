@@ -18,8 +18,12 @@ use axum::Json;
 use axum::Router;
 use axum::extract::{Form, Multipart, Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
+use std::convert::Infallible;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::{Stream, StreamExt};
 use localref_core::LocalrefDaemon;
 use localref_plugin::discovery::DiscoveredPlugin;
 use localref_plugin::manifest::{UiMount, UiTarget};
@@ -54,6 +58,7 @@ pub fn router_with_daemon_repo_plugins_and_context(
     Router::new()
         .route("/", get(home))
         .route("/ui/state", get(ui_state))
+        .route("/ui/events", get(ui_events))
         .route("/assets/favicon.ico", get(favicon))
         .route("/assets/localref-ui.css", get(ui_css))
         .route("/assets/localref-ui.js", get(ui_wasm_js))
@@ -125,6 +130,26 @@ pub async fn ui_state(
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
             .into_response(),
     }
+}
+
+/// Stream daemon mutations to the browser as Server-Sent Events.
+///
+/// The hydrated UI opens an `EventSource` here and re-fetches the current view
+/// whenever any library change lands (imports, deletes, metadata/category
+/// edits, scans), so an open page stays current without a manual reload. Only a
+/// change marker is sent; the client fetches full state via `/ui/state`.
+pub async fn ui_events(
+    State(state): State<ServerState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = BroadcastStream::new(state.daemon.subscribe()).filter_map(
+        |result| {
+            // Drop lagged/closed frames; the next event re-syncs full state.
+            result
+                .ok()
+                .map(|event| Ok(Event::default().event("change").data(event.event_name())))
+        },
+    );
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 /// Internal helper for action.
@@ -650,6 +675,8 @@ mod tests {
                 executable: None,
                 description: None,
                 ui: None,
+                hooks: Vec::new(),
+                cron: Vec::new(),
             },
             ui: Some(PluginUiSpec {
                 actions: Vec::new(),
@@ -898,6 +925,8 @@ mod tests {
                 executable: None,
                 description: None,
                 ui: None,
+                hooks: Vec::new(),
+                cron: Vec::new(),
             },
             ui: Some(PluginUiSpec {
                 actions: Vec::new(),
