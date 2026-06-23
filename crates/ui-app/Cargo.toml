@@ -29,7 +29,7 @@ tracing = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
-wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen = { version = "0.2.125", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 web-sys = { version = "0.3", optional = true, features = ["Blob", "console", "DataTransfer", "Document", "DomParser", "DomTokenList", "DragEvent", "Element", "Event", "EventTarget", "File", "FileList", "FormData", "Headers", "History", "HtmlElement", "HtmlFormElement", "HtmlInputElement", "HtmlSelectElement", "HtmlTextAreaElement", "Location", "MouseEvent", "NodeList", "Request", "RequestInit", "RequestMode", "Response", "SubmitEvent", "SupportedType", "Url", "UrlSearchParams", "Window"] }
 
