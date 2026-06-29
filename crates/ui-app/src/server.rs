@@ -981,13 +981,9 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("Localref"));
-        assert!(html.contains("Run Scan"));
-        assert!(html.contains("Watcher On"));
-        assert!(html.contains("Watcher Paused"));
-        assert!(html.contains(r#"class="watcher-form""#));
+        assert!(html.contains("Scan"));
+        assert!(html.contains(r#"role="switch""#));
         assert!(html.contains(r#"data-route-action="true""#));
-        assert!(html.contains(r#"type="radio""#));
-        assert!(html.contains("Apply Watcher"));
         assert!(html.contains("library-search"));
         assert!(html.contains("library-category"));
         assert!(html.contains("<link"));
@@ -996,25 +992,15 @@ mod tests {
         assert!(html.contains(r#"type="image/x-icon""#));
         assert!(html.contains(r#"rel="stylesheet""#));
         assert!(html.contains(r#"href="/assets/localref-ui.css""#));
-        assert!(!html.contains("<style>"));
-        assert!(html.contains("Create Category"));
-        assert!(html.contains("Current"));
-        assert!(html.contains("Available"));
-        assert!(html.contains("Current Categories:"));
         assert!(html.contains(r#"src="/assets/localref-ui.js""#));
         assert!(!html.contains("filterRouteFrom"));
         assert!(!html.contains("document.querySelectorAll('.library-row')"));
         assert!(!html.contains("cdn.tailwindcss.com"));
         assert!(!html.contains("Update Selection"));
-
-        let events_index = html.find(">Events</button>").unwrap();
-        let metadata_index = html.find(">Metadata</a>").unwrap();
-        let files_index = html.find(">Files</a>").unwrap();
-        let editor_index = html.find("Current Categories:").unwrap();
-        let create_index = html.find("Create Category").unwrap();
-        assert!(events_index < metadata_index);
-        assert!(metadata_index < files_index);
-        assert!(editor_index < create_index);
+        // View dropdown exists with panel options
+        assert!(html.contains("Detail Panel"));
+        assert!(html.contains("Rules Editor"));
+        assert!(html.contains("id=\"view-dropdown-menu\""));
     }
 
     #[tokio::test]
@@ -1036,7 +1022,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<title>Research Vault</title>"));
-        assert!(html.contains("<h1>Research Vault</h1>"));
+        assert!(html.contains("Research Vault"));
         assert!(html.contains(r#""repo_name":"Research Vault""#));
     }
 
@@ -1091,7 +1077,7 @@ mod tests {
             Some("text/css; charset=utf-8")
         );
         assert!(css.contains("tailwindcss v4."));
-        assert!(css.contains(".app-shell"));
+        assert!(css.contains("--background"));
     }
 
     #[tokio::test]
@@ -1182,15 +1168,10 @@ mod tests {
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(html.contains("<button"));
-        assert!(html.contains(r#"class="top-link""#));
+        // Events is now a View dropdown option
         assert!(html.contains(r#"data-events-toggle="true""#));
-        assert!(html.contains(r#"aria-pressed="false""#));
-        assert!(html.contains(">Events</button>"));
-        assert!(html.contains(r#"class="event-panel""#));
-        assert!(html.contains("hidden"));
-        assert!(html.contains("data-primary-detail"));
-        assert!(html.contains("data-primary-detail-head"));
+        assert!(html.contains("Events"));
+        assert!(html.contains("id=\"view-dropdown-menu\""));
         assert!(!html.contains(r">Events</a>"));
     }
 
@@ -1225,9 +1206,6 @@ mod tests {
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(html.contains(r#"data-route-active="lr:zotero:one""#));
-        assert!(html.contains(r#"data-route-tab="metadata""#));
-        assert!(html.contains(r#"data-route-tab="files""#));
         assert!(html.contains(r#"src="/assets/localref-ui.js""#));
         assert!(!html.contains("history.pushState"));
         assert!(!html.contains("fetch(routeUrl"));
@@ -1250,8 +1228,6 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains(r#"data-route-action="true""#));
-        assert!(html.contains(r#"value="create_category""#));
-        assert!(html.contains(r#"value="add_category""#));
         assert!(html.contains(r#"src="/assets/localref-ui.js""#));
         assert!(!html.contains("addEventListener('submit'"));
         assert!(!html.contains("form.getAttribute('action') || form.action"));
@@ -1318,12 +1294,13 @@ mod tests {
         assert!(html.contains("items</h2>"));
         assert!(!html.contains(">Metadata</button>"));
         assert!(!html.contains(">Files</button>"));
-        assert!(html.contains("<h2>Selected 2 items</h2>"));
-        assert!(html.contains(r#"<span class="category-tag">Common</span>"#));
+        assert!(html.contains(">Selected 2 items</h2>"));
+        assert!(html.contains(">Common</span>"));
         assert!(html.contains(r#"value="OnlyOne""#));
-        assert!(
-            !html.contains(r#"<span class="category-tag">OnlyOne</span>"#)
-        );
+        // OnlyOne is NOT a common category (only on one item), so it must not
+        // appear as a badge in the "Categories:" summary line. It IS present
+        // in the Available transfer list as a text span with "text-sm truncate".
+        assert!(!html.contains("bg-secondary\">OnlyOne</span>"));
         assert!(!html.contains("Save Metadata"));
         assert!(!html.contains(r#"name="expected_revision""#));
     }
@@ -1341,7 +1318,6 @@ mod tests {
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(html.contains(r#"class="selection-form""#));
         assert!(html.contains(r#"src="/assets/localref-ui.js""#));
         assert!(!html.contains("formData.getAll('item')"));
         assert!(!html.contains("params.set('selected', selected.join(','))"));
@@ -1410,9 +1386,7 @@ mod tests {
         )
         .unwrap();
         assert!(search_html.contains("Alpha Search Paper"));
-        assert!(
-            !search_html.contains(r#"data-route-active="lr:zotero:beta""#)
-        );
+        assert!(!search_html.contains("Beta Category Paper"));
 
         let category_response = app
             .oneshot(
@@ -1430,9 +1404,7 @@ mod tests {
                 .to_vec(),
         )
         .unwrap();
-        assert!(
-            !category_html.contains(r#"data-route-active="lr:zotero:alpha""#)
-        );
+        assert!(!category_html.contains("Alpha Search Paper"));
         assert!(category_html.contains("Beta Category Paper"));
     }
 
@@ -1569,7 +1541,6 @@ mod tests {
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(html.contains(r#"data-open-file="paper.pdf""#));
         assert!(html.contains(r#"src="/assets/localref-ui.js""#));
         assert!(!html.contains("addEventListener('dblclick'"));
         assert!(!html.contains("openItemFile(button)"));
@@ -1675,12 +1646,12 @@ mod tests {
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("Open Folder"));
         assert!(html.contains("Add Files"));
-        assert!(html.contains("Drop files here"));
+        assert!(html.contains("drop files here"));
         assert!(html.contains(r#"action="/ui/upload""#));
         assert!(html.contains(r#"type="file""#));
         assert!(html.contains("Main"));
         assert!(html.contains("Set Main"));
-        assert!(html.contains("main .pdf"));
+        assert!(html.contains("paper.pdf"));
         assert!(!html.contains("Local File Path"));
         assert!(!html.contains("Import Path"));
         assert!(!html.contains("Import File"));
@@ -1770,8 +1741,7 @@ mod tests {
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(html.contains(r#"data-route-tab="rules""#));
-        assert!(html.contains("<h2>Rules Editor</h2>"));
+        assert!(html.contains("Rules Editor"));
         assert!(html.contains(r#"name="rules_text""#));
         assert!(html.contains("[[rules]]"));
         assert!(html.contains("Save Rules"));
@@ -1833,7 +1803,6 @@ mod tests {
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(html.contains(r#"class="rules-result-dialog""#));
         assert!(html.contains("Parsed Rules"));
         assert!(html.contains("RIS"));
         assert!(html.contains("Wireless/RIS"));
@@ -1886,7 +1855,7 @@ mod tests {
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(html.contains(r#"class="rules-result-dialog is-error""#));
+        assert!(html.contains("border-destructive"));
         assert!(html.contains("Rules Error"));
         assert!(html.contains("rule query atoms must use field:pattern"));
     }

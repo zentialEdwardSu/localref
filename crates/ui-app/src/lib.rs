@@ -25,12 +25,15 @@ pub mod assets;
 pub mod client;
 #[cfg(feature = "ssr")]
 pub mod dto;
+pub mod hooks;
 pub mod model;
 pub mod route;
 #[cfg(feature = "ssr")]
 pub mod server;
 #[cfg(feature = "ssr")]
 pub mod state;
+pub mod ui;
+pub mod views;
 
 pub use model::{
     ActiveDetail, CategorySummary, EventSummary, FileEntry, ItemSummary,

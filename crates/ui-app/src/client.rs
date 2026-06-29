@@ -13,9 +13,11 @@ use crate::route::{RouteState, state_url};
 
 /// Hydrate the server-rendered Localref document body.
 pub fn hydrate() -> Result<(), JsValue> {
+    crate::hooks::use_scroll_lock::init();
     let state = initial_state()?;
     leptos::mount::hydrate_body(move || app::body_app(state));
     attach_plugin_form_listeners()?;
+    init_resizer()?;
     Ok(())
 }
 
@@ -592,6 +594,105 @@ fn clear_rules_notice_query_inner() -> Result<(), JsValue> {
     url.search_params().delete("rules_status");
     url.search_params().delete("rules_error");
     replace_url(&url.href())
+}
+
+/// Initialize the drag-to-resize split pane between item table and detail panel.
+///
+/// Listens for pointer events on `#localref-resizer` and updates the parent
+/// grid's `grid-template-columns`. Persists the split to localStorage.
+#[allow(clippy::single_call_fn)]
+fn init_resizer() -> Result<(), JsValue> {
+    let doc = document()?;
+    let Some(container) = doc.get_element_by_id("localref-split") else {
+        return Ok(());
+    };
+    let container_el: web_sys::HtmlElement = container.dyn_into()?;
+
+    let dragging = Rc::new(Cell::new(false));
+    let container_for_move = container_el.clone();
+
+    // pointerdown
+    let dragging_down = dragging.clone();
+    let on_down: Closure<dyn Fn(web_sys::PointerEvent)> =
+        Closure::new(move |event: web_sys::PointerEvent| {
+            let Some(target) = event.target() else { return };
+            let Ok(el) = target.dyn_into::<web_sys::Element>() else { return };
+            if el.id() != "localref-resizer" {
+                return;
+            }
+            dragging_down.set(true);
+            event.prevent_default();
+            // Capture pointer for reliable tracking outside the element
+            let _ = el.set_pointer_capture(event.pointer_id());
+        });
+    // Listen on the document because the resizer may be rendered after
+    // hydration when the user opens the detail panel.
+    doc.add_event_listener_with_callback(
+        "pointerdown",
+        on_down.as_ref().unchecked_ref(),
+    )?;
+    on_down.forget();
+
+    // pointermove (on document for smooth tracking)
+    let dragging_move = dragging.clone();
+    let on_move: Closure<dyn Fn(web_sys::PointerEvent)> =
+        Closure::new(move |event: web_sys::PointerEvent| {
+            if !dragging_move.get() {
+                return;
+            }
+            let rect = container_for_move.get_bounding_client_rect();
+            let container_left = rect.left();
+            let container_width = rect.width();
+            let x = event.client_x() as f64 - container_left;
+
+            // Clamp to the preferred pane minima when the viewport permits it,
+            // and degrade safely on narrower windows.
+            let max_left = (container_width - 250.0 - 6.0).max(0.0);
+            let min_left = 300.0_f64.min(max_left);
+            let left = x.clamp(min_left, max_left);
+
+            let cols =
+                format!("minmax(0, {left:.0}px) 6px minmax(250px, 1fr)");
+            let _ = container_for_move
+                .style()
+                .set_property("grid-template-columns", &cols);
+        });
+    doc.add_event_listener_with_callback(
+        "pointermove",
+        on_move.as_ref().unchecked_ref(),
+    )?;
+    on_move.forget();
+
+    // pointerup (on document)
+    let dragging_up = dragging.clone();
+    let container_for_up = container_el.clone();
+    let on_up: Closure<dyn Fn(web_sys::PointerEvent)> =
+        Closure::new(move |_event: web_sys::PointerEvent| {
+            if !dragging_up.get() {
+                return;
+            }
+            dragging_up.set(false);
+            // Persist to localStorage
+            let cols = container_for_up
+                .style()
+                .get_property_value("grid-template-columns")
+                .unwrap_or_default();
+            if !cols.is_empty() {
+                if let Some(storage) = web_sys::window()
+                    .and_then(|w| w.local_storage().ok())
+                    .flatten()
+                {
+                    let _ = storage.set("localref-split", &cols);
+                }
+            }
+        });
+    doc.add_event_listener_with_callback(
+        "pointerup",
+        on_up.as_ref().unchecked_ref(),
+    )?;
+    on_up.forget();
+
+    Ok(())
 }
 
 fn document() -> Result<web_sys::Document, JsValue> {

@@ -1,413 +1,207 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
 @source "../crates/ui-app/src";
 
-@theme {
-  --font-sans: "Helvetica Neue", Arial, sans-serif;
+/* ============================================================
+   rust-ui token system (shadcn-style). Light = :root, dark = .dark
+   Ported from rust-ui's style/tailwind.css. Drives the vendored
+   components under crates/ui-app/src/ui/.
+   ============================================================ */
+:root {
+  --radius: 0.625rem;
+  --font-sans: "Inter", "Helvetica Neue", Arial, system-ui, sans-serif;
   --font-mono: Consolas, "Courier New", monospace;
-  --color-localref-page: #F7F7F8;
-  --color-localref-panel: #FFFFFF;
-  --color-localref-ink: #17202A;
-  --color-localref-muted: #4A5563;
-  --color-localref-line: #DADEE5;
-  --color-localref-input: #AEB6C2;
-  --color-localref-accent: #002FA7;
-  --color-localref-danger: #A82626;
-  --shadow-localref-dialog: 0 16px 36px rgba(23, 32, 42, 0.18);
+
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(0.985 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.92 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.985 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --success: oklch(0.65 0.16 145);
+  --success-foreground: oklch(0.985 0 0);
+  --success-light: oklch(0.95 0.08 145);
+  --success-dark: oklch(0.35 0.16 145);
+  --warning: oklch(0.65 0.16 55);
+  --warning-foreground: oklch(0.985 0 0);
+  --warning-light: oklch(0.95 0.08 55);
+  --warning-dark: oklch(0.35 0.16 55);
+  --info: oklch(0.55 0.18 250);
+  --info-foreground: oklch(0.985 0 0);
+  --info-light: oklch(0.95 0.08 250);
+  --info-dark: oklch(0.35 0.18 250);
+  --selection: oklch(0.65 0.16 55);
+  --selection-foreground: oklch(1 0 0);
+  --scrollbar-thumb: #ccc;
+}
+
+.dark {
+  --background: oklch(0.18 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.269 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.371 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --success: oklch(0.65 0.16 145);
+  --success-foreground: oklch(0.205 0 0);
+  --success-light: oklch(0.25 0.08 145);
+  --success-dark: oklch(0.75 0.16 145);
+  --warning: oklch(0.65 0.16 55);
+  --warning-foreground: oklch(0.205 0 0);
+  --warning-light: oklch(0.25 0.08 55);
+  --warning-dark: oklch(0.75 0.16 55);
+  --info: oklch(0.65 0.18 250);
+  --info-foreground: oklch(0.985 0 0);
+  --info-light: oklch(0.25 0.08 250);
+  --info-dark: oklch(0.75 0.18 250);
+  --selection: oklch(0.55 0.18 55);
+  --selection-foreground: oklch(0.205 0 0);
+  --scrollbar-thumb: #555;
+}
+
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-light: var(--success-light);
+  --color-success-dark: var(--success-dark);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-light: var(--warning-light);
+  --color-warning-dark: var(--warning-dark);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-light: var(--info-light);
+  --color-info-dark: var(--info-dark);
+  --color-selection: var(--selection);
+  --color-selection-foreground: var(--selection-foreground);
 }
 
 @layer base {
   * {
-    @apply box-border;
+    @apply border-border outline-ring/50;
   }
-
+  ::selection {
+    @apply bg-selection text-selection-foreground;
+  }
+  html {
+    zoom: 1.1;
+  }
   body {
-    @apply m-0 font-sans text-localref-ink tracking-normal;
+    @apply m-0 bg-background text-foreground font-sans tracking-normal;
+    text-rendering: optimizeLegibility;
   }
-
   button,
   input,
   select,
   textarea {
     font: inherit;
   }
-
-  button {
-    @apply cursor-pointer;
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
   }
-
-  button:disabled {
-    @apply cursor-not-allowed opacity-45;
-  }
-
-  h1,
-  h2,
-  h3,
-  h4 {
+  h1, h2, h3, h4 {
     @apply m-0;
   }
-
-  h1 {
-    @apply text-4xl leading-none;
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
   }
-
-  h2 {
-    @apply text-3xl leading-tight;
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 6px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
   }
 }
 
+/* ============================================================
+   Plugin integration hooks. client.rs queries these by class
+   (.plugin-form / .plugin-field / .plugin-field-input /
+   .plugin-display) for Tier-1 display refresh + Tier-2 preview,
+   so the class names must persist. Restyled onto rust-ui tokens.
+   ============================================================ */
 @layer components {
-  .app-shell {
-    @apply min-h-screen;
+  .resizer {
+    @apply w-1.5 cursor-col-resize bg-border/50 hover:bg-primary/30 active:bg-primary/50 transition-colors select-none shrink-0;
   }
 
-  .topbar {
-    @apply sticky top-0 z-20 grid gap-4 border-b border-localref-ink bg-localref-panel px-6 py-3 min-[900px]:grid-cols-[minmax(0,1fr)_auto] min-[900px]:items-end max-[899px]:px-4;
-  }
-
-  .brand-block {
-    @apply grid gap-2.5;
-  }
-
-  .brand-row {
-    @apply flex items-end gap-3.5;
-  }
-
-  .status-pill,
-  .category-tag {
-    @apply border border-localref-line bg-localref-panel px-2 py-1 text-xs;
-  }
-
-  .top-link,
-  .right-tab,
-  .button {
-    @apply inline-flex items-center justify-center border border-localref-ink bg-localref-panel text-localref-ink no-underline transition hover:-translate-y-px hover:bg-localref-accent hover:text-white active:translate-y-0 active:bg-localref-ink active:text-white;
-  }
-
-  .top-link,
-  .right-tab {
-    @apply px-3.5 py-2;
-  }
-
-  .top-link.is-active,
-  .right-tab.is-active {
-    @apply bg-localref-accent text-white;
-  }
-
-  .top-actions {
+  .plugin-form {
     @apply grid gap-3;
   }
-
-  .stats {
-    @apply grid grid-cols-2 gap-px border border-localref-line bg-localref-line text-sm min-[900px]:grid-cols-4;
+  .plugin-field {
+    @apply grid gap-1.5 text-sm font-medium;
   }
-
-  .stats span {
-    @apply bg-localref-panel px-2.5 py-2 transition hover:bg-localref-page;
+  .plugin-field-input {
+    @apply h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50;
   }
-
-  .control-row {
-    @apply flex flex-wrap gap-2;
+  textarea.plugin-field-input {
+    @apply h-auto min-h-24 resize-y;
   }
-
-  .button {
-    @apply h-10 rounded-[2px] px-3;
+  .plugin-field-radio {
+    @apply flex flex-wrap gap-3;
   }
-
-  .button.primary {
-    @apply border-localref-accent bg-localref-accent text-white;
+  .plugin-display {
+    @apply text-sm text-muted-foreground;
   }
-
-  .button.compact,
-  .button.tiny {
-    @apply h-auto px-2.5 py-1.5 text-[13px];
-  }
-
-  .radio-pair {
-    @apply grid grid-cols-2 gap-px border border-localref-ink bg-localref-line p-px text-sm;
-  }
-
-  .radio-option {
-    @apply flex h-10 items-center justify-center gap-2 bg-localref-panel px-3 transition hover:bg-localref-page;
-  }
-
-  .radio-option input {
-    @apply size-4 accent-localref-accent;
-  }
-
-  .radio-option.is-active {
-    @apply bg-localref-accent text-white;
-  }
-
-  .workspace {
-    @apply grid gap-px px-6 py-px min-[900px]:grid-cols-[352px_minmax(0,1fr)] max-[899px]:grid-cols-1 max-[899px]:px-4;
-  }
-
-  .library-pane,
-  .detail-pane {
-    @apply bg-localref-panel;
-  }
-
-  .library-pane {
-    @apply min-[900px]:sticky min-[900px]:top-[109px] min-[900px]:flex min-[900px]:max-h-[calc(100vh-110px)] min-[900px]:flex-col;
-  }
-
-  .filter-panel {
-    @apply grid gap-3 border-b border-localref-line p-4;
-  }
-
-  .field {
-    @apply grid gap-[5px] text-xs font-semibold;
-  }
-
-  .field input,
-  .field select,
-  .field textarea,
-  .new-category input {
-    @apply h-10 w-full rounded-[2px] border border-localref-input bg-localref-panel px-2.5 py-2 outline-none focus:border-localref-accent;
-  }
-
-  .field textarea {
-    @apply h-auto min-h-35 resize-y;
-  }
-
-  .selection-form {
-    @apply grid min-h-0 min-[900px]:flex min-[900px]:flex-1 min-[900px]:grid-rows-[auto_minmax(0,1fr)];
-  }
-
-  .selection-toolbar {
-    @apply flex items-center justify-between border-b border-localref-line px-4 py-3 text-sm;
-  }
-
-  .item-list {
-    @apply min-h-0 overflow-auto;
-  }
-
-  .item-row {
-    @apply grid grid-cols-[24px_minmax(0,1fr)] gap-2.5 border-b border-localref-line bg-localref-panel px-4 py-3 transition hover:bg-localref-page;
-  }
-
-  .item-row.is-active {
-    @apply bg-localref-page;
-  }
-
-  .row-check {
-    @apply mt-[3px] accent-localref-accent;
-  }
-
-  .item-link {
-    @apply grid gap-1 border-0 bg-transparent p-0 text-left text-localref-ink no-underline;
-  }
-
-  .item-link strong,
-  .item-link span {
-    @apply overflow-hidden text-ellipsis whitespace-nowrap;
-  }
-
-  .item-link strong {
-    @apply text-sm font-semibold;
-  }
-
-  .item-link span {
-    @apply text-xs text-localref-muted;
-  }
-
-  .detail-head {
-    @apply grid gap-3.5 border-b border-localref-line p-[18px] min-[900px]:grid-cols-[minmax(0,1fr)_auto] min-[900px]:items-end;
-  }
-
-  .right-tabs {
-    @apply flex gap-px bg-localref-line p-px;
-  }
-
-  .detail-body,
-  .event-panel {
-    @apply p-[18px];
-  }
-
-  .metadata-layout,
-  .files-pane {
-    @apply grid gap-px bg-localref-line;
-  }
-
-  .category-summary,
-  .metadata-form,
-  .rules-form,
-  .file-actions,
-  .file-list,
-  .event-list {
-    @apply bg-localref-panel;
-  }
-
-  .category-summary {
-    @apply grid gap-3.5 p-4;
-  }
-
-  .summary-head {
-    @apply grid gap-3.5;
-  }
-
-  .new-category {
-    @apply grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2 border-t border-localref-line p-3 max-[899px]:grid-cols-1;
-  }
-
-  .tag-strip {
-    @apply flex flex-wrap gap-2;
-  }
-
-  .category-editor {
-    @apply border border-localref-line;
-  }
-
-  .category-editor summary {
-    @apply cursor-pointer px-3 py-2.5 font-semibold transition hover:bg-localref-page;
-  }
-
-  .transfer-grid {
-    @apply grid gap-px border-t border-localref-line bg-localref-line min-[900px]:grid-cols-2;
-  }
-
-  .transfer-grid section {
-    @apply min-w-0 bg-localref-panel;
-  }
-
-  .transfer-grid h4 {
-    @apply border-b border-localref-line px-3 py-2.5 text-sm;
-  }
-
-  .category-list {
-    @apply max-h-80 overflow-auto;
-  }
-
-  .category-row,
-  .file-row,
-  .event-row {
-    @apply grid items-center gap-2.5 border-b border-localref-line px-3 py-2.5;
-  }
-
-  .category-row {
-    @apply grid-cols-[minmax(0,1fr)_auto] transition hover:bg-localref-page;
-  }
-
-  .category-row span,
-  .file-row span {
-    @apply overflow-hidden text-ellipsis whitespace-nowrap;
-  }
-
-  .metadata-form,
-  .rules-form {
-    @apply grid gap-3.5 p-4;
-  }
-
-  .metadata-form {
-    @apply min-[900px]:grid-cols-2;
-  }
-
-  .rules-form textarea {
-    @apply min-h-[520px] font-mono text-[13px] leading-[1.45];
-  }
-
-  .wide {
-    @apply col-span-full;
-  }
-
-  .file-actions {
-    @apply grid gap-3 p-4 min-[900px]:grid-cols-[auto_minmax(0,1fr)] min-[900px]:items-stretch;
-  }
-
-  .upload-zone {
-    @apply grid min-h-20 place-items-center gap-2 border border-dashed border-localref-input bg-localref-page px-4 py-3 text-sm text-localref-muted transition hover:border-localref-accent hover:bg-localref-panel min-[900px]:grid-cols-[auto_minmax(0,1fr)] min-[900px]:justify-items-start;
-  }
-
-  .file-input {
-    @apply sr-only;
-  }
-
-  .file-row {
-    @apply grid-cols-[minmax(0,1fr)_100px_auto_auto] bg-localref-panel max-[899px]:grid-cols-1;
-  }
-
-  .file-name {
-    @apply flex min-w-0 items-center gap-2;
-  }
-
-  .main-file-badge {
-    @apply shrink-0 border border-localref-accent px-1.5 py-0.5 text-[11px] uppercase text-localref-accent;
-  }
-
-  .event-list {
-    @apply border border-localref-line;
-  }
-
-  .event-row {
-    @apply grid-cols-[64px_150px_minmax(0,1fr)] max-[899px]:grid-cols-1;
-  }
-
-  .event-row span {
-    @apply text-xs text-localref-muted;
-  }
-
-  .event-row strong {
-    @apply text-sm font-semibold;
-  }
-
-  .rules-result-dialog {
-    @apply fixed right-6 bottom-6 z-40 grid max-h-[min(620px,calc(100vh-32px))] w-[min(520px,calc(100vw-32px))] overflow-auto border border-localref-ink bg-localref-panel shadow-localref-dialog;
-  }
-
-  .rules-result-dialog.is-error {
-    @apply border-localref-danger;
-  }
-
-  .dialog-head {
-    @apply flex items-center justify-between gap-3 border-b border-localref-line px-3.5 py-3;
-  }
-
-  .rules-result-dialog p {
-    @apply m-0 p-3.5 leading-normal;
-  }
-
-  .rules-result-list {
-    @apply grid;
-  }
-
-  .rules-result-row {
-    @apply grid gap-[5px] border-b border-localref-line px-3.5 py-3;
-  }
-
-  .rules-result-row span {
-    @apply text-xs text-localref-muted;
-  }
-
-  .rules-result-row code {
-    @apply overflow-auto bg-localref-page p-2 font-mono text-xs;
-  }
-
-  .item-context-menu {
-    @apply fixed z-50 grid w-[min(320px,calc(100vw-24px))] gap-px border border-localref-ink bg-localref-line shadow-localref-dialog;
-  }
-
-  .item-context-menu section {
-    @apply min-w-0 bg-localref-panel;
-  }
-
-  .item-context-menu h3 {
-    @apply border-b border-localref-line px-3 py-2 text-xs font-semibold uppercase text-localref-muted;
-  }
-
-  .context-file-list {
-    @apply max-h-64 overflow-auto;
-  }
-
-  .context-file-list p {
-    @apply m-0 px-3 py-2.5 text-sm text-localref-muted;
-  }
-
-  .context-menu-button {
-    @apply block w-full overflow-hidden text-ellipsis whitespace-nowrap border-0 bg-localref-panel px-3 py-2.5 text-left text-sm text-localref-ink transition hover:bg-localref-page;
-  }
-
-  .context-menu-button.danger {
-    @apply text-localref-danger hover:bg-localref-danger hover:text-white;
+  .plugin-error {
+    @apply rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive;
   }
 }

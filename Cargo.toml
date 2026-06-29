@@ -58,7 +58,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 cron = "0.15"
 http = "1"
-leptos = { version = "0.8", default-features = false }
+leptos = { version = "0.8", default-features = false, features = ["nightly"] }
+leptos_router = { version = "0.8", default-features = false, features = ["nightly"] }
+leptos_ui = "0.3"
+tw_merge = { version = "0.1", features = ["variant"] }
+icons = { version = "0.18", features = ["leptos"] }
+strum = { version = "0.28", features = ["derive"] }
 redb = "3"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
