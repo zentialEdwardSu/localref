@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::error::{LocalrefError, Result};
 use crate::model::Metadata;
 pub use crate::model::{ItemDocument, SearchHit};
-use crate::scan::{AllEntryKind, CatEntryKind, scan_all, scan_cat};
+use crate::scan::{CatEntryKind, scan_cat};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 /// Internal helper for items table.
@@ -344,13 +344,6 @@ pub fn attach_categories(
 ///
 /// Returns an error when the category tree cannot be scanned.
 pub fn scan_category_directories(library_root: &Path) -> Result<Vec<String>> {
-    let managed_item_names = scan_all(library_root)?
-        .into_iter()
-        .filter(|entry| entry.kind == AllEntryKind::ManagedItem)
-        .filter_map(|entry| {
-            Path::new(&entry.path).file_name().map(ToOwned::to_owned)
-        })
-        .collect::<std::collections::HashSet<_>>();
     let mut categories = scan_cat(library_root)?
         .into_iter()
         .filter(|entry| entry.kind == CatEntryKind::CategoryDirectory)
@@ -358,11 +351,6 @@ pub fn scan_category_directories(library_root: &Path) -> Result<Vec<String>> {
             fs::read_dir(library_root.join(&entry.path))
                 .map(|mut entries| entries.next().is_none())
                 .unwrap_or(false)
-        })
-        .filter(|entry| {
-            Path::new(&entry.path)
-                .file_name()
-                .is_none_or(|name| !managed_item_names.contains(name))
         })
         .filter_map(|entry| {
             entry.path.strip_prefix("Cat/").map(str::to_string)

@@ -41,7 +41,9 @@ use crate::model::{
 use crate::platformfs::{LibraryFs, sanitize_ntfs_component};
 use crate::rules::RuleSet;
 use crate::scan::{AllEntryKind, CatEntryKind, scan_library};
-use crate::storage::{CategorySummary, ItemDocument, SearchHit, StorageDb};
+use crate::storage::{
+    CategorySummary, ItemDocument, SearchHit, StorageDb, path_from_scan_target,
+};
 use crate::types::{
     CategoryPath, ConnectorAttachment, ConnectorImport, ImportOutcome, ItemId,
 };
@@ -766,6 +768,7 @@ impl LocalrefDaemon {
         let result = self
             .ensure_task_allowed(&record.task)
             .and_then(|()| {
+                self.storage.rebuild_from_all()?;
                 let items = self.storage.list_items()?;
                 ImportPipeline::new(&self.library_root)
                     .normalize_cat_directory(&cat_dir, &items)
@@ -1407,6 +1410,31 @@ impl LocalrefDaemon {
                 &items,
             )?;
             self.storage.rebuild_from_all()?;
+            cat_normalizations += 1;
+        }
+        let fs = LibraryFs::new(&self.library_root);
+        for entry in scan
+            .cat_entries
+            .iter()
+            .filter(|entry| entry.kind == CatEntryKind::StaleItemLink)
+        {
+            let category = entry
+                .category
+                .as_ref()
+                .ok_or(LocalrefError::MissingField("Cat category"))?;
+            let target_path = entry
+                .target_path
+                .as_deref()
+                .ok_or(LocalrefError::MissingField("stale item target"))?;
+            let entry_name = Path::new(&entry.path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(LocalrefError::MissingField("Cat entry name"))?;
+            fs.replace_empty_category_dir_with_link(
+                category,
+                entry_name,
+                &path_from_scan_target(&self.library_root, target_path),
+            )?;
             cat_normalizations += 1;
         }
 

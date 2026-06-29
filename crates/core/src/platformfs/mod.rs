@@ -248,8 +248,24 @@ impl LibraryFs {
             .map_err(|source| LocalrefError::io(&category_dir, source))?;
         let link_name = sanitize_ntfs_component(entry_name)?;
         let link_path = category_dir.join(link_name);
-        if link_path.exists() {
-            return Ok(link_path);
+        match fs::symlink_metadata(&link_path) {
+            Ok(_) => {
+                let existing = link_path
+                    .canonicalize()
+                    .map_err(|source| LocalrefError::io(&link_path, source))?;
+                let requested = item_dir
+                    .canonicalize()
+                    .map_err(|source| LocalrefError::io(item_dir, source))?;
+                if existing == requested {
+                    return Ok(link_path);
+                }
+                return Err(LocalrefError::InvalidPathComponent {
+                    component: link_path.display().to_string(),
+                    reason: "category link path exists with a different target",
+                });
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(LocalrefError::io(&link_path, source)),
         }
         #[cfg(windows)]
         native_win32::create_directory_junction(&link_path, item_dir)
@@ -258,6 +274,50 @@ impl LibraryFs {
         std::os::unix::fs::symlink(item_dir, &link_path)
             .map_err(|source| LocalrefError::io(&link_path, source))?;
         Ok(link_path)
+    }
+
+    /// Replace one confirmed empty category directory with an item link.
+    /// # Errors
+    ///
+    /// Returns an error when the path is not an empty real directory or the
+    /// requested item link cannot be created.
+    pub fn replace_empty_category_dir_with_link(
+        &self,
+        category: &CategoryPath,
+        entry_name: &str,
+        item_dir: &Path,
+    ) -> Result<PathBuf> {
+        self.ensure_target_is_all_item(item_dir)?;
+        let link_path = self
+            .category_dir(category)?
+            .join(sanitize_ntfs_component(entry_name)?);
+        let cat_root = self
+            .cat_dir()
+            .canonicalize()
+            .map_err(|source| LocalrefError::io(self.cat_dir(), source))?;
+        let existing = link_path
+            .canonicalize()
+            .map_err(|source| LocalrefError::io(&link_path, source))?;
+        if !existing.starts_with(&cat_root)
+            || fs::read_dir(&link_path)
+                .map_err(|source| LocalrefError::io(&link_path, source))?
+                .next()
+                .is_some()
+        {
+            return Err(LocalrefError::InvalidPathComponent {
+                component: link_path.display().to_string(),
+                reason: "only an empty real category directory can be replaced",
+            });
+        }
+        fs::remove_dir(&link_path)
+            .map_err(|source| LocalrefError::io(&link_path, source))?;
+        match self.create_category_link_named(category, entry_name, item_dir) {
+            Ok(path) => Ok(path),
+            Err(error) => {
+                let _ = fs::create_dir(&link_path);
+                Err(error)
+            }
+        }
     }
 
     /// Remove a category link while leaving the `All/` target untouched.
@@ -471,6 +531,27 @@ mod tests {
             link.canonicalize().unwrap(),
             item_dir.canonicalize().unwrap()
         );
+    }
+
+    #[test]
+    fn category_link_rejects_an_existing_real_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let fs = LibraryFs::new(temp.path());
+        fs.ensure_layout().unwrap();
+        let item_dir = fs.create_unique_item_dir("Paper").unwrap();
+        let occupied = fs.cat_dir().join("Inbox").join("Paper");
+        std::fs::create_dir_all(&occupied).unwrap();
+
+        let result = fs.create_category_link(
+            &CategoryPath::new("Inbox").unwrap(),
+            &item_dir,
+        );
+
+        assert!(
+            result.is_err(),
+            "an ordinary directory must not be reported as an existing item link"
+        );
+        assert!(occupied.is_dir(), "validation must not remove user data");
     }
 
     #[test]

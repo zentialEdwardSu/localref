@@ -5,7 +5,7 @@
 //! or normalization operations.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::{LocalrefError, Result};
 use crate::types::CategoryPath;
@@ -66,6 +66,8 @@ pub enum CatEntryKind {
     ItemLink,
     /// Directory link whose target is invalid or outside `All/`.
     BrokenLink,
+    /// Empty item-link remnant with a same-named managed item under `All/`.
+    StaleItemLink,
     /// Real directory under `Cat/` that should be normalized later.
     RealDirectoryCandidate,
     /// File under `Cat/`, which is invalid for phase one.
@@ -142,6 +144,44 @@ pub fn scan_cat(library_root: impl AsRef<Path>) -> Result<Vec<CatEntry>> {
     Ok(entries)
 }
 
+/// Return whether a real Cat directory contains item-like files.
+#[allow(clippy::single_call_fn)]
+fn looks_like_item(path: &Path) -> Result<bool> {
+    if path.join("metadata.toml").exists() {
+        return Ok(true);
+    }
+    for entry in
+        fs::read_dir(path).map_err(|source| LocalrefError::io(path, source))?
+    {
+        let entry = entry.map_err(|source| LocalrefError::io(path, source))?;
+        if entry
+            .file_type()
+            .map_err(|source| LocalrefError::io(entry.path(), source))?
+            .is_file()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Return the same-named managed `All/` item for an empty Cat directory.
+#[allow(clippy::single_call_fn)]
+fn stale_item_target(root: &Path, path: &Path) -> Result<Option<PathBuf>> {
+    if fs::read_dir(path)
+        .map_err(|source| LocalrefError::io(path, source))?
+        .next()
+        .is_some()
+    {
+        return Ok(None);
+    }
+    let Some(name) = path.file_name() else {
+        return Ok(None);
+    };
+    let target = root.join("All").join(name);
+    Ok(target.join("metadata.toml").is_file().then_some(target))
+}
+
 /// Internal helper for scan cat dir.
 fn scan_cat_dir(
     root: &Path,
@@ -156,25 +196,6 @@ fn scan_cat_dir(
             return None;
         }
         CategoryPath::new(parent.to_string_lossy().replace('\\', "/"))
-    };
-    let looks_like_item = |path: &Path| -> Result<bool> {
-        if path.join("metadata.toml").exists() {
-            return Ok(true);
-        }
-        for entry in fs::read_dir(path)
-            .map_err(|source| LocalrefError::io(path, source))?
-        {
-            let entry =
-                entry.map_err(|source| LocalrefError::io(path, source))?;
-            if entry
-                .file_type()
-                .map_err(|source| LocalrefError::io(entry.path(), source))?
-                .is_file()
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     };
     for entry in
         fs::read_dir(dir).map_err(|source| LocalrefError::io(dir, source))?
@@ -238,6 +259,15 @@ fn scan_cat_dir(
                     path: relative(root, &path),
                     kind: CatEntryKind::RealDirectoryCandidate,
                     target_path: None,
+                });
+            } else if category.is_some()
+                && let Some(target) = stale_item_target(root, &path)?
+            {
+                entries.push(CatEntry {
+                    category,
+                    path: relative(root, &path),
+                    kind: CatEntryKind::StaleItemLink,
+                    target_path: Some(relative(root, &target)),
                 });
             } else {
                 entries.push(CatEntry {

@@ -1097,6 +1097,113 @@ title = "Copied"
         assert_eq!(categories[0]["path"], "Inbox");
     }
 
+    #[test]
+    fn scan_replaces_empty_stale_item_directory_with_link() {
+        let temp = tempfile::tempdir().unwrap();
+        let item_dir = temp.path().join("All").join("Paper");
+        std::fs::create_dir_all(&item_dir).unwrap();
+        std::fs::write(
+            item_dir.join("metadata.toml"),
+            r#"
+id = "lr:manual:paper"
+type = "document"
+title = "Paper"
+"#,
+        )
+        .unwrap();
+        let stale_dir = temp.path().join("Cat").join("Inbox").join("Paper");
+        std::fs::create_dir_all(&stale_dir).unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+
+        daemon.scan_all().unwrap();
+
+        assert_eq!(
+            stale_dir.canonicalize().unwrap(),
+            item_dir.canonicalize().unwrap(),
+            "a stale empty item directory must become a link to its All item",
+        );
+        let item = daemon.get_item("lr:manual:paper").unwrap().unwrap();
+        assert_eq!(item.categories, vec!["Inbox"]);
+    }
+
+    #[test]
+    fn normalization_uses_metadata_id_to_link_an_existing_all_item() {
+        let temp = tempfile::tempdir().unwrap();
+        let item_dir = temp.path().join("All").join("Canonical");
+        std::fs::create_dir_all(&item_dir).unwrap();
+        std::fs::write(
+            item_dir.join("metadata.toml"),
+            r#"
+id = "lr:manual:same"
+type = "document"
+title = "Canonical"
+"#,
+        )
+        .unwrap();
+        let cat_dir = temp.path().join("Cat").join("Inbox").join("Copied");
+        std::fs::create_dir_all(&cat_dir).unwrap();
+        std::fs::write(
+            cat_dir.join("metadata.toml"),
+            r#"
+id = "lr:manual:same"
+type = "document"
+title = "Different copy"
+"#,
+        )
+        .unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+
+        daemon.normalize_cat_directory(&cat_dir).unwrap();
+
+        assert_eq!(
+            cat_dir.canonicalize().unwrap(),
+            item_dir.canonicalize().unwrap(),
+            "matching metadata IDs must link to the existing All item",
+        );
+        let metadata =
+            std::fs::read_to_string(item_dir.join("metadata.toml")).unwrap();
+        assert!(metadata.contains("Canonical"));
+        assert!(!metadata.contains("Different copy"));
+    }
+
+    #[test]
+    fn normalization_keeps_same_named_items_with_different_ids_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let existing_dir = temp.path().join("All").join("Paper");
+        std::fs::create_dir_all(&existing_dir).unwrap();
+        std::fs::write(
+            existing_dir.join("metadata.toml"),
+            r#"
+id = "lr:manual:existing"
+type = "document"
+title = "Existing"
+"#,
+        )
+        .unwrap();
+        let cat_dir = temp.path().join("Cat").join("Inbox").join("Paper");
+        std::fs::create_dir_all(&cat_dir).unwrap();
+        std::fs::write(
+            cat_dir.join("metadata.toml"),
+            r#"
+id = "lr:manual:distinct"
+type = "document"
+title = "Distinct"
+"#,
+        )
+        .unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+
+        let outcome = daemon.normalize_cat_directory(&cat_dir).unwrap();
+
+        assert_ne!(outcome.item_dir, existing_dir);
+        assert!(existing_dir.join("metadata.toml").is_file());
+        assert_eq!(
+            cat_dir.canonicalize().unwrap(),
+            outcome.item_dir.canonicalize().unwrap(),
+            "different metadata IDs must remain distinct All items",
+        );
+    }
+
     async fn request_json(app: &Router, method: &str, uri: &str) -> Value {
         request_json_body(app, method, uri, Value::Null).await
     }
