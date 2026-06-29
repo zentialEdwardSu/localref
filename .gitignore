@@ -16,6 +16,9 @@ __pycache__/
 output/
 docs/superpowers/
 
+AGENTS.md
+docs/superpowers/
+
 # Generated frontend assets (rebuilt by build.py / npm run build:css).
 # Sources stay tracked: localref-ui.tailwind.css (Tailwind input),
 # localref-ui.js (loader), favicon.ico.
