@@ -201,15 +201,7 @@ impl StorageDb {
 }
 
 /// Category summary derived from `Cat/` links.
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize,
-)]
-pub struct CategorySummary {
-    /// Category path relative to `Cat/`.
-    pub path: String,
-    /// Item ids currently linked under this category.
-    pub item_ids: Vec<String>,
-}
+pub use crate::model::CategorySummary;
 
 /// Scan all metadata documents stored under `All/`.
 ///
@@ -349,8 +341,7 @@ pub fn scan_category_directories(library_root: &Path) -> Result<Vec<String>> {
         .filter(|entry| entry.kind == CatEntryKind::CategoryDirectory)
         .filter(|entry| {
             fs::read_dir(library_root.join(&entry.path))
-                .map(|mut entries| entries.next().is_none())
-                .unwrap_or(false)
+                .is_ok_and(|mut entries| entries.next().is_none())
         })
         .filter_map(|entry| {
             entry.path.strip_prefix("Cat/").map(str::to_string)

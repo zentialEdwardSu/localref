@@ -5,6 +5,7 @@ use tw_merge::*;
 pub fn Separator(
     #[prop(into, optional)] orientation: Signal<SeparatorOrientation>,
     #[prop(into, optional)] class: String,
+    // children: Children,
 ) -> impl IntoView {
     let merged_class = Memo::new(move |_| {
         let orientation = orientation.get();

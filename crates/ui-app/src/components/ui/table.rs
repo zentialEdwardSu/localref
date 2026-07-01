@@ -3,8 +3,8 @@ use leptos_ui::clx;
 
 mod components {
     use super::*;
-    clx! {TableWrapper, div, "overflow-auto border"}
-    clx! {Table, table, "w-full text-sm caption-bottom"}
+    clx! {TableWrapper, div, "overflow-auto rounded-md border max-h-96"}
+    clx! {Table, table, "w-full max-w-7xl text-sm caption-bottom"}
     clx! {TableCaption, caption, "mt-4 text-sm text-muted-foreground"}
     clx! {TableHeader, thead, "[&_tr]:border-b sticky top-0 z-10 bg-card"}
     clx! {TableRow, tr, "border-b transition-colors data-[state=selected]:bg-muted hover:bg-muted/50"}

@@ -23,16 +23,16 @@ pub mod app;
 pub mod assets;
 #[cfg(feature = "hydrate")]
 pub mod client;
+pub mod components;
+pub mod constants;
 #[cfg(feature = "ssr")]
 pub mod dto;
-pub mod hooks;
 pub mod model;
 pub mod route;
 #[cfg(feature = "ssr")]
 pub mod server;
 #[cfg(feature = "ssr")]
 pub mod state;
-pub mod ui;
 pub mod views;
 
 pub use model::{

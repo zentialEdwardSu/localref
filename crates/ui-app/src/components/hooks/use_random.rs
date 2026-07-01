@@ -17,6 +17,10 @@ pub fn use_random_transition_name() -> String {
     format!("view-transition-name: {random_id}")
 }
 
+/* ========================================================== */
+/*                     ✨ FUNCTIONS ✨                        */
+/* ========================================================== */
+
 static COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 fn generate_hash() -> u64 {

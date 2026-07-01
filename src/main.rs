@@ -144,6 +144,9 @@ struct AppRuntime {
     daemon: LocalrefDaemon,
     /// Plugins discovered once at startup.
     plugins: Arc<Vec<localref_plugin::DiscoveredPlugin>>,
+    /// Live set of disabled plugin names, shared by the UI server and the
+    /// background workers. Initialised from `plugin-state.toml`.
+    disabled: Arc<std::sync::RwLock<std::collections::BTreeSet<String>>>,
 }
 
 impl AppRuntime {
@@ -158,7 +161,19 @@ impl AppRuntime {
         let daemon = LocalrefDaemon::new(storage);
         let plugins =
             Arc::new(localref_plugin::discover_plugins(config.plugins_dir()));
-        Ok(Self { config, daemon, plugins })
+        let disabled = localref_core::plugin_state::load_disabled(
+            config.library_root(),
+        )
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "localref::plugins",
+                %error,
+                "failed to load plugin enabled state; treating all as enabled",
+            );
+            std::collections::BTreeSet::new()
+        });
+        let disabled = Arc::new(std::sync::RwLock::new(disabled));
+        Ok(Self { config, daemon, plugins, disabled })
     }
 }
 
@@ -180,11 +195,13 @@ fn start_api_runtime(
                     &runtime.daemon,
                     runtime.plugins.clone(),
                     runtime.config.rest_endpoint().to_string(),
+                    runtime.disabled.clone(),
                 );
                 let rest = serve_rest_with_daemon(
                     runtime.config.clone(),
                     runtime.daemon.clone(),
                     runtime.plugins.clone(),
+                    runtime.disabled.clone(),
                 );
                 let csc = serve_csc_with_daemon(
                     runtime.config.clone(),
@@ -206,6 +223,7 @@ async fn serve_rest_with_daemon(
     config: LocalrefConfig,
     daemon: LocalrefDaemon,
     plugins: Arc<Vec<localref_plugin::DiscoveredPlugin>>,
+    disabled: Arc<std::sync::RwLock<std::collections::BTreeSet<String>>>,
 ) -> std::io::Result<()> {
     println!("localref REST listening on http://{}", config.rest_addr());
     tracing::info!(
@@ -214,7 +232,7 @@ async fn serve_rest_with_daemon(
         config.rest_addr(),
     );
     let listener = tokio::net::TcpListener::bind(config.rest_addr()).await?;
-    axum::serve(listener, rest_app(&config, daemon, plugins)).await
+    axum::serve(listener, rest_app(&config, daemon, plugins, disabled)).await
 }
 
 /// Build the REST listener application.
@@ -223,9 +241,11 @@ fn rest_app(
     config: &LocalrefConfig,
     daemon: LocalrefDaemon,
     plugins: Arc<Vec<localref_plugin::DiscoveredPlugin>>,
+    disabled: Arc<std::sync::RwLock<std::collections::BTreeSet<String>>>,
 ) -> axum::Router {
     let plugin_context = ui_app::PluginHostContext {
         rest_endpoint: config.rest_endpoint().to_string(),
+        disabled,
     };
     localref_core::rest::router_with_daemon(daemon.clone())
         .merge(ui_app::router_with_daemon_repo_plugins_and_context(
@@ -243,6 +263,7 @@ fn rest_app(
     _config: &LocalrefConfig,
     daemon: LocalrefDaemon,
     _plugins: Arc<Vec<localref_plugin::DiscoveredPlugin>>,
+    _disabled: Arc<std::sync::RwLock<std::collections::BTreeSet<String>>>,
 ) -> axum::Router {
     localref_core::rest::router_with_daemon(daemon)
 }

@@ -57,6 +57,9 @@ pub struct UiState {
     /// Error message from the most recent plugin action, when any.
     #[serde(default)]
     pub plugin_error: Option<String>,
+    /// All discovered plugins with enable state, for the management page.
+    #[serde(default)]
+    pub plugins_admin: Vec<PluginAdminRow>,
 }
 
 /// Metadata fields for the active detail pane.
@@ -171,6 +174,17 @@ pub struct RuleSummary {
     pub target: String,
     /// Query expression.
     pub query: String,
+}
+
+/// One row on the plugin management page.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PluginAdminRow {
+    /// Plugin machine name.
+    pub name: String,
+    /// Optional human-readable description.
+    pub description: Option<String>,
+    /// Whether the plugin is currently enabled.
+    pub enabled: bool,
 }
 
 /// Plugin detail tab displayed in the right-pane tab bar.

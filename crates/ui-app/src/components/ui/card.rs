@@ -17,6 +17,7 @@ mod components {
     clx! {CardDescription, p, "text-muted-foreground text-sm"}
     clx! {CardFooter, footer, "flex items-center px-6 [[data-size=sm]_&]:px-4 [.border-t]:pt-6", "gap-2"}
 
+    // TODO. Change data-slot=card-action by data-name="CardAction".
     clx! {CardAction, div, "self-start sm:col-start-2 sm:row-span-2 sm:row-start-1 sm:justify-self-end"}
     clx! {CardList, ul, "flex flex-col gap-4"}
     clx! {CardItem, li, "flex items-center [&_svg:not([class*='size-'])]:size-4 [&_svg]:shrink-0"}
@@ -37,7 +38,7 @@ pub fn Card(
         CardSize::Sm => "sm",
     };
     let merged = tw_merge::tw_merge!(
-        "bg-card text-card-foreground flex flex-col border shadow-sm",
+        "bg-card text-card-foreground flex flex-col rounded-xl border shadow-sm",
         size_classes,
         class
     );

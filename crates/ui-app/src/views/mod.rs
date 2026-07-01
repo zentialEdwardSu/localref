@@ -3,10 +3,10 @@
 
 pub mod context_menu;
 pub mod detail;
-pub mod events;
 pub mod files;
 pub mod metadata;
 pub mod plugins;
+pub mod plugins_admin;
 pub mod rules;
 pub mod sidebar;
 pub mod topbar;
@@ -23,40 +23,37 @@ use crate::route::RouteState;
 pub(crate) fn visit_route(
     route: RouteState,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
     push_history: bool,
 ) {
     #[cfg(feature = "hydrate")]
-    crate::client::visit_route(route, set_state, set_events_open, push_history);
+    crate::client::visit_route(route, set_state, push_history);
 
     #[cfg(not(feature = "hydrate"))]
-    let _ = (route, set_state, set_events_open, push_history);
+    let _ = (route, set_state, push_history);
 }
 
 /// Submit a route action in the hydrated browser; no-op during SSR.
 pub(crate) fn submit_action(
     event: leptos::ev::SubmitEvent,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) {
     #[cfg(feature = "hydrate")]
-    crate::client::submit_action(event, set_state, set_events_open);
+    crate::client::submit_action(event, set_state);
 
     #[cfg(not(feature = "hydrate"))]
-    let _ = (event, set_state, set_events_open);
+    let _ = (event, set_state);
 }
 
 /// Submit a form when a non-submit control changes in hydrated browsers.
 pub(crate) fn submit_changed_form(
     event: leptos::ev::Event,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) {
     #[cfg(feature = "hydrate")]
-    crate::client::submit_changed_form(event, set_state, set_events_open);
+    crate::client::submit_changed_form(event, set_state);
 
     #[cfg(not(feature = "hydrate"))]
-    let _ = (event, set_state, set_events_open);
+    let _ = (event, set_state);
 }
 
 /// Upload files selected from the hidden file input.
@@ -65,13 +62,12 @@ pub(crate) fn upload_input_files(
     item_id: String,
     return_to: String,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) {
     #[cfg(feature = "hydrate")]
-    crate::client::upload_input_files(event, item_id, return_to, set_state, set_events_open);
+    crate::client::upload_input_files(event, item_id, return_to, set_state);
 
     #[cfg(not(feature = "hydrate"))]
-    let _ = (event, item_id, return_to, set_state, set_events_open);
+    let _ = (event, item_id, return_to, set_state);
 }
 
 /// Upload files dropped on the files pane.
@@ -80,11 +76,10 @@ pub(crate) fn upload_dropped_files(
     item_id: String,
     return_to: String,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) {
     #[cfg(feature = "hydrate")]
-    crate::client::upload_dropped_files(event, item_id, return_to, set_state, set_events_open);
+    crate::client::upload_dropped_files(event, item_id, return_to, set_state);
 
     #[cfg(not(feature = "hydrate"))]
-    let _ = (event, item_id, return_to, set_state, set_events_open);
+    let _ = (event, item_id, return_to, set_state);
 }

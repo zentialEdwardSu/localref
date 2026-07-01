@@ -235,6 +235,35 @@ pub struct SearchHit {
     pub abstract_note: Option<String>,
 }
 
+/// Category summary derived from `Cat/` links.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct CategorySummary {
+    /// Category path relative to `Cat/`.
+    pub path: String,
+    /// Item ids currently linked under this category.
+    pub item_ids: Vec<String>,
+}
+
+/// A runtime-registered scheduled plugin call.
+///
+/// Persisted to `<library>/.localref/schedules.toml` and fired by the daemon's
+/// cron scheduler. The target `plugin` may be the registering plugin itself or
+/// any other discovered plugin, invoked as `run <action>` with `params`.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct ScheduledCall {
+    /// Unique schedule id; used as the delete key.
+    pub id: String,
+    /// Target plugin name (self or any other discovered plugin).
+    pub plugin: String,
+    /// Action id passed to the target plugin as `run <action>`.
+    pub action: String,
+    /// Parameters forwarded to the action as `--param key=value`.
+    #[serde(default)]
+    pub params: BTreeMap<String, String>,
+    /// Cron expression (6 fields: sec min hour day-of-month month day-of-week).
+    pub schedule: String,
+}
+
 /// Well-known log event kind identifiers used as `event_kind` field values.
 ///
 /// Each variant serializes to its `snake_case` string form, matching the values

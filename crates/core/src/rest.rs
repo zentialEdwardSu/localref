@@ -140,6 +140,8 @@ pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
         .route("/api/import/cat-folder", post(normalize_cat_folder))
         .route("/api/search", get(search))
         .route("/api/plugins/log", post(plugin_log))
+        .route("/api/schedules", get(list_schedules).post(create_schedule))
+        .route("/api/schedules/{id}", delete(delete_schedule))
         .with_state(ApiState { daemon })
 }
 
@@ -205,7 +207,52 @@ pub async fn plugin_log(Json(request): Json<PluginLogRequest>) -> Response {
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// Reduce a plugin name to a target-safe `[a-z0-9_-]` slug.
+/// List all runtime-registered scheduled plugin calls.
+pub async fn list_schedules(State(state): State<ApiState>) -> Response {
+    match state.daemon.list_schedules() {
+        Ok(schedules) => Json(schedules).into_response(),
+        Err(error) => {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
+    }
+}
+
+/// Register a scheduled plugin call.
+///
+/// Returns `400 Bad Request` for a duplicate id or invalid cron expression,
+/// `500` for storage failures, and `201 Created` on success.
+pub async fn create_schedule(
+    State(state): State<ApiState>,
+    Json(call): Json<crate::schedule::ScheduledCall>,
+) -> Response {
+    match state.daemon.register_schedule(call) {
+        Ok(()) => StatusCode::CREATED.into_response(),
+        Err(crate::error::LocalrefError::Rule(message)) => {
+            api_error(StatusCode::BAD_REQUEST, message)
+        }
+        Err(error) => {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
+    }
+}
+
+/// Remove a scheduled call by id.
+///
+/// Returns `404 Not Found` when no schedule matched, `204 No Content` on
+/// success.
+pub async fn delete_schedule(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.daemon.remove_schedule(&id) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "no such schedule"),
+        Err(error) => {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
+    }
+}
+
 ///
 /// Keeps log targets predictable and prevents a plugin from injecting `::`
 /// segments or whitespace into the target path. Empty input becomes
@@ -1206,6 +1253,103 @@ title = "Distinct"
 
     async fn request_json(app: &Router, method: &str, uri: &str) -> Value {
         request_json_body(app, method, uri, Value::Null).await
+    }
+
+    /// Send a request and return only the response status (no success assert).
+    async fn request_status(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: Value,
+    ) -> StatusCode {
+        let body = if body.is_null() {
+            Body::empty()
+        } else {
+            Body::from(body.to_string())
+        };
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn schedules_crud_validates_and_round_trips() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = router_for_library(temp.path()).unwrap();
+
+        // Empty list on a fresh library.
+        let empty = request_json(&app, "GET", "/api/schedules").await;
+        assert_eq!(empty.as_array().unwrap().len(), 0);
+
+        // Register a valid schedule.
+        let created = request_status(
+            &app,
+            "POST",
+            "/api/schedules",
+            json!({
+                "id": "nightly",
+                "plugin": "archiver",
+                "action": "backup",
+                "params": {"format": "bibtex"},
+                "schedule": "0 0 3 * * *"
+            }),
+        )
+        .await;
+        assert_eq!(created, StatusCode::CREATED);
+
+        // It is listed back with its params.
+        let listed = request_json(&app, "GET", "/api/schedules").await;
+        assert_eq!(listed[0]["id"], "nightly");
+        assert_eq!(listed[0]["params"]["format"], "bibtex");
+
+        // A duplicate id is rejected with 400.
+        let duplicate = request_status(
+            &app,
+            "POST",
+            "/api/schedules",
+            json!({
+                "id": "nightly",
+                "plugin": "archiver",
+                "action": "backup",
+                "schedule": "0 0 4 * * *"
+            }),
+        )
+        .await;
+        assert_eq!(duplicate, StatusCode::BAD_REQUEST);
+
+        // An invalid cron expression is rejected with 400.
+        let invalid = request_status(
+            &app,
+            "POST",
+            "/api/schedules",
+            json!({
+                "id": "broken",
+                "plugin": "archiver",
+                "action": "backup",
+                "schedule": "not a cron expr"
+            }),
+        )
+        .await;
+        assert_eq!(invalid, StatusCode::BAD_REQUEST);
+
+        // Delete the schedule, then a second delete reports 404.
+        let deleted =
+            request_status(&app, "DELETE", "/api/schedules/nightly", Value::Null)
+                .await;
+        assert_eq!(deleted, StatusCode::NO_CONTENT);
+        let missing =
+            request_status(&app, "DELETE", "/api/schedules/nightly", Value::Null)
+                .await;
+        assert_eq!(missing, StatusCode::NOT_FOUND);
     }
 
     #[test]

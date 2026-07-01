@@ -3,16 +3,15 @@
 use leptos::prelude::*;
 
 use crate::model::{FileEntry, UiState};
-use crate::ui::button::{Button, ButtonVariant, ButtonSize};
-use crate::ui::card::*;
-use crate::ui::badge::{Badge, BadgeVariant};
-use crate::ui::table::*;
+use crate::components::ui::button::{Button, ButtonVariant, ButtonSize};
+use crate::components::ui::card::*;
+use crate::components::ui::badge::{Badge, BadgeVariant};
+use crate::components::ui::table::*;
 
 /// Render local file actions and file rows.
 pub fn render_files(
     state: &UiState,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) -> impl IntoView + use<> {
     let item_id = state.active_id.clone().unwrap_or_default();
     let return_to = state.return_to.clone();
@@ -58,7 +57,7 @@ pub fn render_files(
                                 event.prevent_default();
                                 super::upload_dropped_files(
                                     event, upload_item_id.clone(), upload_return_to.clone(),
-                                    set_state, set_events_open,
+                                    set_state,
                                 );
                             }
                         >
@@ -73,7 +72,7 @@ pub fn render_files(
                                 on:change=move |event| {
                                     super::upload_input_files(
                                         event, picker_item_id.clone(), picker_return_to.clone(),
-                                        set_state, set_events_open,
+                                        set_state,
                                     );
                                 }
                             />
@@ -125,7 +124,7 @@ fn render_file_row_owned(
                 <span class="flex items-center gap-2">
                     {file_path.clone()}
                     {if file_is_main {
-                        view! { <Badge variant=BadgeVariant::Outline size=crate::ui::badge::BadgeSize::Sm>"Main"</Badge> }.into_any()
+                        view! { <Badge variant=BadgeVariant::Outline size=crate::components::ui::badge::BadgeSize::Sm>"Main"</Badge> }.into_any()
                     } else {
                         ().into_any()
                     }}

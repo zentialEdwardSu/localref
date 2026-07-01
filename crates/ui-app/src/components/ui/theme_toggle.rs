@@ -1,7 +1,7 @@
 use icons::SvgIcon;
 use leptos::prelude::*;
 
-use crate::hooks::use_theme_mode::use_theme_mode;
+use crate::components::hooks::use_theme_mode::use_theme_mode;
 
 #[component]
 pub fn ThemeToggle() -> impl IntoView {
@@ -12,30 +12,30 @@ pub fn ThemeToggle() -> impl IntoView {
             {"
             .theme__toggle_transition {
             -webkit-tap-highlight-color: transparent;
-
+            
             svg path {
             transform-origin: center;
             transition: all .6s ease;
             transform: translate3d(0,0,0);
             backface-visibility: hidden;
-
+            
             &.sun {
             transform: scale(.4) rotate(60deg);
             opacity: 0;
             }
-
+            
             &.moon {
             opacity: 1;
             }
             }
-
+            
             &.switch {
             svg path {
             &.sun {
             transform: scale(1) rotate(0);
             opacity: 1;
             }
-
+            
             &.moon {
             transform: scale(.4) rotate(-60deg);
             opacity: 0;

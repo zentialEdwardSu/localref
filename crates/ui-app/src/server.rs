@@ -5,8 +5,10 @@
 //! URL-query state that can be bookmarked or opened from the tray.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use crate::actions::{UiAction, run_action};
 use crate::assets::{
@@ -68,6 +70,8 @@ pub fn router_with_daemon_repo_plugins_and_context(
         .route("/ui/upload", post(upload))
         .route("/plugin/{name}/action", post(plugin_action))
         .route("/plugin/{name}/preview", post(plugin_preview))
+        .route("/plugin/{name}/enabled", post(plugin_set_enabled))
+        .route("/plugin/{name}/open-dir", post(plugin_open_dir))
         .with_state(ServerState {
             daemon,
             repo_name: repo_name.into(),
@@ -81,6 +85,10 @@ pub fn router_with_daemon_repo_plugins_and_context(
 pub struct PluginHostContext {
     /// Public REST endpoint configured for browser-side callbacks.
     pub rest_endpoint: String,
+    /// Live set of disabled plugin names, shared with the scheduler. Disabled
+    /// plugins are filtered out of UI surfacing and skipped by background
+    /// workers. Persisted to `plugin-state.toml` on every toggle.
+    pub disabled: Arc<RwLock<BTreeSet<String>>>,
 }
 
 /// Shared application state for the server-rendered UI.
@@ -337,6 +345,81 @@ pub async fn plugin_preview(
     }
 }
 
+/// Enable or disable a plugin, persisting the change and updating the live set.
+///
+/// The form carries `enabled=true|false` and `return_to`. The updated disabled
+/// set is written to `plugin-state.toml` so it survives a restart, and the
+/// in-memory set shared with the scheduler is updated so the change takes
+/// effect without a restart.
+pub async fn plugin_set_enabled(
+    State(state): State<ServerState>,
+    Path(name): Path<String>,
+    Form(form): Form<BTreeMap<String, String>>,
+) -> Response {
+    if !state.plugins.iter().any(|p| p.name() == name) {
+        return (StatusCode::NOT_FOUND, "plugin not found").into_response();
+    }
+    let enabled = form.get("enabled").map(String::as_str) == Some("true");
+    let return_to =
+        form.get("return_to").cloned().unwrap_or_else(|| "/".to_string());
+
+    {
+        let mut disabled = match state.plugin_context.disabled.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if enabled {
+            let _ = disabled.remove(&name);
+        } else {
+            let _ = disabled.insert(name.clone());
+        }
+        if let Err(error) = localref_core::plugin_state::save_disabled(
+            state.daemon.library_root(),
+            &disabled,
+        ) {
+            tracing::warn!(
+                target: "localref::plugins",
+                plugin = %name,
+                %error,
+                "failed to persist plugin enabled state",
+            );
+        }
+    }
+    tracing::info!(
+        target: "localref::plugins",
+        plugin = %name,
+        enabled,
+        "plugin enabled state changed",
+    );
+    Redirect::to(return_path(&return_to).as_str()).into_response()
+}
+
+/// Open a plugin's directory in the OS file browser.
+///
+/// The daemon process owns this capability (`native_win32::open_path`). The
+/// form carries `return_to`.
+pub async fn plugin_open_dir(
+    State(state): State<ServerState>,
+    Path(name): Path<String>,
+    Form(form): Form<BTreeMap<String, String>>,
+) -> Response {
+    let Some(plugin) = state.plugins.iter().find(|p| p.name() == name) else {
+        return (StatusCode::NOT_FOUND, "plugin not found").into_response();
+    };
+    let return_to =
+        form.get("return_to").cloned().unwrap_or_else(|| "/".to_string());
+    if let Err(error) = native_win32::open_path(&plugin.dir) {
+        tracing::warn!(
+            target: "localref::plugins",
+            plugin = %name,
+            dir = %plugin.dir.display(),
+            %error,
+            "failed to open plugin directory",
+        );
+    }
+    Redirect::to(return_path(&return_to).as_str()).into_response()
+}
+
 /// Build argv inputs from a posted form: endpoint + targeted ids + params.
 fn action_args_from_form(
     state: &ServerState,
@@ -408,8 +491,13 @@ fn load_model(
     state: &ServerState,
     query: UiQuery,
 ) -> localref_core::error::Result<UiModel> {
-    let mut model = UiModel::load(&state.daemon, query, &state.plugins)?;
-    render_fixed_plugin_slots(&mut model, state);
+    let disabled = match state.plugin_context.disabled.read() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    let mut model =
+        UiModel::load(&state.daemon, query, &state.plugins, &disabled)?;
+    render_fixed_plugin_slots(&mut model, state, &disabled);
     if let Some((plugin, page_id)) = active_plugin_page(&model, &state.plugins)
         && let Some(ui) = plugin.ui.as_ref()
         && let Some(page) = ui.pages.iter().find(|p| p.id == page_id)
@@ -421,7 +509,11 @@ fn load_model(
 }
 
 /// Collect declarative plugin pages for the active fixed slot.
-pub fn render_fixed_plugin_slots(model: &mut UiModel, state: &ServerState) {
+pub fn render_fixed_plugin_slots(
+    model: &mut UiModel,
+    state: &ServerState,
+    disabled: &BTreeSet<String>,
+) {
     let target_mount = if model.selected_ids.is_empty() {
         UiMount::MetadataPage
     } else {
@@ -429,6 +521,9 @@ pub fn render_fixed_plugin_slots(model: &mut UiModel, state: &ServerState) {
     };
     let mut slots: Vec<crate::model::PluginPageDef> = Vec::new();
     for plugin in state.plugins.iter() {
+        if disabled.contains(plugin.name()) {
+            continue;
+        }
         let Some(ui) = plugin.ui.as_ref() else { continue };
         for page in ui.pages.iter().filter(|p| p.mount == target_mount) {
             slots.push(crate::state::page_def(plugin.name(), page));
@@ -984,7 +1079,7 @@ mod tests {
         assert!(html.contains("Scan"));
         assert!(html.contains(r#"role="switch""#));
         assert!(html.contains(r#"data-route-action="true""#));
-        assert!(html.contains("library-search"));
+        assert!(html.contains("grid-filter"));
         assert!(html.contains("library-category"));
         assert!(html.contains("<link"));
         assert!(html.contains(r#"rel="icon""#));
@@ -1493,6 +1588,7 @@ mod tests {
             &daemon,
             UiQuery { q: Some("alpha".to_string()), ..UiQuery::default() },
             &Arc::new(Vec::new()),
+            &BTreeSet::new(),
         )
         .unwrap();
 

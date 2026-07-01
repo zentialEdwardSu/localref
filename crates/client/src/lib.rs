@@ -13,8 +13,10 @@
 #![warn(clippy::missing_docs_in_private_items)]
 
 pub use localref_core::model::ItemDocument;
-use localref_core::model::{ItemFilesDocument, MetadataDocument, SearchHit};
-use localref_core::storage::CategorySummary;
+pub use localref_core::model::ScheduledCall;
+use localref_core::model::{
+    CategorySummary, ItemFilesDocument, MetadataDocument, SearchHit,
+};
 use serde::{Deserialize, Serialize};
 
 /// Daemon queue and pause status (mirrors `/api/daemon/status`).
@@ -183,6 +185,30 @@ pub struct LocalrefClient {
         if status.is_success()
             || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
         {
+            return Ok(status);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(ClientError::Status { status: status.as_u16(), body })
+    }
+
+    /// DELETE a path, returning the HTTP status on any 2xx.
+    ///
+    /// `404 Not Found` is returned as `Ok` so callers can treat "already gone"
+    /// as a soft outcome; other 4xx/5xx and transport failures map to
+    /// `ClientError`.
+    async fn delete_unit(
+        &self,
+        path: &str,
+    ) -> Result<reqwest::StatusCode, ClientError> {
+        let url = format!("{}{path}", self.endpoint);
+        let resp = self
+            .http
+            .delete(&url)
+            .send()
+            .await
+            .map_err(|e| ClientError::Transport(e.to_string()))?;
+        let status = resp.status();
+        if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
             return Ok(status);
         }
         let body = resp.text().await.unwrap_or_default();
@@ -376,6 +402,45 @@ pub struct LocalrefClient {
         });
         let status = self.post_unit("/api/notify", &payload).await?;
         Ok(status != reqwest::StatusCode::SERVICE_UNAVAILABLE)
+    }
+
+    /// List all runtime-registered scheduled plugin calls.
+    ///
+    /// # Errors
+    /// Returns an error on transport failure or a non-success HTTP status.
+    pub async fn list_schedules(
+        &self,
+    ) -> Result<Vec<ScheduledCall>, ClientError> {
+        self.get_json("/api/schedules").await
+    }
+
+    /// Register a scheduled plugin call (self or another plugin).
+    ///
+    /// # Errors
+    /// Returns an error on transport failure or a non-success HTTP status; a
+    /// duplicate id or invalid cron expression surfaces as a `400` status.
+    pub async fn create_schedule(
+        &self,
+        call: &ScheduledCall,
+    ) -> Result<(), ClientError> {
+        let _ = self.post_unit("/api/schedules", call).await?;
+        Ok(())
+    }
+
+    /// Remove a scheduled call by id.
+    ///
+    /// Returns `true` when a schedule was removed, `false` when none matched.
+    /// # Errors
+    /// Returns an error on transport failure or a non-success HTTP status other
+    /// than `404`.
+    pub async fn delete_schedule(
+        &self,
+        id: &str,
+    ) -> Result<bool, ClientError> {
+        let status = self
+            .delete_unit(&format!("/api/schedules/{}", encode_segment(id)))
+            .await?;
+        Ok(status != reqwest::StatusCode::NOT_FOUND)
     }
 }
 

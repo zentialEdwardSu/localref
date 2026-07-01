@@ -167,12 +167,12 @@ mod tests {
 
     #[test]
     fn hook_argv_includes_event_endpoint_item_and_category() {
-        let args = HookArgs {
+        let hook_args = HookArgs {
             endpoint: "http://127.0.0.1:24817".to_string(),
             item: Some("lr:zotero:abc".to_string()),
             category: Some("Wireless/RIS".to_string()),
         };
-        let argv = build_hook_argv("item_imported", &args);
+        let argv = build_hook_argv("item_imported", &hook_args);
         assert_eq!(argv[0], "hook");
         assert_eq!(argv[1], "item_imported");
         assert!(argv.contains(&"--endpoint".to_string()));
@@ -184,12 +184,12 @@ mod tests {
 
     #[test]
     fn hook_argv_omits_absent_item_and_category() {
-        let args = HookArgs {
+        let hook_args = HookArgs {
             endpoint: "http://x".to_string(),
             item: None,
             category: None,
         };
-        let argv = build_hook_argv("scan_completed", &args);
+        let argv = build_hook_argv("scan_completed", &hook_args);
         assert!(!argv.contains(&"--item".to_string()));
         assert!(!argv.contains(&"--category".to_string()));
     }
@@ -205,13 +205,13 @@ mod tests {
 
     #[test]
     fn argv_includes_endpoint_selected_and_params() {
-        let args = ActionArgs {
+        let action_args = ActionArgs {
             endpoint: "http://127.0.0.1:8787".to_string(),
             selected: vec!["a".to_string(), "b".to_string()],
             active: None,
             params: vec![("format".to_string(), "bibtex".to_string())],
         };
-        let argv = build_argv("export_bibtex", &args);
+        let argv = build_argv("export_bibtex", &action_args);
         assert_eq!(argv[0], "run");
         assert_eq!(argv[1], "export_bibtex");
         assert!(argv.contains(&"--endpoint".to_string()));
@@ -224,13 +224,13 @@ mod tests {
 
     #[test]
     fn argv_passes_special_chars_as_intact_entries() {
-        let args = ActionArgs {
+        let action_args = ActionArgs {
             endpoint: "http://x".to_string(),
             selected: vec![],
             active: Some("id1".to_string()),
             params: vec![("note".to_string(), "a = b\nc d".to_string())],
         };
-        let argv = build_argv("act", &args);
+        let argv = build_argv("act", &action_args);
         assert!(argv.contains(&"--active".to_string()));
         assert!(argv.contains(&"id1".to_string()));
         assert!(argv.contains(&"note=a = b\nc d".to_string()));
@@ -238,13 +238,13 @@ mod tests {
 
     #[test]
     fn argv_omits_selected_when_empty() {
-        let args = ActionArgs {
+        let action_args = ActionArgs {
             endpoint: "http://x".to_string(),
             selected: vec![],
             active: None,
             params: vec![],
         };
-        let argv = build_argv("act", &args);
+        let argv = build_argv("act", &action_args);
         assert!(!argv.contains(&"--selected".to_string()));
         assert!(!argv.contains(&"--active".to_string()));
     }

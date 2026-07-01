@@ -6,18 +6,32 @@
 //! fire-and-forget when a matching event arrives, and spawns cron plugins on a
 //! crontab-like schedule. Neither path can block or fail a daemon action.
 
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use cron::Schedule;
 use localref_core::{DaemonEvent, LocalrefDaemon, PauseMode};
+use localref_core::schedule::ScheduledCall;
 use localref_plugin::{
-    DiscoveredPlugin, HookArgs, invoke_cron, invoke_hook,
+    ActionArgs, DiscoveredPlugin, HookArgs, invoke_action, invoke_cron,
+    invoke_hook,
 };
 use tokio::sync::broadcast::error::RecvError;
+
+/// Shared set of disabled plugin names, kept in sync with the UI server.
+type Disabled = Arc<RwLock<BTreeSet<String>>>;
+
+/// Return whether a plugin name is currently disabled.
+fn is_disabled(disabled: &Disabled, name: &str) -> bool {
+    match disabled.read() {
+        Ok(guard) => guard.contains(name),
+        Err(poisoned) => poisoned.into_inner().contains(name),
+    }
+}
 
 /// Spawn the hook dispatcher and cron scheduler onto the current runtime.
 ///
@@ -27,6 +41,7 @@ pub fn spawn_plugin_workers(
     daemon: &LocalrefDaemon,
     plugins: Arc<Vec<DiscoveredPlugin>>,
     endpoint: String,
+    disabled: Disabled,
 ) {
     let hook_bindings: usize =
         plugins.iter().map(|p| p.manifest.hooks.len()).sum();
@@ -43,11 +58,13 @@ pub fn spawn_plugin_workers(
         rx,
         Arc::clone(&plugins),
         endpoint.clone(),
+        disabled.clone(),
     )));
     drop(tokio::spawn(run_cron_scheduler(
         daemon.clone(),
         plugins,
         endpoint,
+        disabled,
     )));
 }
 
@@ -56,10 +73,11 @@ async fn run_hook_dispatcher(
     mut rx: tokio::sync::broadcast::Receiver<DaemonEvent>,
     plugins: Arc<Vec<DiscoveredPlugin>>,
     endpoint: String,
+    disabled: Disabled,
 ) {
     loop {
         match rx.recv().await {
-            Ok(event) => dispatch_event(&plugins, &endpoint, &event),
+            Ok(event) => dispatch_event(&plugins, &endpoint, &event, &disabled),
             Err(RecvError::Lagged(skipped)) => {
                 tracing::warn!(
                     target: "localref::hooks",
@@ -77,9 +95,13 @@ fn dispatch_event(
     plugins: &[DiscoveredPlugin],
     endpoint: &str,
     event: &DaemonEvent,
+    disabled: &Disabled,
 ) {
     let (item, category) = event_targets(event);
     for plugin in matching_plugins(plugins, event.event_name()) {
+        if is_disabled(disabled, plugin.name()) {
+            continue;
+        }
         let executable = plugin.executable.clone();
         let name = plugin.name().to_string();
         let event_name = event.event_name().to_string();
@@ -137,33 +159,54 @@ fn event_targets(event: &DaemonEvent) -> (Option<String>, Option<String>) {
         DaemonEvent::CategoryChanged { item_id, category } => {
             (item_id.clone(), category.clone())
         }
-        DaemonEvent::ScanCompleted { .. } => (None, None),
+        DaemonEvent::ScanCompleted { .. }
+        | DaemonEvent::SchedulesChanged => (None, None),
     }
 }
 
-/// One scheduled cron job with its parsed schedule.
-struct CronEntry {
-    /// Owning plugin name (for logging).
+/// What a scheduled entry invokes when it fires.
+enum JobKind {
+    /// A manifest `[[cron]]` job: spawn its owning plugin as `cron <id>`.
+    ManifestCron {
+        /// Plugin executable to spawn.
+        executable: PathBuf,
+        /// Job id passed back as `cron <id>`.
+        job_id: String,
+    },
+    /// A runtime-registered call: spawn the target plugin as `run <action>`.
+    ScheduledCall {
+        /// Target plugin executable to spawn.
+        executable: PathBuf,
+        /// Action id passed as `run <action>`.
+        action: String,
+        /// Parameters forwarded as `--param key=value`.
+        params: Vec<(String, String)>,
+    },
+}
+
+/// One scheduled entry with its parsed schedule and invocation target.
+struct ScheduleEntry {
+    /// Owning/target plugin name (for logging).
     plugin_name: String,
-    /// Plugin executable to spawn.
-    executable: PathBuf,
-    /// Job id passed back as `cron <id>`.
-    job_id: String,
     /// Parsed cron schedule.
     schedule: Schedule,
+    /// What this entry invokes when due.
+    kind: JobKind,
 }
 
 /// Parse every plugin's declared cron jobs, skipping invalid expressions.
-fn collect_cron_entries(plugins: &[DiscoveredPlugin]) -> Vec<CronEntry> {
+fn collect_manifest_entries(plugins: &[DiscoveredPlugin]) -> Vec<ScheduleEntry> {
     let mut entries = Vec::new();
     for plugin in plugins {
         for job in &plugin.manifest.cron {
             match Schedule::from_str(&job.schedule) {
-                Ok(schedule) => entries.push(CronEntry {
+                Ok(schedule) => entries.push(ScheduleEntry {
                     plugin_name: plugin.name().to_string(),
-                    executable: plugin.executable.clone(),
-                    job_id: job.id.clone(),
                     schedule,
+                    kind: JobKind::ManifestCron {
+                        executable: plugin.executable.clone(),
+                        job_id: job.id.clone(),
+                    },
                 }),
                 Err(error) => tracing::warn!(
                     target: "localref::cron",
@@ -179,7 +222,81 @@ fn collect_cron_entries(plugins: &[DiscoveredPlugin]) -> Vec<CronEntry> {
     entries
 }
 
-/// Sleep until the soonest job is due, fire all due jobs, and repeat.
+/// Parse runtime-registered scheduled calls, resolving each target plugin to an
+/// executable and skipping unknown targets or invalid expressions.
+fn collect_scheduled_call_entries(
+    calls: Vec<ScheduledCall>,
+    by_name: &HashMap<String, PathBuf>,
+) -> Vec<ScheduleEntry> {
+    let mut entries = Vec::new();
+    for call in calls {
+        let Some(executable) = by_name.get(&call.plugin) else {
+            tracing::warn!(
+                target: "localref::cron",
+                schedule = %call.id,
+                plugin = %call.plugin,
+                "scheduled call targets an unknown plugin; skipping",
+            );
+            continue;
+        };
+        match Schedule::from_str(&call.schedule) {
+            Ok(schedule) => entries.push(ScheduleEntry {
+                plugin_name: call.plugin.clone(),
+                schedule,
+                kind: JobKind::ScheduledCall {
+                    executable: executable.clone(),
+                    action: call.action,
+                    params: call.params.into_iter().collect(),
+                },
+            }),
+            Err(error) => tracing::warn!(
+                target: "localref::cron",
+                schedule = %call.id,
+                plugin = %call.plugin,
+                schedule_expr = %call.schedule,
+                %error,
+                "invalid cron expression; skipping scheduled call",
+            ),
+        }
+    }
+    entries
+}
+
+/// Build the full schedule set from manifest cron jobs plus runtime calls.
+fn build_schedule(
+    daemon: &LocalrefDaemon,
+    plugins: &[DiscoveredPlugin],
+    by_name: &HashMap<String, PathBuf>,
+) -> Vec<ScheduleEntry> {
+    let mut entries = collect_manifest_entries(plugins);
+    match daemon.list_schedules() {
+        Ok(calls) => {
+            entries.extend(collect_scheduled_call_entries(calls, by_name));
+        }
+        Err(error) => tracing::warn!(
+            target: "localref::cron",
+            %error,
+            "failed to load runtime schedules; using manifest cron jobs only",
+        ),
+    }
+    entries
+}
+
+/// Compute the next fire time for each entry, dropping entries with none.
+fn next_fire_times(
+    entries: Vec<ScheduleEntry>,
+) -> Vec<(ScheduleEntry, DateTime<Utc>)> {
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let next = entry.schedule.after(&Utc::now()).next()?;
+            Some((entry, next))
+        })
+        .collect()
+}
+
+/// Sleep until the soonest job is due, fire all due jobs, and repeat; reload
+/// the whole schedule when a [`DaemonEvent::SchedulesChanged`] arrives.
 ///
 /// No catch-up: the next fire time is always computed forward from now, so
 /// jobs missed while the process was down are simply not run.
@@ -187,25 +304,42 @@ async fn run_cron_scheduler(
     daemon: LocalrefDaemon,
     plugins: Arc<Vec<DiscoveredPlugin>>,
     endpoint: String,
+    disabled: Disabled,
 ) {
-    let mut schedule: Vec<(CronEntry, DateTime<Utc>)> =
-        collect_cron_entries(&plugins)
-            .into_iter()
-            .filter_map(|entry| {
-                let next = entry.schedule.after(&Utc::now()).next()?;
-                Some((entry, next))
-            })
-            .collect();
-    if schedule.is_empty() {
-        return;
-    }
+    let by_name: HashMap<String, PathBuf> = plugins
+        .iter()
+        .map(|plugin| (plugin.name().to_string(), plugin.executable.clone()))
+        .collect();
+    let mut events = daemon.subscribe();
+    let mut schedule =
+        next_fire_times(build_schedule(&daemon, &plugins, &by_name));
 
     loop {
-        let Some(soonest) = schedule.iter().map(|(_, next)| *next).min() else {
-            return;
+        // Wait for either the soonest job to be due or a reload signal. With no
+        // schedules, idle until a reload arrives rather than spinning.
+        let due = match schedule.iter().map(|(_, next)| *next).min() {
+            Some(soonest) => {
+                (soonest - Utc::now()).to_std().unwrap_or(Duration::ZERO)
+            }
+            None => Duration::from_secs(3600),
         };
-        let wait = (soonest - Utc::now()).to_std().unwrap_or(Duration::ZERO);
-        tokio::time::sleep(wait).await;
+        tokio::select! {
+            () = tokio::time::sleep(due) => {}
+            recv = events.recv() => {
+                match recv {
+                    Ok(DaemonEvent::SchedulesChanged) => {
+                        schedule = next_fire_times(
+                            build_schedule(&daemon, &plugins, &by_name),
+                        );
+                        continue;
+                    }
+                    // Other events don't affect the schedule set.
+                    Ok(_) => continue,
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => return,
+                }
+            }
+        }
 
         let now = Utc::now();
         let paused = daemon.status().paused_modes.contains(&PauseMode::All);
@@ -216,11 +350,17 @@ async fn run_cron_scheduler(
             if paused {
                 tracing::debug!(
                     target: "localref::cron",
-                    job = %entry.job_id,
-                    "cron job skipped; daemon is paused",
+                    plugin = %entry.plugin_name,
+                    "scheduled job skipped; daemon is paused",
+                );
+            } else if is_disabled(&disabled, &entry.plugin_name) {
+                tracing::debug!(
+                    target: "localref::cron",
+                    plugin = %entry.plugin_name,
+                    "scheduled job skipped; plugin is disabled",
                 );
             } else {
-                fire_cron(entry, &endpoint);
+                fire_entry(entry, &endpoint);
             }
             *next = entry
                 .schedule
@@ -231,39 +371,76 @@ async fn run_cron_scheduler(
     }
 }
 
-/// Spawn one cron plugin invocation, fire-and-forget.
-fn fire_cron(entry: &CronEntry, endpoint: &str) {
-    let executable = entry.executable.clone();
-    let job = entry.job_id.clone();
+/// Spawn one scheduled entry's invocation, fire-and-forget.
+fn fire_entry(entry: &ScheduleEntry, endpoint: &str) {
     let name = entry.plugin_name.clone();
     let endpoint = endpoint.to_string();
-    drop(tokio::spawn(async move {
-        match invoke_cron(&executable, &job, &endpoint).await {
-            Ok(output) => tracing::debug!(
-                target: "localref::cron",
-                plugin = %name,
-                job = %job,
-                status = %output.status,
-                "cron job ran",
-            ),
-            Err(error) => tracing::warn!(
-                target: "localref::cron",
-                plugin = %name,
-                job = %job,
-                %error,
-                "cron job failed",
-            ),
+    match &entry.kind {
+        JobKind::ManifestCron { executable, job_id } => {
+            let executable = executable.clone();
+            let job = job_id.clone();
+            drop(tokio::spawn(async move {
+                match invoke_cron(&executable, &job, &endpoint).await {
+                    Ok(output) => tracing::debug!(
+                        target: "localref::cron",
+                        plugin = %name,
+                        job = %job,
+                        status = %output.status,
+                        "cron job ran",
+                    ),
+                    Err(error) => tracing::warn!(
+                        target: "localref::cron",
+                        plugin = %name,
+                        job = %job,
+                        %error,
+                        "cron job failed",
+                    ),
+                }
+            }));
         }
-    }));
+        JobKind::ScheduledCall { executable, action, params } => {
+            let executable = executable.clone();
+            let action = action.clone();
+            let args = ActionArgs {
+                endpoint,
+                selected: Vec::new(),
+                active: None,
+                params: params.clone(),
+            };
+            drop(tokio::spawn(async move {
+                match invoke_action(&executable, &action, &args).await {
+                    Ok(output) => tracing::debug!(
+                        target: "localref::cron",
+                        plugin = %name,
+                        action = %action,
+                        status = %output.status,
+                        "scheduled call ran",
+                    ),
+                    Err(error) => tracing::warn!(
+                        target: "localref::cron",
+                        plugin = %name,
+                        action = %action,
+                        %error,
+                        "scheduled call failed",
+                    ),
+                }
+            }));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_cron_entries, event_targets, matching_plugins};
+    use super::{
+        JobKind, collect_manifest_entries, collect_scheduled_call_entries,
+        event_targets, matching_plugins,
+    };
     use localref_core::DaemonEvent;
+    use localref_core::schedule::ScheduledCall;
     use localref_plugin::{
         CronJob, DiscoveredPlugin, HookBinding, HookEvent, PluginManifest,
     };
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     fn plugin(
@@ -328,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_cron_entries_keeps_valid_and_skips_invalid() {
+    fn collect_manifest_entries_keeps_valid_and_skips_invalid() {
         let plugins = vec![
             plugin(
                 "good",
@@ -347,9 +524,55 @@ mod tests {
                 }],
             ),
         ];
-        let entries = collect_cron_entries(&plugins);
+        let entries = collect_manifest_entries(&plugins);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].plugin_name, "good");
-        assert_eq!(entries[0].job_id, "nightly");
+        match &entries[0].kind {
+            JobKind::ManifestCron { job_id, .. } => {
+                assert_eq!(job_id, "nightly");
+            }
+            JobKind::ScheduledCall { .. } => panic!("expected manifest cron"),
+        }
+    }
+
+    #[test]
+    fn scheduled_calls_resolve_targets_and_skip_unknown() {
+        let mut by_name = HashMap::new();
+        let _ = by_name
+            .insert("archiver".to_string(), PathBuf::from("/plugins/archiver"));
+        let calls = vec![
+            ScheduledCall {
+                id: "weekly".to_string(),
+                plugin: "archiver".to_string(),
+                action: "backup".to_string(),
+                params: std::collections::BTreeMap::new(),
+                schedule: "0 0 3 * * *".to_string(),
+            },
+            // Unknown target plugin is skipped, not fatal.
+            ScheduledCall {
+                id: "orphan".to_string(),
+                plugin: "ghost".to_string(),
+                action: "noop".to_string(),
+                params: std::collections::BTreeMap::new(),
+                schedule: "0 0 3 * * *".to_string(),
+            },
+            // Invalid cron expression is skipped.
+            ScheduledCall {
+                id: "broken".to_string(),
+                plugin: "archiver".to_string(),
+                action: "backup".to_string(),
+                params: std::collections::BTreeMap::new(),
+                schedule: "nonsense".to_string(),
+            },
+        ];
+        let entries = collect_scheduled_call_entries(calls, &by_name);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].plugin_name, "archiver");
+        match &entries[0].kind {
+            JobKind::ScheduledCall { action, .. } => {
+                assert_eq!(action, "backup");
+            }
+            JobKind::ManifestCron { .. } => panic!("expected scheduled call"),
+        }
     }
 }

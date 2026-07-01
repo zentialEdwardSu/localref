@@ -3,23 +3,22 @@
 use leptos::prelude::*;
 
 use crate::model::UiState;
-use crate::route::{RouteState, optional_text};
-use crate::ui::badge::{Badge, BadgeVariant};
-use crate::ui::button::{Button, ButtonVariant, ButtonSize};
-use crate::ui::switch::Switch;
-use crate::ui::theme_toggle::ThemeToggle;
+use crate::components::ui::badge::{Badge, BadgeVariant};
+use crate::components::ui::button::{Button, ButtonVariant, ButtonSize};
+use crate::components::ui::switch::Switch;
+use crate::components::ui::theme_toggle::ThemeToggle;
 
 /// Render the compact toolbar.
-#[allow(clippy::single_call_fn)]
+#[allow(clippy::single_call_fn, clippy::too_many_arguments)]
 pub fn render_topbar(
     state: ReadSignal<UiState>,
     set_state: WriteSignal<UiState>,
-    events_open: ReadSignal<bool>,
-    set_events_open: WriteSignal<bool>,
     detail_open: ReadSignal<bool>,
     set_detail_open: WriteSignal<bool>,
     rules_open: ReadSignal<bool>,
     set_rules_open: WriteSignal<bool>,
+    plugins_open: ReadSignal<bool>,
+    set_plugins_open: WriteSignal<bool>,
 ) -> impl IntoView {
     view! {
         <header class="shrink-0 z-20 border-b border-border bg-card px-4 py-1.5 flex items-center gap-2 flex-wrap">
@@ -27,58 +26,9 @@ pub fn render_topbar(
             <span class="text-sm font-semibold text-foreground whitespace-nowrap">
                 {move || state.with(|s| s.repo_name.clone())}
             </span>
-            <Badge variant=BadgeVariant::Secondary size=crate::ui::badge::BadgeSize::Sm>
+            <Badge variant=BadgeVariant::Secondary size=crate::components::ui::badge::BadgeSize::Sm>
                 {move || state.with(|s| s.status_label.clone())}
             </Badge>
-
-            // Search
-            <input
-                id="library-search"
-                name="q"
-                placeholder="Search..."
-                class="h-7 w-40 border border-input bg-transparent px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/50"
-                value=move || state.with(|s| s.search.clone().unwrap_or_default())
-                on:change=move |event| {
-                    let value = event_target_value(&event);
-                    state.with(|s| {
-                        let mut route = RouteState::from_ui_state(s);
-                        route.search = optional_text(&value);
-                        route.active_id = None;
-                        route.selected_ids.clear();
-                        super::visit_route(route, set_state, set_events_open, true);
-                    });
-                }
-            />
-
-            // Category filter
-            <select
-                id="library-category"
-                name="category"
-                class="h-7 border border-input bg-transparent px-1.5 text-xs outline-none focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/50"
-                on:change=move |event| {
-                    let value = event_target_value(&event);
-                    state.with(|s| {
-                        let mut route = RouteState::from_ui_state(s);
-                        route.category = optional_text(&value);
-                        route.active_id = None;
-                        route.selected_ids.clear();
-                        super::visit_route(route, set_state, set_events_open, true);
-                    });
-                }
-            >
-                <option value="" selected=move || state.with(|s| s.category.is_none())>"All"</option>
-                {move || state.with(|s| {
-                    s.categories.iter().map(|cat| {
-                        let selected = s.category.as_deref() == Some(cat.path.as_str());
-                        view! { <option value=cat.path.clone() selected=selected>{cat.path.clone()}</option> }
-                    }).collect::<Vec<_>>()
-                })}
-            </select>
-
-            // Item count
-            <span class="text-xs text-muted-foreground hidden min-[900px]:inline">
-                {move || state.with(|s| format!("{}", s.items.len()))}
-            </span>
 
             // Spacer
             <div class="flex-1" />
@@ -140,14 +90,13 @@ pub fn render_topbar(
                     <button
                         type="button"
                         class="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
-                        attr:data-events-toggle="true"
                         on:click=move |_| {
-                            set_events_open.update(|v| *v = !*v);
+                            set_plugins_open.update(|v| *v = !*v);
                             close_view_menu();
                         }
                     >
-                        <span class="w-3 text-[10px]">{move || if events_open.get() { "✓" } else { "" }}</span>
-                        "Events"
+                        <span class="w-3 text-[10px]">{move || if plugins_open.get() { "✓" } else { "" }}</span>
+                        "Plugins"
                     </button>
                 </div>
             </div>
@@ -166,7 +115,7 @@ pub fn render_topbar(
 
                 {move || {
                     let s = state.with(|s| s.clone());
-                    render_watcher(&s, set_state, set_events_open)
+                    render_watcher(&s, set_state)
                 }}
 
                 {move || {
@@ -201,7 +150,6 @@ pub fn render_topbar(
 fn render_watcher(
     state: &UiState,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) -> impl IntoView + use<> {
     let watcher_paused = state.watcher_paused;
     let return_to = state.return_to.clone();
@@ -213,7 +161,7 @@ fn render_watcher(
             class="flex items-center gap-1"
             data-route-action="true"
             on:change=move |event| {
-                super::submit_changed_form(event, set_state, set_events_open);
+                super::submit_changed_form(event, set_state);
             }
         >
             <input type="hidden" name="return_to" value=return_to />

@@ -3,13 +3,12 @@
 use leptos::prelude::*;
 
 use crate::model::{RulesNotice, UiState};
-use crate::ui::button::{Button, ButtonVariant, ButtonSize};
+use crate::components::ui::button::{Button, ButtonVariant, ButtonSize};
 
 /// Render rules editor as a floating dialog overlay.
 pub fn render_rules_floating(
     state: &UiState,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
     set_rules_open: WriteSignal<bool>,
 ) -> impl IntoView + use<> {
     let return_to = state.return_to.clone();
@@ -39,7 +38,7 @@ pub fn render_rules_floating(
                         data-route-action="true"
                         on:submit=move |event| {
                             event.prevent_default();
-                            super::submit_action(event, set_state, set_events_open);
+                            super::submit_action(event, set_state);
                         }
                     >
                         <input type="hidden" name="return_to" value=return_to />
@@ -62,7 +61,6 @@ pub fn render_rules_floating(
 pub fn render_rules(
     state: &UiState,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) -> impl IntoView + use<> {
     let return_to = state.return_to.clone();
     let rules_text = state.rules_text.clone();
@@ -75,7 +73,7 @@ pub fn render_rules(
                 data-route-action="true"
                 on:submit=move |event| {
                     event.prevent_default();
-                    super::submit_action(event, set_state, set_events_open);
+                    super::submit_action(event, set_state);
                 }
             >
                 <input type="hidden" name="return_to" value=return_to />

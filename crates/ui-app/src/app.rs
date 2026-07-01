@@ -2,7 +2,7 @@
 
 use leptos::prelude::*;
 
-use crate::hooks::use_theme_mode::ThemeMode;
+use crate::components::hooks::use_theme_mode::ThemeMode;
 use crate::model::UiState;
 pub use crate::views;
 
@@ -34,39 +34,38 @@ pub fn document(initial_state: UiState) -> impl IntoView {
 /// Render the body children that are hydrated in the browser.
 #[must_use]
 pub fn body_app(initial_state: UiState) -> impl IntoView {
-    let initial_events_open = initial_state.tab == "events";
     let initial_detail_open = initial_state.active_id.is_some()
         || !initial_state.selected_ids.is_empty()
         || initial_state.tab == "rules"
         || initial_state.tab.starts_with("plugin:");
     let (state, set_state) = signal(initial_state);
-    let (events_open, set_events_open) = signal(initial_events_open);
     let (detail_open, set_detail_open) = signal(initial_detail_open);
     let (rules_open, set_rules_open) = signal(false);
+    let (plugins_open, set_plugins_open) = signal(false);
     let (context_menu, set_context_menu) = signal::<Option<ItemContextMenu>>(None);
 
     let _ = ThemeMode::init();
-    start_live_refresh(state, set_state, set_events_open);
+    start_live_refresh(state, set_state);
 
     view! {
         {move || state.with(state_json_script)}
         // Context menu overlay
         {move || state.with(|s| {
             views::context_menu::render_item_context_menu(
-                s, context_menu.get(), set_state, set_events_open, set_context_menu,
+                s, context_menu.get(), set_state, set_context_menu,
             )
         })}
         // Floating rules editor dialog
         {move || {
             if !rules_open.get() { return ().into_any(); }
             let s = state.with(|s| s.clone());
-            views::rules::render_rules_floating(&s, set_state, set_events_open, set_rules_open).into_any()
+            views::rules::render_rules_floating(&s, set_state, set_rules_open).into_any()
         }}
-        // Floating events dialog
+        // Floating plugin management dialog
         {move || {
-            if !events_open.get() { return ().into_any(); }
+            if !plugins_open.get() { return ().into_any(); }
             let s = state.with(|s| s.clone());
-            views::events::render_events_floating(&s, set_events_open).into_any()
+            views::plugins_admin::render_plugins_admin_floating(&s, set_plugins_open).into_any()
         }}
         // Rules notice toast
         {move || state.with(|s| views::rules::render_rules_notice(s.clone(), set_state))}
@@ -77,7 +76,7 @@ pub fn body_app(initial_state: UiState) -> impl IntoView {
                 views::topbar::close_view_menu();
             }
         >
-            {views::topbar::render_topbar(state, set_state, events_open, set_events_open, detail_open, set_detail_open, rules_open, set_rules_open)}
+            {views::topbar::render_topbar(state, set_state, detail_open, set_detail_open, rules_open, set_rules_open, plugins_open, set_plugins_open)}
             <div
                 id="localref-split"
                 class="flex-1 min-h-0 grid"
@@ -90,8 +89,8 @@ pub fn body_app(initial_state: UiState) -> impl IntoView {
                 }
             >
                 // Item table (always visible)
-                <div class="min-w-0 min-h-0 h-full overflow-auto">
-                    {views::sidebar::render_sidebar(state, set_state, set_events_open, set_context_menu)}
+                <div class="min-w-0 min-h-0 h-full overflow-hidden">
+                    {views::sidebar::render_sidebar(state, set_state, set_context_menu)}
                 </div>
                 // Resizer + detail panel (only when detail is open)
                 {move || {
@@ -107,9 +106,9 @@ pub fn body_app(initial_state: UiState) -> impl IntoView {
                                     on:click=move |_| set_detail_open.set(false)
                                 >"Close"</button>
                             </div>
-                            {views::detail::render_detail_tabs(state, set_state, set_events_open)}
+                            {views::detail::render_detail_tabs(state, set_state)}
                             <div>
-                                {views::detail::render_detail_body(state, set_state, set_events_open)}
+                                {views::detail::render_detail_body(state, set_state)}
                             </div>
                         </section>
                     }.into_any()
@@ -152,11 +151,10 @@ pub fn state_json_script(state: &UiState) -> AnyView {
 fn start_live_refresh(
     state: ReadSignal<UiState>,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) {
     #[cfg(feature = "hydrate")]
-    crate::client::start_live_refresh(state, set_state, set_events_open);
+    crate::client::start_live_refresh(state, set_state);
 
     #[cfg(not(feature = "hydrate"))]
-    let _ = (state, set_state, set_events_open);
+    let _ = (state, set_state);
 }

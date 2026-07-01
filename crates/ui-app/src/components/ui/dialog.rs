@@ -4,8 +4,8 @@ use leptos::prelude::*;
 use leptos_ui::clx;
 use tw_merge::*;
 
-use crate::hooks::use_random::use_random_id_for;
-use crate::ui::button::{Button, ButtonSize, ButtonVariant};
+use crate::components::hooks::use_random::use_random_id_for;
+use crate::components::ui::button::{Button, ButtonSize, ButtonVariant};
 
 mod components {
     use super::*;
@@ -78,6 +78,7 @@ pub fn DialogContent(
 ) -> impl IntoView {
     let ctx = expect_context::<DialogContext>();
     let merged_class = tw_merge!(
+        // "flex flex-col gap-4", // TODO 🐛 Bug when I try to have this.. Using DialogBody instead.
         "relative bg-background border rounded-2xl shadow-lg p-6 w-full max-w-[calc(100%-2rem)] max-h-[85vh] fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] z-100 transition-all duration-200 data-[state=closed]:opacity-0 data-[state=closed]:scale-95 data-[state=open]:opacity-100 data-[state=open]:scale-100",
         class
     );

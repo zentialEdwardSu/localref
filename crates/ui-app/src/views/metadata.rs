@@ -3,22 +3,21 @@
 use leptos::prelude::*;
 
 use crate::model::{CategorySummary, UiState};
-use crate::ui::badge::{Badge, BadgeVariant};
-use crate::ui::button::{Button, ButtonVariant, ButtonSize};
-use crate::ui::card::*;
+use crate::components::ui::badge::{Badge, BadgeVariant};
+use crate::components::ui::button::{Button, ButtonVariant, ButtonSize};
+use crate::components::ui::card::*;
 
 /// Render metadata + categories for active or selected items.
 pub fn render_metadata(
     state: &UiState,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) -> AnyView {
     let error_view = state.plugin_error.clone().map(|msg| view! {
         <div class="plugin-error" role="alert"><h3>"Plugin error"</h3><p>{msg}</p></div>
     });
 
     if !state.selected_ids.is_empty() {
-        let category_view = render_category_summary(state, set_state, set_events_open);
+        let category_view = render_category_summary(state, set_state);
         let plugin_slots = super::plugins::render_plugin_slots(state, "selection_page");
         return view! {
             <div class="p-4 grid gap-4">
@@ -29,7 +28,7 @@ pub fn render_metadata(
         }.into_any();
     }
 
-    let category_view = render_category_summary(state, set_state, set_events_open);
+    let category_view = render_category_summary(state, set_state);
     let plugin_slots = super::plugins::render_plugin_slots(state, "metadata_page");
 
     let fields = state.active_detail.as_ref().map(|detail| {
@@ -52,11 +51,11 @@ pub fn render_metadata(
                     <CardTitle>"Metadata"</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <form method="post" action="/ui/action" class="grid gap-3 min-[900px]:grid-cols-2"
+                    <form method="post" action="/ui/action" class="grid gap-3 @[500px]:grid-cols-2"
                         data-route-action="true"
                         on:submit=move |event| {
                             event.prevent_default();
-                            super::submit_action(event, set_state, set_events_open);
+                            super::submit_action(event, set_state);
                         }
                     >
                         <input type="hidden" name="return_to" value=return_to />
@@ -90,7 +89,7 @@ pub fn render_metadata(
     });
 
     view! {
-        <div class="p-4 grid gap-4">
+        <div class="p-4 grid gap-4" style="container-type: inline-size;">
             {error_view}
             {category_view}
             {fields.unwrap_or_else(|| empty_metadata(state).into_any())}
@@ -109,7 +108,7 @@ fn empty_metadata(state: &UiState) -> impl IntoView + use<> {
                 <CardTitle>"Metadata"</CardTitle>
             </CardHeader>
             <CardContent>
-                <form method="post" action="/ui/action" class="grid gap-3 min-[900px]:grid-cols-2">
+                <form method="post" action="/ui/action" class="grid gap-3 @[500px]:grid-cols-2">
                     <input type="hidden" name="return_to" value=return_to />
                     <input type="hidden" name="action" value="save_metadata" />
                     <input type="hidden" name="item_id" value="" />
@@ -157,7 +156,6 @@ fn field(label: &'static str, name: &'static str, value: String) -> impl IntoVie
 fn render_category_summary(
     state: &UiState,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) -> impl IntoView + use<> {
     let current = current_categories(state);
     let available: Vec<_> = available_categories(&state.categories, &current)
@@ -194,7 +192,7 @@ fn render_category_summary(
                             data-route-action="true"
                             on:submit=move |event| {
                                 event.prevent_default();
-                                super::submit_action(event, set_state, set_events_open);
+                                super::submit_action(event, set_state);
                             }
                         >
                             <input type="hidden" name="return_to" value=return_to />
@@ -212,17 +210,17 @@ fn render_category_summary(
                             </Button>
                         </form>
                         // Transfer grid
-                        <div class="grid min-[900px]:grid-cols-2 gap-3">
+                        <div class="grid @[500px]:grid-cols-2 gap-3">
                             <div>
                                 <h4 class="text-sm font-medium mb-2">"Current"</h4>
                                 {current_for_remove.into_iter().map(|path| {
-                                    category_row_owned(category_target_ids.clone(), return_to_remove.clone(), path, "remove_category", "Remove", set_state, set_events_open)
+                                    category_row_owned(category_target_ids.clone(), return_to_remove.clone(), path, "remove_category", "Remove", set_state)
                                 }).collect::<Vec<_>>()}
                             </div>
                             <div>
                                 <h4 class="text-sm font-medium mb-2">"Available"</h4>
                                 {available.into_iter().map(|cat| {
-                                    category_row_owned(category_target_ids2.clone(), return_to_add.clone(), cat.path, "add_category", "Add", set_state, set_events_open)
+                                    category_row_owned(category_target_ids2.clone(), return_to_add.clone(), cat.path, "add_category", "Add", set_state)
                                 }).collect::<Vec<_>>()}
                             </div>
                         </div>
@@ -241,7 +239,6 @@ fn category_row_owned(
     action: &'static str,
     label: &'static str,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) -> impl IntoView {
     let target_ids = category_target_ids;
 
@@ -252,7 +249,7 @@ fn category_row_owned(
             data-route-action="true"
             on:submit=move |event| {
                 event.prevent_default();
-                super::submit_action(event, set_state, set_events_open);
+                super::submit_action(event, set_state);
             }
         >
             <input type="hidden" name="return_to" value=return_to />

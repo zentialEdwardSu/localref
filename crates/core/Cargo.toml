@@ -3,14 +3,22 @@ name = "localref-core"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["server"]
+# Host-side daemon: filesystem orchestration, query database, REST router, and
+# the Win32 shell bridge. Disabled by lightweight consumers (e.g. the REST
+# client used by plugins) that only need the platform-neutral DTOs.
+server = ["dep:axum", "dep:http", "dep:redb", "dep:native-win32", "dep:cron"]
+
 [dependencies]
-axum = { workspace = true }
-http = { workspace = true }
-redb = { workspace = true }
+axum = { workspace = true, optional = true }
+cron = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+redb = { workspace = true, optional = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-native-win32 = { path = "../native-win32" }
+native-win32 = { path = "../native-win32", optional = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true }

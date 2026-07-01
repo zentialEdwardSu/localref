@@ -16,6 +16,10 @@ pub fn use_theme_mode() -> ThemeMode {
     use_context::<ThemeMode>().unwrap_or_else(ThemeMode::fallback)
 }
 
+/* ========================================================== */
+/*                     ✨ FUNCTIONS ✨                        */
+/* ========================================================== */
+
 impl ThemeMode {
     #[must_use]
     /// Initializes a new ThemeMode instance.
@@ -24,19 +28,20 @@ impl ThemeMode {
 
         provide_context(theme_mode);
 
-        // Use an Effect so browser-only storage and media-query APIs are not
-        // evaluated during server rendering.
+        // Use Effect to handle browser-only initialization
         Effect::new(move |_| {
             let initial = Self::get_storage_state().unwrap_or(Self::prefers_dark_mode());
             theme_mode.state.set(initial);
-            Self::sync_document(initial);
         });
 
         theme_mode
     }
 
     pub fn toggle(&self) {
-        self.set(!self.state.get_untracked());
+        self.state.update(|state| {
+            *state = !*state;
+            Self::set_storage_state(*state);
+        });
     }
 
     pub fn set_dark(&self) {
@@ -51,7 +56,6 @@ impl ThemeMode {
     pub fn set(&self, dark: bool) {
         self.state.set(dark);
         Self::set_storage_state(dark);
-        Self::sync_document(dark);
     }
 
     #[must_use]
@@ -101,16 +105,6 @@ impl ThemeMode {
     fn set_storage_state(state: bool) {
         if let Some(storage) = Self::get_storage() {
             storage.set(LOCALSTORAGE_KEY, state.to_string().as_str()).ok();
-        }
-    }
-
-    /// Keep the root class in sync immediately after an imperative theme change.
-    fn sync_document(dark: bool) {
-        let Some(root) = document().document_element() else { return };
-        if dark {
-            root.class_list().add_1("dark").ok();
-        } else {
-            root.class_list().remove_1("dark").ok();
         }
     }
 }

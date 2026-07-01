@@ -316,6 +316,24 @@ Rust plugins can use the `localref-plugin-sdk` crate, which wraps the
 parsing argv and emitting the result envelope. Plugins in other languages make
 raw HTTP requests to the same base URL.
 
+### Depending on the SDK
+
+The SDK is platform-neutral: it pulls in only `localref-client` plus serde,
+tokio, and reqwest — never the host's database, web-server, or Win32 crates —
+so it builds on any OS. An out-of-tree plugin author adds it as a git
+dependency:
+
+```toml
+# Cargo.toml
+[dependencies]
+localref-plugin-sdk = { git = "https://github.com/<org>/localref", rev = "<commit>" }
+tokio = { version = "1", features = ["full"] }
+```
+
+The SDK uses edition 2024 and the same nightly toolchain as the workspace, so a
+consuming plugin needs a compatible toolchain (a `rust-toolchain.toml` pinning
+the nightly channel is the simplest way to match it).
+
 ### Logging into the unified log
 
 A plugin can write into Localref's unified log (the same JSONL log + in-memory

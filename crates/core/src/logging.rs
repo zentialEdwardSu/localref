@@ -494,7 +494,7 @@ mod tests {
         let ts = ts_rfc3339(SystemTime::UNIX_EPOCH);
         assert_eq!(ts, "1970-01-01T00:00:00.000Z");
         let next_day = ts_rfc3339(
-            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(86_400),
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_hours(24),
         );
         assert_eq!(next_day, "1970-01-02T00:00:00.000Z");
     }

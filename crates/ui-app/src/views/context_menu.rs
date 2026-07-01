@@ -10,7 +10,6 @@ pub fn render_item_context_menu(
     state: &UiState,
     menu: Option<ItemContextMenu>,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
     set_context_menu: WriteSignal<Option<ItemContextMenu>>,
 ) -> AnyView {
     let Some(menu) = menu else { return ().into_any() };
@@ -48,7 +47,7 @@ pub fn render_item_context_menu(
                                     on:submit=move |event| {
                                         event.prevent_default();
                                         set_context_menu.set(None);
-                                        super::submit_action(event, set_state, set_events_open);
+                                        super::submit_action(event, set_state);
                                     }
                                 >
                                     <input type="hidden" name="return_to" value=open_return_to />
@@ -74,7 +73,7 @@ pub fn render_item_context_menu(
                     on:submit=move |event| {
                         event.prevent_default();
                         set_context_menu.set(None);
-                        super::submit_action(event, set_state, set_events_open);
+                        super::submit_action(event, set_state);
                     }
                 >
                     <input type="hidden" name="return_to" value=return_to.clone() />
@@ -87,7 +86,7 @@ pub fn render_item_context_menu(
             </div>
 
             // Plugin menu items
-            {render_context_plugin_items(state, &menu, &return_to, set_state, set_events_open, set_context_menu)}
+            {render_context_plugin_items(state, &menu, &return_to, set_state, set_context_menu)}
         </aside>
     }.into_any()
 }
@@ -98,7 +97,6 @@ fn render_context_plugin_items(
     menu: &ItemContextMenu,
     return_to: &str,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
     set_context_menu: WriteSignal<Option<ItemContextMenu>>,
 ) -> AnyView {
     if state.plugin_menu_items.is_empty() {
@@ -121,7 +119,7 @@ fn render_context_plugin_items(
                         on:submit=move |event| {
                             event.prevent_default();
                             set_context_menu.set(None);
-                            super::submit_action(event, set_state, set_events_open);
+                            super::submit_action(event, set_state);
                         }
                     >
                         <input type="hidden" name="return_to" value=rt />

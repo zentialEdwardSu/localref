@@ -85,6 +85,8 @@ pub struct UiModel {
     pub(crate) plugin_slots: Vec<PluginPageDef>,
     /// Stored active declarative plugin page.
     pub(crate) plugin_active_page: Option<PluginPageDef>,
+    /// All discovered plugins with enable state, for the management page.
+    pub(crate) plugins_admin: Vec<crate::model::PluginAdminRow>,
 }
 
 /// Floating feedback shown after saving automatic-classification rules.
@@ -105,6 +107,7 @@ impl UiModel {
         daemon: &LocalrefDaemon,
         mut query: UiQuery,
         plugins: &[DiscoveredPlugin],
+        disabled: &std::collections::BTreeSet<String>,
     ) -> localref_core::error::Result<Self> {
         let all_items = daemon.list_items()?;
         let items = filtered_items(
@@ -149,10 +152,25 @@ impl UiModel {
         let category_target_ids =
             category_target_ids(&selected_ids, active_id.as_deref());
 
-        // Build plugin mount data from discovered plugins.
-        let plugin_tabs = build_plugin_tabs(plugins);
-        let plugin_buttons = build_plugin_buttons(plugins);
-        let plugin_menu_items = build_plugin_menu_items(plugins);
+        // Build plugin mount data from enabled plugins only; disabled plugins
+        // are filtered out of all UI surfacing.
+        let enabled_plugins: Vec<DiscoveredPlugin> = plugins
+            .iter()
+            .filter(|plugin| !disabled.contains(plugin.name()))
+            .cloned()
+            .collect();
+        let plugin_tabs = build_plugin_tabs(&enabled_plugins);
+        let plugin_buttons = build_plugin_buttons(&enabled_plugins);
+        let plugin_menu_items = build_plugin_menu_items(&enabled_plugins);
+        // The management page lists every discovered plugin, enabled or not.
+        let plugins_admin = plugins
+            .iter()
+            .map(|plugin| crate::model::PluginAdminRow {
+                name: plugin.name().to_string(),
+                description: plugin.manifest.description.clone(),
+                enabled: !disabled.contains(plugin.name()),
+            })
+            .collect();
 
         Ok(Self {
             query,
@@ -174,6 +192,7 @@ impl UiModel {
             plugin_menu_items,
             plugin_slots: Vec::new(),
             plugin_active_page: None,
+            plugins_admin,
         })
     }
 

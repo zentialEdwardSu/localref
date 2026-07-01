@@ -13,7 +13,7 @@ use crate::route::{RouteState, state_url};
 
 /// Hydrate the server-rendered Localref document body.
 pub fn hydrate() -> Result<(), JsValue> {
-    crate::hooks::use_scroll_lock::init();
+    crate::components::hooks::use_scroll_lock::init();
     let state = initial_state()?;
     leptos::mount::hydrate_body(move || app::body_app(state));
     attach_plugin_form_listeners()?;
@@ -102,15 +102,12 @@ fn attach_plugin_form_listeners() -> Result<(), JsValue> {
 pub fn visit_route(
     route: RouteState,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
     push_history: bool,
 ) {
     wasm_bindgen_futures::spawn_local(async move {
         match fetch_state(&route).await {
             Ok(state) => {
-                let events_open = state.tab == "events";
                 set_state.set(state);
-                set_events_open.set(events_open);
                 if push_history {
                     if let Err(error) = push_route(&route) {
                         web_sys::console::error_1(&error);
@@ -133,7 +130,6 @@ pub fn visit_route(
 pub fn start_live_refresh(
     state: ReadSignal<UiState>,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) {
     let Ok(source) = web_sys::EventSource::new("/ui/events") else {
         return;
@@ -143,7 +139,7 @@ pub fn start_live_refresh(
     let on_change: Closure<dyn Fn(web_sys::MessageEvent)> =
         Closure::new(move |_event: web_sys::MessageEvent| {
             let route = state.with_untracked(RouteState::from_ui_state);
-            visit_route(route, set_state, set_events_open, false);
+            visit_route(route, set_state, false);
         });
     // Named SSE events dispatch to listeners, not `onmessage`.
     if let Err(error) = source.add_event_listener_with_callback(
@@ -162,7 +158,6 @@ pub fn start_live_refresh(
 pub fn submit_action(
     event: leptos::ev::SubmitEvent,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) {
     let Some(target) = event.target() else {
         return;
@@ -173,9 +168,7 @@ pub fn submit_action(
     wasm_bindgen_futures::spawn_local(async move {
         match submit_form(form).await {
             Ok((state, url)) => {
-                let events_open = state.tab == "events";
                 set_state.set(state);
-                set_events_open.set(events_open);
                 if let Err(error) = replace_url(&url) {
                     web_sys::console::error_1(&error);
                 }
@@ -189,7 +182,6 @@ pub fn submit_action(
 pub fn submit_changed_form(
     event: leptos::ev::Event,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) {
     let Some(target) = event.target() else {
         return;
@@ -203,9 +195,7 @@ pub fn submit_changed_form(
     wasm_bindgen_futures::spawn_local(async move {
         match submit_form(form).await {
             Ok((state, url)) => {
-                let events_open = state.tab == "events";
                 set_state.set(state);
-                set_events_open.set(events_open);
                 if let Err(error) = replace_url(&url) {
                     web_sys::console::error_1(&error);
                 }
@@ -221,7 +211,6 @@ pub fn upload_input_files(
     item_id: String,
     return_to: String,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) {
     let Some(target) = event.target() else {
         return;
@@ -233,7 +222,7 @@ pub fn upload_input_files(
         return;
     };
     input.set_value("");
-    upload_file_list(files, item_id, return_to, set_state, set_events_open);
+    upload_file_list(files, item_id, return_to, set_state);
 }
 
 /// Upload files dropped on the files pane and refresh hydrated state.
@@ -242,13 +231,12 @@ pub fn upload_dropped_files(
     item_id: String,
     return_to: String,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) {
     let Some(files) = event.data_transfer().and_then(|data| data.files())
     else {
         return;
     };
-    upload_file_list(files, item_id, return_to, set_state, set_events_open);
+    upload_file_list(files, item_id, return_to, set_state);
 }
 
 /// Remove rules-result query keys after the notice is dismissed.
@@ -469,7 +457,6 @@ fn upload_file_list(
     item_id: String,
     return_to: String,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) {
     if files.length() == 0 || item_id.trim().is_empty() {
         return;
@@ -477,9 +464,7 @@ fn upload_file_list(
     wasm_bindgen_futures::spawn_local(async move {
         match upload_files(files, item_id, return_to).await {
             Ok((state, url)) => {
-                let events_open = state.tab == "events";
                 set_state.set(state);
-                set_events_open.set(events_open);
                 if let Err(error) = replace_url(&url) {
                     web_sys::console::error_1(&error);
                 }

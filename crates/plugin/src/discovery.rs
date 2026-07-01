@@ -47,7 +47,7 @@ pub fn discover_plugins(plugins_dir: &Path) -> Vec<DiscoveredPlugin> {
     let plugins: Vec<DiscoveredPlugin> = entries
         .filter_map(std::result::Result::ok)
         .filter(|entry| {
-            entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
+            entry.file_type().is_ok_and(|ft| ft.is_dir())
         })
         .filter_map(|entry| load_plugin(&entry.path()))
         .collect();

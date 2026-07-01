@@ -2152,6 +2152,7 @@ name = "localref-core"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "cron",
  "http",
  "native-win32",
  "redb",

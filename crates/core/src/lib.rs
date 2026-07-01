@@ -15,46 +15,78 @@
 #![warn(clippy::excessive_precision)]
 #![warn(clippy::missing_docs_in_private_items)]
 
-pub mod config;
 pub mod error;
-pub mod lock;
 pub mod logging;
 pub mod model;
+
+#[cfg(feature = "server")]
+pub mod config;
+#[cfg(feature = "server")]
+pub mod lock;
+#[cfg(feature = "server")]
 pub mod platformfs;
+#[cfg(feature = "server")]
+pub mod plugin_state;
+#[cfg(feature = "server")]
 pub mod rest;
+#[cfg(feature = "server")]
 pub mod rest_files;
+#[cfg(feature = "server")]
 pub mod rules;
+#[cfg(feature = "server")]
 pub mod scan;
+#[cfg(feature = "server")]
+pub mod schedule;
+#[cfg(feature = "server")]
 pub mod storage;
+#[cfg(feature = "server")]
 pub mod types;
 
+#[cfg(feature = "server")]
 use std::borrow::Borrow;
+#[cfg(feature = "server")]
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "server")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "server")]
+use std::str::FromStr;
+#[cfg(feature = "server")]
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "server")]
 use crate::error::{LocalrefError, Result};
+#[cfg(feature = "server")]
 use crate::model::{
     Creator, ItemFilesDocument, LogKind, Metadata, MetadataDocument,
     MetadataFile, MetadataFiles, MetadataImport, MetadataState, MetadataTags,
 };
+#[cfg(feature = "server")]
 use crate::platformfs::{LibraryFs, sanitize_ntfs_component};
+#[cfg(feature = "server")]
 use crate::rules::RuleSet;
+#[cfg(feature = "server")]
 use crate::scan::{AllEntryKind, CatEntryKind, scan_library};
+#[cfg(feature = "server")]
 use crate::storage::{
     CategorySummary, ItemDocument, SearchHit, StorageDb, path_from_scan_target,
 };
+#[cfg(feature = "server")]
 use crate::types::{
     CategoryPath, ConnectorAttachment, ConnectorImport, ImportOutcome, ItemId,
 };
+#[cfg(feature = "server")]
 use lock::LockManager;
+#[cfg(feature = "server")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "server")]
 use tokio::sync::broadcast;
 
 /// Category assigned to connector imports that match no classification rule.
+#[cfg(feature = "server")]
 const UNMATCHED_CATEGORY: &str = "unmatched";
 
 /// Import pipeline rooted at one Localref library.
+#[cfg(feature = "server")]
 #[derive(Clone, Debug)]
 pub struct ImportPipeline {
     /// Stored fs.
@@ -64,6 +96,7 @@ pub struct ImportPipeline {
 }
 
 /// Daemon task kinds executed by the core task queue.
+#[cfg(feature = "server")]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DaemonTask {
@@ -147,6 +180,7 @@ pub enum DaemonTask {
 }
 
 /// State of one daemon task.
+#[cfg(feature = "server")]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DaemonTaskState {
@@ -161,6 +195,7 @@ pub enum DaemonTaskState {
 }
 
 /// Daemon pause mode.
+#[cfg(feature = "server")]
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize,
 )]
@@ -177,6 +212,7 @@ pub enum PauseMode {
 }
 
 /// Record returned by daemon task APIs.
+#[cfg(feature = "server")]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DaemonTaskRecord {
     /// Monotonic in-memory task id.
@@ -192,6 +228,7 @@ pub struct DaemonTaskRecord {
 }
 
 /// Current daemon queue status.
+#[cfg(feature = "server")]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DaemonStatus {
     /// Whether a task is currently running.
@@ -206,6 +243,7 @@ pub struct DaemonStatus {
 
 /// A library mutation that completed successfully, published to hook
 /// subscribers so the host can spawn plugins bound to the matching event.
+#[cfg(feature = "server")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DaemonEvent {
     /// A new item was imported and indexed.
@@ -235,8 +273,12 @@ pub enum DaemonEvent {
         /// Number of indexed items after the scan.
         indexed_items: usize,
     },
+    /// The runtime schedule set changed (registered or removed). Not a plugin
+    /// hook event; consumed only by the cron scheduler to reload schedules.
+    SchedulesChanged,
 }
 
+#[cfg(feature = "server")]
 impl DaemonEvent {
     /// Stable `snake_case` wire name passed to plugins as `hook <event>`.
     #[must_use]
@@ -247,11 +289,13 @@ impl DaemonEvent {
             Self::MetadataPatched { .. } => "metadata_patched",
             Self::CategoryChanged { .. } => "category_changed",
             Self::ScanCompleted { .. } => "scan_completed",
+            Self::SchedulesChanged => "schedules_changed",
         }
     }
 }
 
 /// Core daemon facade used by user-facing APIs.
+#[cfg(feature = "server")]
 #[derive(Clone)]
 pub struct LocalrefDaemon {
     /// Stored storage.
@@ -264,6 +308,7 @@ pub struct LocalrefDaemon {
     event_tx: broadcast::Sender<DaemonEvent>,
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug)]
 /// Internal representation for task queue state.
 struct TaskQueueState {
@@ -279,6 +324,7 @@ struct TaskQueueState {
     paused_modes: BTreeSet<PauseMode>,
 }
 
+#[cfg(feature = "server")]
 impl LocalrefDaemon {
     /// Create a daemon facade backed by query storage.
     #[must_use]
@@ -321,6 +367,12 @@ impl LocalrefDaemon {
         Ok(Self::new(StorageDb::open(library_root)?))
     }
 
+    /// Return the library root this daemon operates on.
+    #[must_use]
+    pub fn library_root(&self) -> &Path {
+        &self.library_root
+    }
+
     /// Return the raw automatic-classification rules text.
     /// # Errors
     ///
@@ -346,6 +398,66 @@ impl LocalrefDaemon {
         let path = dir.join("rules.toml");
         std::fs::write(&path, text)
             .map_err(|source| LocalrefError::io(&path, source))
+    }
+
+    /// Return all runtime-registered scheduled plugin calls.
+    /// # Errors
+    ///
+    /// Returns an error when the schedules file cannot be read or parsed.
+    pub fn list_schedules(&self) -> Result<Vec<crate::schedule::ScheduledCall>> {
+        crate::schedule::load(&self.library_root)
+    }
+
+    /// Register a scheduled plugin call, rejecting duplicate ids and invalid
+    /// cron expressions, then publish [`DaemonEvent::SchedulesChanged`].
+    /// # Errors
+    ///
+    /// Returns a [`LocalrefError::Rule`] when the id is empty, already exists,
+    /// or the cron expression does not parse; or an IO/serialization error when
+    /// the schedules file cannot be written.
+    pub fn register_schedule(
+        &self,
+        call: crate::schedule::ScheduledCall,
+    ) -> Result<()> {
+        if call.id.trim().is_empty() {
+            return Err(LocalrefError::Rule("schedule id must not be empty".to_string()));
+        }
+        if cron::Schedule::from_str(&call.schedule).is_err() {
+            return Err(LocalrefError::Rule(format!(
+                "invalid cron expression: {}",
+                call.schedule
+            )));
+        }
+        let mut schedules = crate::schedule::load(&self.library_root)?;
+        if schedules.iter().any(|existing| existing.id == call.id) {
+            return Err(LocalrefError::Rule(format!(
+                "schedule id already exists: {}",
+                call.id
+            )));
+        }
+        schedules.push(call);
+        crate::schedule::save(&self.library_root, &schedules)?;
+        self.emit_event(DaemonEvent::SchedulesChanged);
+        Ok(())
+    }
+
+    /// Remove a scheduled call by id, publishing [`DaemonEvent::SchedulesChanged`]
+    /// when a schedule was actually removed.
+    ///
+    /// Returns `true` when a matching schedule was found and removed.
+    /// # Errors
+    ///
+    /// Returns an error when the schedules file cannot be read or written.
+    pub fn remove_schedule(&self, id: &str) -> Result<bool> {
+        let mut schedules = crate::schedule::load(&self.library_root)?;
+        let before = schedules.len();
+        schedules.retain(|existing| existing.id != id);
+        let removed = schedules.len() != before;
+        if removed {
+            crate::schedule::save(&self.library_root, &schedules)?;
+            self.emit_event(DaemonEvent::SchedulesChanged);
+        }
+        Ok(removed)
     }
 
     /// Return daemon status and recent task history.
@@ -1527,6 +1639,7 @@ impl LocalrefDaemon {
     }
 }
 
+#[cfg(feature = "server")]
 impl ImportPipeline {
     /// Create an import pipeline for a library root.
     pub fn new(library_root: impl Into<PathBuf>) -> Self {
@@ -2138,6 +2251,7 @@ impl ImportPipeline {
 }
 
 /// Internal helper for metadata from import.
+#[cfg(feature = "server")]
 fn metadata_from_import(
     item_id: &ItemId,
     import: &ConnectorImport,
@@ -2211,6 +2325,7 @@ fn metadata_from_import(
     }
 }
 
+#[cfg(feature = "server")]
 impl From<&serde_json::Value> for MetadataTags {
     fn from(raw: &serde_json::Value) -> Self {
         let items = raw
@@ -2232,6 +2347,7 @@ impl From<&serde_json::Value> for MetadataTags {
     }
 }
 
+#[cfg(feature = "server")]
 impl TryFrom<&serde_json::Value> for Creator {
     type Error = ();
 
@@ -2250,6 +2366,7 @@ impl TryFrom<&serde_json::Value> for Creator {
 }
 
 /// Return the first non-empty string field from a JSON object.
+#[cfg(feature = "server")]
 fn json_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
         value
@@ -2262,6 +2379,7 @@ fn json_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
 }
 
 /// Internal helper for metadata from all directory.
+#[cfg(feature = "server")]
 fn metadata_from_all_directory(
     item_id: &ItemId,
     title: &str,
@@ -2310,6 +2428,7 @@ fn metadata_from_all_directory(
 }
 
 /// Internal helper for unique item file path.
+#[cfg(feature = "server")]
 fn unique_item_file_path(item_dir: &Path, filename: &str) -> PathBuf {
     let candidate = item_dir.join(filename);
     if !candidate.exists() {
@@ -2333,6 +2452,7 @@ fn unique_item_file_path(item_dir: &Path, filename: &str) -> PathBuf {
 }
 
 /// Internal helper for direct files.
+#[cfg(feature = "server")]
 fn direct_files(item_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = std::fs::read_dir(item_dir)
         .map_err(|source| LocalrefError::io(item_dir, source))?
@@ -2355,6 +2475,7 @@ fn direct_files(item_dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Internal helper for pdf candidates.
+#[cfg(feature = "server")]
 fn pdf_candidates(item_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(direct_files(item_dir)?
         .into_iter()
@@ -2367,6 +2488,7 @@ fn pdf_candidates(item_dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Internal helper for mime type for path.
+#[cfg(feature = "server")]
 fn mime_type_for_path(path: &Path) -> Option<String> {
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(extension) if extension.eq_ignore_ascii_case("pdf") => {
@@ -2383,6 +2505,7 @@ fn mime_type_for_path(path: &Path) -> Option<String> {
 }
 
 /// Internal helper for manual item id.
+#[cfg(feature = "server")]
 fn manual_item_id(title: &str) -> Result<ItemId> {
     let component = sanitize_ntfs_component(title)?;
     ItemId::new(format!("lr:manual:{component}"))
@@ -2390,6 +2513,7 @@ fn manual_item_id(title: &str) -> Result<ItemId> {
 }
 
 /// Internal helper for ensure inside all.
+#[cfg(feature = "server")]
 fn ensure_inside_all(root: &Path, item_dir: &Path) -> Result<()> {
     let all_dir = root
         .join("All")
@@ -2408,6 +2532,7 @@ fn ensure_inside_all(root: &Path, item_dir: &Path) -> Result<()> {
 }
 
 /// Internal helper for category summary for.
+#[cfg(feature = "server")]
 fn category_summary_for(
     storage: &StorageDb,
     category: &CategoryPath,
@@ -2423,6 +2548,7 @@ fn category_summary_for(
 }
 
 /// Internal helper for relative to root.
+#[cfg(feature = "server")]
 fn relative_to_root(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -2431,6 +2557,7 @@ fn relative_to_root(root: &Path, path: &Path) -> String {
 }
 
 /// Internal helper for write attachment.
+#[cfg(feature = "server")]
 fn write_attachment(
     fs: &LibraryFs,
     item_dir: &std::path::Path,
@@ -2462,6 +2589,7 @@ fn write_attachment(
     Ok(path)
 }
 
+#[cfg(feature = "server")]
 impl ConnectorImport {
     /// Return imported attachments, adding a URL shortcut for webpages.
     #[must_use]
@@ -2488,6 +2616,7 @@ impl ConnectorImport {
 }
 
 /// Internal helper for connector item id.
+#[cfg(feature = "server")]
 fn connector_item_id(import: &ConnectorImport) -> Result<ItemId> {
     let source = import
         .item

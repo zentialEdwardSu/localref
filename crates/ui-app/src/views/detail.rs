@@ -10,7 +10,6 @@ use crate::route::RouteState;
 pub fn render_detail_tabs(
     state: ReadSignal<UiState>,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) -> impl IntoView {
     view! {
         <nav class="flex items-center gap-1 border-b border-border px-4">
@@ -18,8 +17,8 @@ pub fn render_detail_tabs(
                 let s = state.with(|s| s.clone());
                 if s.selected_ids.is_empty() {
                     view! {
-                        {tab_button("Metadata".to_string(), "metadata".to_string(), &s, set_state, set_events_open)}
-                        {tab_button("Files".to_string(), "files".to_string(), &s, set_state, set_events_open)}
+                        {tab_button("Metadata".to_string(), "metadata".to_string(), &s, set_state)}
+                        {tab_button("Files".to_string(), "files".to_string(), &s, set_state)}
                     }.into_any()
                 } else {
                     ().into_any()
@@ -27,7 +26,7 @@ pub fn render_detail_tabs(
             }}
             {move || {
                 let s = state.with(|s| s.clone());
-                tab_button("Rules".to_string(), "rules".to_string(), &s, set_state, set_events_open)
+                tab_button("Rules".to_string(), "rules".to_string(), &s, set_state)
             }}
             {move || {
                 let tabs: Vec<_> = state.with(|s| {
@@ -35,7 +34,7 @@ pub fn render_detail_tabs(
                 });
                 let s = state.with(|s| s.clone());
                 tabs.into_iter().map(|(label, key)| {
-                    tab_button(label, key, &s, set_state, set_events_open)
+                    tab_button(label, key, &s, set_state)
                 }).collect::<Vec<_>>()
             }}
         </nav>
@@ -48,7 +47,6 @@ fn tab_button(
     tab: String,
     state: &UiState,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) -> impl IntoView + use<> {
     let route_state = state.clone();
     let is_active = state.tab == tab;
@@ -66,7 +64,7 @@ fn tab_button(
                 event.prevent_default();
                 let mut route = RouteState::from_ui_state(&route_state);
                 route.tab.clone_from(&tab_clone);
-                super::visit_route(route, set_state, set_events_open, true);
+                super::visit_route(route, set_state, true);
             }
         >
             {label}
@@ -79,14 +77,13 @@ fn tab_button(
 pub fn render_detail_body(
     state: ReadSignal<UiState>,
     set_state: WriteSignal<UiState>,
-    set_events_open: WriteSignal<bool>,
 ) -> impl IntoView {
     move || state.with(|s| {
         if !s.selected_ids.is_empty()
             && s.tab != "rules"
             && !s.tab.starts_with("plugin:")
         {
-            return super::metadata::render_metadata(s, set_state, set_events_open);
+            return super::metadata::render_metadata(s, set_state);
         }
         if s.tab.starts_with("plugin:")
             && let Some(page) = s.plugin_active_page.clone()
@@ -105,9 +102,9 @@ pub fn render_detail_body(
             }.into_any();
         }
         match s.tab.as_str() {
-            "files" => super::files::render_files(s, set_state, set_events_open).into_any(),
-            "rules" => super::rules::render_rules(s, set_state, set_events_open).into_any(),
-            _ => super::metadata::render_metadata(s, set_state, set_events_open),
+            "files" => super::files::render_files(s, set_state).into_any(),
+            "rules" => super::rules::render_rules(s, set_state).into_any(),
+            _ => super::metadata::render_metadata(s, set_state),
         }
     })
 }
