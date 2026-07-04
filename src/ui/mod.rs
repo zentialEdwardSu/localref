@@ -1,7 +1,0 @@
-//! Shared desktop-facing REST types for Localref.
-//!
-//! The browser-rendered UI is served by the `ui-app` crate. This module keeps
-//! the tray and CLI REST DTO exports in one place.
-
-pub use crate::tray::rest_bridge::RestClient;
-pub use localref_client::DashboardSnapshot;
