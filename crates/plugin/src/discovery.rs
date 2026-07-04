@@ -46,9 +46,7 @@ pub fn discover_plugins(plugins_dir: &Path) -> Vec<DiscoveredPlugin> {
     );
     let plugins: Vec<DiscoveredPlugin> = entries
         .filter_map(std::result::Result::ok)
-        .filter(|entry| {
-            entry.file_type().is_ok_and(|ft| ft.is_dir())
-        })
+        .filter(|entry| entry.file_type().is_ok_and(|ft| ft.is_dir()))
         .filter_map(|entry| load_plugin(&entry.path()))
         .collect();
     let names: Vec<&str> =
@@ -119,7 +117,10 @@ fn load_plugin(dir: &Path) -> Option<DiscoveredPlugin> {
 // Single caller (`load_plugin`); kept separate for clarity of the fallback
 // chain.
 #[allow(clippy::single_call_fn)]
-fn resolve_executable(dir: &Path, manifest: &PluginManifest) -> Option<PathBuf> {
+fn resolve_executable(
+    dir: &Path,
+    manifest: &PluginManifest,
+) -> Option<PathBuf> {
     manifest
         .executable
         .as_deref()
@@ -145,7 +146,10 @@ fn resolve_executable(dir: &Path, manifest: &PluginManifest) -> Option<PathBuf> 
 /// Load and parse the optional declarative UI spec, logging parse failures.
 // Single caller (`load_plugin`); kept separate for direct testing.
 #[allow(clippy::single_call_fn)]
-fn load_ui_spec(dir: &Path, manifest: &PluginManifest) -> Option<PluginUiSpec> {
+fn load_ui_spec(
+    dir: &Path,
+    manifest: &PluginManifest,
+) -> Option<PluginUiSpec> {
     let ui_name = manifest.ui.as_deref().unwrap_or("ui.toml");
     std::fs::read_to_string(dir.join(ui_name)).ok().and_then(|text| {
         match PluginUiSpec::parse(&text) {

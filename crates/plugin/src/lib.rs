@@ -23,7 +23,8 @@ pub use discovery::{DiscoveredPlugin, discover_plugins};
 pub use error::PluginError;
 pub use invoke::{invoke_action, invoke_cron, invoke_hook};
 pub use manifest::{
-    CronJob, FieldKind, HookBinding, HookEvent, PluginManifest, PluginUiSpec,
-    PreviewSpec, UiAction, UiDisplay, UiField, UiMount, UiPage, UiTarget,
+    CronJob, ExtraFieldDecl, FieldKind, HookBinding, HookEvent, PluginManifest,
+    PluginUiSpec, PreviewSpec, UiAction, UiDataRequirement, UiDisplay, UiField,
+    UiMount, UiPage, UiTarget,
 };
 pub use state::{ActionArgs, HookArgs, RunOutput};

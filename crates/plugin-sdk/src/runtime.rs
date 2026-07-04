@@ -110,7 +110,13 @@ pub fn parse_args(
             if endpoint.is_empty() {
                 return None;
             }
-            Some(Invocation::Run { action, endpoint, selected, active, params })
+            Some(Invocation::Run {
+                action,
+                endpoint,
+                selected,
+                active,
+                params,
+            })
         }
         _ => None,
     }
@@ -149,11 +155,16 @@ mod tests {
     #[test]
     fn parses_run_action_with_ids_and_params() {
         let argv = [
-            "run", "export_bibtex",
-            "--endpoint", "http://127.0.0.1:8787",
-            "--selected", "a,b",
-            "--param", "format=bibtex",
-            "--param", "note=a = b",
+            "run",
+            "export_bibtex",
+            "--endpoint",
+            "http://127.0.0.1:8787",
+            "--selected",
+            "a,b",
+            "--param",
+            "format=bibtex",
+            "--param",
+            "note=a = b",
         ]
         .map(str::to_string);
         let Invocation::Run { action, endpoint, selected, active, params } =
@@ -173,10 +184,14 @@ mod tests {
     #[test]
     fn parses_hook_with_item_and_category() {
         let argv = [
-            "hook", "item_imported",
-            "--endpoint", "http://127.0.0.1:24817",
-            "--item", "lr:zotero:abc",
-            "--category", "Wireless/RIS",
+            "hook",
+            "item_imported",
+            "--endpoint",
+            "http://127.0.0.1:24817",
+            "--item",
+            "lr:zotero:abc",
+            "--category",
+            "Wireless/RIS",
         ]
         .map(str::to_string);
         let Invocation::Hook { event, endpoint, item, category } =
