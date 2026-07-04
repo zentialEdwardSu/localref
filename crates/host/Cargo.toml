@@ -1,0 +1,31 @@
+[package]
+name = "localref-host"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+name = "localref_host"
+
+[dependencies]
+axum = { workspace = true }
+chrono = { workspace = true }
+cron = { workspace = true }
+csc = { path = "../csc" }
+localref_core = { package = "localref-core", path = "../core" }
+localref_plugin = { package = "localref-plugin", path = "../plugin" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+user-notify = "0.4.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_UI_Shell"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { workspace = true }
+
+[lints]
+workspace = true
