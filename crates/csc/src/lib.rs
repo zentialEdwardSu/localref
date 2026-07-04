@@ -436,6 +436,21 @@ pub async fn serve(
     sink: Arc<dyn ConnectorImportSink>,
 ) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    serve_on(listener, sink).await
+}
+
+/// Serve the connector router on an already-bound listener.
+///
+/// Lets a caller bind the port up front (surfacing a bind error synchronously)
+/// and hand the open listener here to run the server.
+///
+/// # Errors
+///
+/// Returns an error when the server stops abnormally.
+pub async fn serve_on(
+    listener: tokio::net::TcpListener,
+    sink: Arc<dyn ConnectorImportSink>,
+) -> std::io::Result<()> {
     axum::serve(listener, router(sink)).await
 }
 

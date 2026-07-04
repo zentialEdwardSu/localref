@@ -159,14 +159,12 @@ impl ConnectorImportSink for DaemonConnectorSink {
                     title,
                     abstract_note: None,
                     doi: None,
-                    raw: attachment.raw_metadata.clone().unwrap_or_else(|| {
-                        serde_json::json!({ "title": attachment.filename })
-                    }),
+                    raw: attachment.raw_metadata.clone().unwrap_or_else(
+                        || serde_json::json!({ "title": attachment.filename }),
+                    ),
                 };
-                let standalone = ConnectorImport {
-                    item,
-                    attachments: vec![attachment],
-                };
+                let standalone =
+                    ConnectorImport { item, attachments: vec![attachment] };
                 let outcome = self
                     .daemon
                     .import_connector_item(standalone)
