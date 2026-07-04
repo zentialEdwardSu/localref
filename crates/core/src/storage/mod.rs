@@ -7,7 +7,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::{LocalrefError, Result};
 use crate::model::Metadata;
@@ -19,6 +21,14 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 const ITEMS_TABLE: TableDefinition<&str, &[u8]> =
     TableDefinition::new("items");
 
+/// Secondary index over declared-indexed plugin `extra` fields.
+///
+/// Keyed by `"namespace.key"`; value is a JSON map of `field value` → sorted
+/// unique item ids that carry it. Rebuilt from metadata alongside the items
+/// table, and populated only for fields a plugin declared as indexed.
+const EXTRA_INDEX_TABLE: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("extra_index");
+
 /// Rebuildable query database for one Localref library.
 #[derive(Clone)]
 pub struct StorageDb {
@@ -26,6 +36,11 @@ pub struct StorageDb {
     library_root: PathBuf,
     /// Stored database.
     database: Arc<Database>,
+    /// Plugin-declared indexed `extra` fields as `namespace.key`. Values of
+    /// these fields participate in search and the secondary index. Shared across
+    /// clones so a rescan updating the set is seen by every daemon clone (the
+    /// servers, workers, and FFI search all hold clones).
+    indexed_fields: Arc<RwLock<BTreeSet<String>>>,
 }
 
 impl StorageDb {
@@ -43,13 +58,41 @@ impl StorageDb {
             .or_else(|_| Database::open(&db_path))
             .map_err(|error| LocalrefError::Storage(error.to_string()))?;
 
-        Ok(Self { library_root, database: Arc::new(database) })
+        Ok(Self {
+            library_root,
+            database: Arc::new(database),
+            indexed_fields: Arc::new(RwLock::new(BTreeSet::new())),
+        })
     }
 
     /// Return the library root this database indexes.
     #[must_use]
     pub fn library_root(&self) -> &Path {
         &self.library_root
+    }
+
+    /// Replace the set of plugin-declared indexed `extra` fields.
+    ///
+    /// Each entry is a `"namespace.key"` string. Callers pass the union of all
+    /// discovered plugins' declared-indexed fields; a following
+    /// [`Self::rebuild_from_all`] repopulates the secondary index accordingly.
+    ///
+    /// Takes `&self`: the set lives behind a shared lock so an update from a
+    /// plugin rescan is observed by every [`StorageDb`] clone.
+    pub fn set_indexed_fields(&self, fields: BTreeSet<String>) {
+        *self
+            .indexed_fields
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = fields;
+    }
+
+    /// The plugin-declared indexed `extra` fields (`namespace.key`).
+    #[must_use]
+    pub fn indexed_fields(&self) -> BTreeSet<String> {
+        self.indexed_fields
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Rebuild item records from `All/*/metadata.toml`.
@@ -70,6 +113,20 @@ impl StorageDb {
             for document in &documents {
                 let json = serde_json::to_vec(document)?;
                 table.insert(document.id.as_str(), json.as_slice()).map_err(
+                    |error| LocalrefError::Storage(error.to_string()),
+                )?;
+            }
+        }
+        // Rebuild the secondary extra index for declared-indexed fields.
+        let _ = write.delete_table(EXTRA_INDEX_TABLE);
+        {
+            let index = build_extra_index(&documents, &self.indexed_fields());
+            let mut table = write
+                .open_table(EXTRA_INDEX_TABLE)
+                .map_err(|error| LocalrefError::Storage(error.to_string()))?;
+            for (field, values) in &index {
+                let json = serde_json::to_vec(values)?;
+                table.insert(field.as_str(), json.as_slice()).map_err(
                     |error| LocalrefError::Storage(error.to_string()),
                 )?;
             }
@@ -148,11 +205,19 @@ impl StorageDb {
         if needle.is_empty() {
             return Ok(Vec::new());
         }
+        let indexed = self.indexed_fields();
 
         let hits = self
             .list_items()?
             .into_iter()
-            .filter(|item| item_matches(item, &needle))
+            .filter(|item| {
+                item_matches(item, &needle)
+                    || indexed_extra_matches(
+                        item,
+                        &needle,
+                        &indexed,
+                    )
+            })
             .map(|item| SearchHit {
                 id: item.id,
                 title: item.title,
@@ -231,7 +296,21 @@ pub fn scan_all_documents(library_root: &Path) -> Result<Vec<ItemDocument>> {
         let metadata_text = fs::read_to_string(&metadata_path)
             .map_err(|source| LocalrefError::io(&metadata_path, source))?;
         let metadata_revision = Metadata::revision_for_text(&metadata_text);
-        let metadata = Metadata::from_toml_str(&metadata_text)?;
+        // A single malformed or invalid metadata.toml must not abort the whole
+        // rebuild: skip the offending item (logging it) so the rest of the
+        // library stays queryable and mutable.
+        let metadata = match Metadata::from_toml_str(&metadata_text) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                tracing::warn!(
+                    target: "localref::storage",
+                    path = %metadata_path.display(),
+                    %error,
+                    "skipping item with unreadable metadata.toml during rebuild",
+                );
+                continue;
+            }
+        };
         documents.push(document_from_metadata(
             library_root,
             &item_dir,
@@ -239,7 +318,6 @@ pub fn scan_all_documents(library_root: &Path) -> Result<Vec<ItemDocument>> {
             metadata_revision,
         ));
     }
-    attach_categories(library_root, &mut documents)?;
     Ok(documents)
 }
 
@@ -258,6 +336,10 @@ pub fn document_from_metadata(
         .replace('\\', "/");
     let authors = metadata.author_names();
     let files = metadata.files;
+    let extra = metadata.extra;
+    let mut categories = metadata.categories;
+    categories.sort();
+    categories.dedup();
 
     ItemDocument {
         id: metadata.id,
@@ -274,7 +356,8 @@ pub fn document_from_metadata(
         tags: metadata.tags.items,
         venue: metadata.venue,
         year: metadata.year,
-        categories: Vec::new(),
+        categories,
+        extra,
     }
 }
 
@@ -283,21 +366,36 @@ pub fn document_from_metadata(
 /// # Errors
 ///
 /// Returns an error when category links cannot be scanned.
-pub fn attach_categories(
+/// Observe category membership as projected by live `Cat/` junctions.
+///
+/// Returns one `(item_id, category)` pair per `Cat/<category>/<name>` junction
+/// that resolves into an indexed item's `All/` directory. Membership is matched
+/// by canonicalized path, mirroring how the pre-metadata design derived
+/// categories. Category membership is no longer *stored* here — it lives in
+/// `metadata.toml` — but scan reconciliation needs to know which junctions are
+/// currently present on disk to diff them against metadata and the manifest.
+///
+/// `items` supplies each candidate item's id and library-relative `object_path`.
+///
+/// # Errors
+///
+/// Returns an error when the category tree cannot be scanned.
+pub fn scan_cat_memberships(
     library_root: &Path,
-    documents: &mut [ItemDocument],
-) -> Result<()> {
+    items: &[(String, String)],
+) -> Result<Vec<(String, String)>> {
     let cat_entries = scan_cat(library_root)?;
-    let item_paths: Vec<_> = documents
+    let item_paths: Vec<_> = items
         .iter()
-        .map(|document| {
+        .map(|(id, object_path)| {
             (
-                document.object_path.clone(),
-                library_root.join(&document.object_path).canonicalize().ok(),
+                id.clone(),
+                library_root.join(object_path).canonicalize().ok(),
             )
         })
         .collect();
 
+    let mut memberships = Vec::new();
     for entry in cat_entries
         .into_iter()
         .filter(|entry| entry.kind == CatEntryKind::ItemLink)
@@ -311,23 +409,16 @@ pub fn attach_categories(
         let target = path_from_scan_target(library_root, &target_path)
             .canonicalize()
             .ok();
-        let Some((document_index, _)) =
-            item_paths.iter().enumerate().find(|(_, (_, item_path))| {
-                item_path.is_some() && item_path == &target
-            })
-        else {
+        let Some((id, _)) = item_paths.iter().find(|(_, item_path)| {
+            item_path.is_some() && item_path == &target
+        }) else {
             continue;
         };
-        let category = category.as_str().to_string();
-        if !documents[document_index].categories.contains(&category) {
-            documents[document_index].categories.push(category);
-        }
+        memberships.push((id.clone(), category.as_str().to_string()));
     }
-
-    for document in documents {
-        document.categories.sort();
-    }
-    Ok(())
+    memberships.sort();
+    memberships.dedup();
+    Ok(memberships)
 }
 
 /// Scan empty category directories that are not represented by item links.
@@ -395,6 +486,64 @@ pub fn item_matches(item: &ItemDocument, needle: &str) -> bool {
             .any(|category| category.to_lowercase().contains(needle))
 }
 
+/// Return whether any declared-indexed `extra` field value matches the needle.
+///
+/// Only fields listed in `indexed_fields` (as `"namespace.key"`) are consulted,
+/// so undeclared `extra` data stays out of search.
+#[must_use]
+pub fn indexed_extra_matches(
+    item: &ItemDocument,
+    needle: &str,
+    indexed_fields: &BTreeSet<String>,
+) -> bool {
+    indexed_fields.iter().any(|field| {
+        let Some((namespace, key)) = field.split_once('.') else {
+            return false;
+        };
+        item.extra
+            .get(namespace)
+            .and_then(|ns| ns.get(key))
+            .is_some_and(|value| value.to_lowercase().contains(needle))
+    })
+}
+
+/// Build the secondary extra index: `"namespace.key"` → (value → item ids).
+///
+/// Only declared-indexed fields are included; values map to the sorted, unique
+/// ids of items carrying them.
+#[must_use]
+pub fn build_extra_index(
+    documents: &[ItemDocument],
+    indexed_fields: &BTreeSet<String>,
+) -> BTreeMap<String, BTreeMap<String, Vec<String>>> {
+    let mut index: BTreeMap<String, BTreeMap<String, Vec<String>>> =
+        BTreeMap::new();
+    for field in indexed_fields {
+        let Some((namespace, key)) = field.split_once('.') else {
+            continue;
+        };
+        for document in documents {
+            if let Some(value) =
+                document.extra.get(namespace).and_then(|ns| ns.get(key))
+            {
+                index
+                    .entry(field.clone())
+                    .or_default()
+                    .entry(value.clone())
+                    .or_default()
+                    .push(document.id.clone());
+            }
+        }
+    }
+    for values in index.values_mut() {
+        for ids in values.values_mut() {
+            ids.sort();
+            ids.dedup();
+        }
+    }
+    index
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,25 +599,22 @@ kind = "attachment"
     }
 
     #[test]
-    fn rebuild_derives_categories_from_cat_links() {
+    fn rebuild_reads_categories_from_metadata() {
         let temp = tempfile::tempdir().unwrap();
         let item_dir = temp.path().join("All").join("Paper One");
         fs::create_dir_all(&item_dir).unwrap();
+        // Categories now live in metadata.toml, not in Cat/ junctions. A rebuild
+        // must reflect membership without any junction present.
         fs::write(
             item_dir.join("metadata.toml"),
             r#"
 id = "lr:test:cat"
 type = "journalArticle"
 title = "Categorized Paper"
+categories = ["Wireless/RIS"]
 "#,
         )
         .unwrap();
-        crate::platformfs::LibraryFs::new(temp.path())
-            .create_category_link(
-                &crate::types::CategoryPath::new("Wireless/RIS").unwrap(),
-                &item_dir,
-            )
-            .unwrap();
 
         let db = StorageDb::open(temp.path()).unwrap();
         assert_eq!(db.rebuild_from_all().unwrap(), 1);

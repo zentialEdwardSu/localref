@@ -27,8 +27,8 @@ pub const DEFAULT_REST_ENDPOINT: &str = "http://127.0.0.1:24817";
 pub struct LocalrefConfig {
     /// Stored source path.
     source_path: PathBuf,
-    /// Stored repo name.
-    repo_name: String,
+    /// Stored workspace display name.
+    workspace_name: String,
     /// Stored library root.
     library_root: PathBuf,
     /// Stored rest addr.
@@ -41,6 +41,10 @@ pub struct LocalrefConfig {
     desktop_start_hidden: bool,
     /// Stored desktop quiet start.
     desktop_quiet_start: bool,
+    /// Stored desktop DataGrid column visibility.
+    desktop_visible_columns: Vec<String>,
+    /// Stored desktop detail panel width in logical pixels.
+    desktop_detail_width: u32,
     /// Stored plugins dir.
     plugins_dir: PathBuf,
 }
@@ -48,8 +52,9 @@ pub struct LocalrefConfig {
 #[derive(Debug, Default, Deserialize)]
 /// Internal representation for config file.
 struct ConfigFile {
-    /// Stored repo name.
-    repo_name: Option<String>,
+    /// Stored workspace display name. `repo_name` is accepted for migration.
+    #[serde(alias = "repo_name")]
+    workspace_name: Option<String>,
     /// Stored library root.
     library_root: Option<PathBuf>,
     /// Stored rest.
@@ -83,6 +88,10 @@ struct DesktopConfigFile {
     start_hidden: Option<bool>,
     /// Stored quiet start.
     quiet_start: Option<bool>,
+    /// Stored visible optional DataGrid columns.
+    visible_columns: Option<Vec<String>>,
+    /// Stored detail panel width in logical pixels.
+    detail_width: Option<u32>,
 }
 
 impl LocalrefConfig {
@@ -119,15 +128,27 @@ impl LocalrefConfig {
     /// Serialize this configuration to the on-disk TOML representation.
     #[must_use]
     fn to_toml(&self) -> String {
-        let repo_name = self.repo_name.replace('\\', "\\\\").replace('"', "\\\"");
-        let library_root = self.library_root.to_string_lossy().replace('\'', "''");
+        let workspace_name = escape_toml_basic(&self.workspace_name);
+        // A TOML literal (single-quoted) string cannot contain an apostrophe at
+        // all, so emit the path as a basic (double-quoted) string with the
+        // backslashes and quotes escaped. This round-trips Windows paths and
+        // usernames containing `'` (e.g. C:\Users\O'Brien\libroot).
+        let library_root =
+            escape_toml_basic(&self.library_root.to_string_lossy());
+        let visible_columns = self
+            .desktop_visible_columns
+            .iter()
+            .map(|column| format!("\"{}\"", escape_toml_basic(column)))
+            .collect::<Vec<_>>()
+            .join(", ");
         format!(
-            "repo_name = \"{repo_name}\"\nlibrary_root = '{library_root}'\n\n[rest]\naddr = \"{}\"\nendpoint = \"{}\"\n\n[csc]\naddr = \"{}\"\n\n[desktop]\nstart_hidden = {}\nquiet_start = {}\n",
+            "workspace_name = \"{workspace_name}\"\nlibrary_root = \"{library_root}\"\n\n[rest]\naddr = \"{}\"\nendpoint = \"{}\"\n\n[csc]\naddr = \"{}\"\n\n[desktop]\nstart_hidden = {}\nquiet_start = {}\nvisible_columns = [{visible_columns}]\ndetail_width = {}\n",
             self.rest_addr,
             self.rest_endpoint,
             self.csc_addr,
             self.desktop_start_hidden,
-            self.desktop_quiet_start
+            self.desktop_quiet_start,
+            self.desktop_detail_width
         )
     }
 
@@ -154,6 +175,53 @@ impl LocalrefConfig {
         self.library_root = root;
     }
 
+    /// Change the workspace display name.
+    pub fn set_workspace_name(
+        &mut self,
+        name: impl Into<String>,
+    ) -> Result<(), String> {
+        let name = name.into().trim().to_string();
+        if name.is_empty() {
+            return Err("workspace_name must not be empty".to_string());
+        }
+        self.workspace_name = name;
+        Ok(())
+    }
+
+    /// Backward-compatible alias for callers that still use repository naming.
+    pub fn set_repo_name(
+        &mut self,
+        name: impl Into<String>,
+    ) -> Result<(), String> {
+        self.set_workspace_name(name)
+    }
+
+    /// Change the REST bind address after validating it.
+    pub fn set_rest_addr(&mut self, value: &str) -> Result<(), String> {
+        self.rest_addr = parse_addr(value, "rest.addr")?;
+        Ok(())
+    }
+
+    /// Change the public REST endpoint used by plugins.
+    pub fn set_rest_endpoint(
+        &mut self,
+        value: impl Into<String>,
+    ) -> Result<(), String> {
+        let value = value.into().trim().trim_end_matches('/').to_string();
+        if !(value.starts_with("http://") || value.starts_with("https://")) {
+            return Err("rest.endpoint must start with http:// or https://"
+                .to_string());
+        }
+        self.rest_endpoint = value;
+        Ok(())
+    }
+
+    /// Change the Zotero Connector-compatible bind address.
+    pub fn set_csc_addr(&mut self, value: &str) -> Result<(), String> {
+        self.csc_addr = parse_addr(value, "csc.addr")?;
+        Ok(())
+    }
+
     /// Return the file that supplied this configuration.
     #[must_use]
     pub fn source_path(&self) -> &Path {
@@ -166,10 +234,16 @@ impl LocalrefConfig {
         &self.library_root
     }
 
-    /// Return the configured repository display name.
+    /// Return the configured workspace display name.
+    #[must_use]
+    pub fn workspace_name(&self) -> &str {
+        &self.workspace_name
+    }
+
+    /// Backward-compatible alias for the workspace display name.
     #[must_use]
     pub fn repo_name(&self) -> &str {
-        &self.repo_name
+        self.workspace_name()
     }
 
     /// Return the REST API bind address for server binaries.
@@ -202,6 +276,44 @@ impl LocalrefConfig {
         self.desktop_quiet_start
     }
 
+    /// Change whether the desktop app starts without showing its main window.
+    pub fn set_desktop_start_hidden(&mut self, value: bool) {
+        self.desktop_start_hidden = value;
+    }
+
+    /// Change whether desktop/headless startup suppresses nonessential output.
+    pub fn set_desktop_quiet_start(&mut self, value: bool) {
+        self.desktop_quiet_start = value;
+    }
+
+    /// Return the optional DataGrid columns visible in the desktop library.
+    #[must_use]
+    pub fn desktop_visible_columns(&self) -> &[String] {
+        &self.desktop_visible_columns
+    }
+
+    /// Replace the optional DataGrid columns visible in the desktop library.
+    pub fn set_desktop_visible_columns(&mut self, columns: Vec<String>) {
+        const KNOWN_COLUMNS: [&str; 5] =
+            ["Author", "Venue", "Year", "Type", "Categories"];
+        self.desktop_visible_columns = KNOWN_COLUMNS
+            .into_iter()
+            .filter(|known| columns.iter().any(|column| column == known))
+            .map(str::to_string)
+            .collect();
+    }
+
+    /// Return the desktop detail panel width in logical pixels.
+    #[must_use]
+    pub fn desktop_detail_width(&self) -> u32 {
+        self.desktop_detail_width
+    }
+
+    /// Change the desktop detail panel width, constrained to a usable range.
+    pub fn set_desktop_detail_width(&mut self, width: u32) {
+        self.desktop_detail_width = width.clamp(340, 620);
+    }
+
     /// Return the directory where plugins are discovered.
     #[must_use]
     pub fn plugins_dir(&self) -> &Path {
@@ -217,14 +329,20 @@ impl LocalrefConfig {
             Some(path) => path,
             None => home_dir()?.join(".localref").join("libroot"),
         };
-        let repo_name = file
-            .repo_name
+        let workspace_name = file
+            .workspace_name
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "Localref".to_string());
         let rest = file.rest.unwrap_or_default();
         let csc = file.csc.unwrap_or_default();
         let desktop = file.desktop.unwrap_or_default();
+        let visible_columns = desktop.visible_columns.unwrap_or_else(|| {
+            ["Author", "Venue", "Year", "Type"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        });
         let rest_addr = parse_addr(
             rest.addr.as_deref().unwrap_or(DEFAULT_REST_ADDR),
             "rest.addr",
@@ -236,17 +354,23 @@ impl LocalrefConfig {
             "csc.addr",
         )?;
         let plugins_dir = library_root.join(".localref").join("plugins");
-        Ok(Self {
+        let mut config = Self {
             source_path,
-            repo_name,
+            workspace_name,
             library_root,
             rest_addr,
             rest_endpoint,
             csc_addr,
             desktop_start_hidden: desktop.start_hidden.unwrap_or(true),
             desktop_quiet_start: desktop.quiet_start.unwrap_or(true),
+            desktop_visible_columns: Vec::new(),
+            desktop_detail_width: desktop.detail_width.unwrap_or(420),
             plugins_dir,
-        })
+        };
+        config.set_desktop_visible_columns(visible_columns);
+        let detail_width = config.desktop_detail_width;
+        config.set_desktop_detail_width(detail_width);
+        Ok(config)
     }
 }
 
@@ -266,6 +390,30 @@ fn parse_addr(value: &str, field: &'static str) -> Result<SocketAddr, String> {
     value
         .parse()
         .map_err(|error| format!("{field} must be a socket address: {error}"))
+}
+
+/// Escape a string for embedding in a TOML basic (double-quoted) string.
+///
+/// Handles the escapes that occur in the values this module writes — backslash,
+/// double quote, and the control characters TOML requires be escaped. Basic
+/// strings (unlike literal strings) can represent any value, including paths
+/// containing apostrophes.
+fn escape_toml_basic(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                out.push_str(&format!("\\u{:04X}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Internal helper for home dir.
@@ -289,7 +437,7 @@ mod tests {
         let config = LocalrefConfig::load_from_path(&temp).unwrap();
 
         assert_eq!(config.source_path(), temp.as_path());
-        assert_eq!(config.repo_name(), "Localref");
+        assert_eq!(config.workspace_name(), "Localref");
         let default_root =
             home_dir().unwrap().join(".localref").join("libroot");
         assert_eq!(config.library_root(), default_root);
@@ -302,8 +450,13 @@ mod tests {
         assert_eq!(config.csc_addr().to_string(), DEFAULT_CSC_ADDR);
         assert!(config.desktop_start_hidden());
         assert!(config.desktop_quiet_start());
+        assert_eq!(
+            config.desktop_visible_columns(),
+            ["Author", "Venue", "Year", "Type"]
+        );
+        assert_eq!(config.desktop_detail_width(), 420);
         let written = std::fs::read_to_string(&temp).unwrap();
-        assert!(written.contains("repo_name = \"Localref\""));
+        assert!(written.contains("workspace_name = \"Localref\""));
         assert!(written.contains("library_root = "));
         assert!(written.contains("[rest]"));
         assert!(written.contains("[csc]"));
@@ -321,7 +474,7 @@ mod tests {
             &temp,
             r#"
 library_root = "D:/LocalrefLibrary"
-repo_name = "Research Vault"
+workspace_name = "Research Vault"
 
 [rest]
 addr = "127.0.0.1:3001"
@@ -333,13 +486,15 @@ addr = "127.0.0.1:3002"
 [desktop]
 start_hidden = false
 quiet_start = false
+visible_columns = ["Author", "Categories", "Unknown"]
+detail_width = 580
 "#,
         )
         .unwrap();
 
         let config = LocalrefConfig::load_from_path(&temp).unwrap();
 
-        assert_eq!(config.repo_name(), "Research Vault");
+        assert_eq!(config.workspace_name(), "Research Vault");
         assert_eq!(config.library_root(), Path::new("D:/LocalrefLibrary"));
         assert_eq!(
             config.plugins_dir(),
@@ -350,6 +505,8 @@ quiet_start = false
         assert_eq!(config.csc_addr().to_string(), "127.0.0.1:3002");
         assert!(!config.desktop_start_hidden());
         assert!(!config.desktop_quiet_start());
+        assert_eq!(config.desktop_visible_columns(), ["Author", "Categories"]);
+        assert_eq!(config.desktop_detail_width(), 580);
 
         std::fs::remove_file(temp).unwrap();
     }
@@ -373,7 +530,7 @@ quiet_start = false
             &temp,
             r#"
 library_root = "D:/Vault"
-repo_name = "Round Trip"
+workspace_name = "Round Trip"
 
 [rest]
 addr = "127.0.0.1:3001"
@@ -399,6 +556,27 @@ quiet_start = false
     }
 
     #[test]
+    fn save_round_trips_library_root_with_apostrophe() {
+        // A Windows username containing an apostrophe must survive save/reload.
+        // A TOML literal string cannot hold `'`, so this caught the regression
+        // where to_toml wrote an unparseable `'...O''Brien...'` value.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        let mut config = LocalrefConfig::load_from_path(&path).unwrap();
+
+        let root = Path::new(r"C:\Users\O'Brien\.localref\libroot");
+        config.set_library_root(root);
+        config.set_workspace_name("O'Brien's \"Vault\"").unwrap();
+        config.save().unwrap();
+
+        // The saved file must be valid TOML that reloads to the same value.
+        let reloaded = LocalrefConfig::load_from_path(&path).unwrap();
+        assert_eq!(reloaded.library_root(), root);
+        assert_eq!(reloaded.workspace_name(), "O'Brien's \"Vault\"");
+        assert_eq!(config, reloaded);
+    }
+
+    #[test]
     fn set_library_root_rederives_plugins_dir() {
         let temp = tempfile_path("localref-config-setroot.toml");
         let mut config = LocalrefConfig::load_from_path(&temp).unwrap();
@@ -410,6 +588,53 @@ quiet_start = false
             config.plugins_dir(),
             Path::new("E:/NewLib/.localref/plugins")
         );
+
+        std::fs::remove_file(temp).unwrap();
+    }
+
+    #[test]
+    fn editable_settings_validate_and_round_trip() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        let mut config = LocalrefConfig::load_from_path(&path).unwrap();
+
+        config.set_workspace_name("Research Library").unwrap();
+        config.set_library_root(temp.path().join("library"));
+        config.set_rest_addr("127.0.0.1:25000").unwrap();
+        config.set_rest_endpoint("http://127.0.0.1:25000/").unwrap();
+        config.set_csc_addr("127.0.0.1:24000").unwrap();
+        config.set_desktop_start_hidden(false);
+        config.set_desktop_quiet_start(false);
+        config.set_desktop_visible_columns(vec![
+            "Venue".to_string(),
+            "Categories".to_string(),
+        ]);
+        config.set_desktop_detail_width(700);
+        config.save().unwrap();
+
+        let loaded = LocalrefConfig::load_from_path(&path).unwrap();
+        assert_eq!(loaded.workspace_name(), "Research Library");
+        assert_eq!(loaded.rest_addr().to_string(), "127.0.0.1:25000");
+        assert_eq!(loaded.rest_endpoint(), "http://127.0.0.1:25000");
+        assert_eq!(loaded.csc_addr().to_string(), "127.0.0.1:24000");
+        assert!(!loaded.desktop_start_hidden());
+        assert!(!loaded.desktop_quiet_start());
+        assert_eq!(loaded.desktop_visible_columns(), ["Venue", "Categories"]);
+        assert_eq!(loaded.desktop_detail_width(), 620);
+    }
+
+    #[test]
+    fn legacy_repo_name_is_migrated_to_workspace_name_on_save() {
+        let temp = tempfile_path("localref-config-legacy-name.toml");
+        std::fs::write(&temp, "repo_name = \"Legacy Library\"\n").unwrap();
+
+        let config = LocalrefConfig::load_from_path(&temp).unwrap();
+        assert_eq!(config.workspace_name(), "Legacy Library");
+        config.save().unwrap();
+
+        let written = std::fs::read_to_string(&temp).unwrap();
+        assert!(written.contains("workspace_name = \"Legacy Library\""));
+        assert!(!written.contains("repo_name"));
 
         std::fs::remove_file(temp).unwrap();
     }

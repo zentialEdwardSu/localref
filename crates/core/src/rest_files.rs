@@ -4,8 +4,6 @@
 //! files. They only accept paths relative to an indexed item directory.
 
 use std::path::{Component, Path, PathBuf};
-#[cfg(not(windows))]
-use std::process::Command;
 
 use crate::LocalrefDaemon;
 use crate::error::{LocalrefError, Result};
@@ -63,18 +61,11 @@ pub(super) fn item_file_path(
 }
 
 /// Open a file or directory with the platform's default viewer.
-#[cfg(windows)]
+///
+/// Uses the cross-platform [`open`] crate (Windows shell, `open` on macOS,
+/// `xdg-open` on Linux) so the daemon no longer needs a native shell bridge.
 pub(super) fn open_system_path(path: &Path) -> Result<()> {
-    native_win32::open_path(path)
-        .map_err(|source| LocalrefError::Platform(source.to_string()))
-}
-
-/// Open a file or directory with the platform's default viewer.
-#[cfg(not(windows))]
-pub fn open_system_path(path: &Path) -> Result<()> {
-    let mut command = system_open_command(path);
-    command.spawn().map_err(|source| LocalrefError::io(path, source))?;
-    Ok(())
+    open::that(path).map_err(|source| LocalrefError::io(path, source))
 }
 
 /// Internal helper for collect entries.
@@ -112,20 +103,6 @@ fn collect_entries(
         }
     }
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn system_open_command(path: &Path) -> Command {
-    let mut command = Command::new("open");
-    command.arg(path);
-    command
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn system_open_command(path: &Path) -> Command {
-    let mut command = Command::new("xdg-open");
-    command.arg(path);
-    command
 }
 
 #[cfg(test)]

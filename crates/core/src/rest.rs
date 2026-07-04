@@ -51,6 +51,18 @@ pub struct PatchMetadataRequest {
     pub metadata: Metadata,
 }
 
+/// Request body for setting one plugin `extra` value on an item.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct SetExtraRequest {
+    /// Plugin namespace owning the field.
+    pub namespace: String,
+    /// Field key within the namespace.
+    pub key: String,
+    /// New value, or `null`/absent to remove the key.
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
 /// Request body for importing an existing `All/<dir>` directory.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct ImportFolderRequest {
@@ -128,6 +140,7 @@ pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
             "/api/items/{id}/metadata",
             get(get_metadata).patch(patch_metadata),
         )
+        .route("/api/items/{id}/extra", post(set_item_extra))
         .route("/api/items/{id}/categories", post(add_item_category))
         .route(
             "/api/items/{id}/categories/{*category}",
@@ -194,7 +207,8 @@ pub async fn health() -> Response {
 /// cannot emit `error`-level records that imply a host failure. Always returns
 /// `204 No Content`.
 pub async fn plugin_log(Json(request): Json<PluginLogRequest>) -> Response {
-    let target = format!("localref::plugin::{}", sanitize_plugin(&request.plugin));
+    let target =
+        format!("localref::plugin::{}", sanitize_plugin(&request.plugin));
     let level = capped_level(&request.level);
     crate::logging::log_dynamic(
         &target,
@@ -441,6 +455,25 @@ pub async fn patch_metadata(
         &id,
         &request.expected_revision,
         &request.metadata,
+    ) {
+        Ok(item) => Json(item).into_response(),
+        Err(error) => {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
+    }
+}
+
+/// Set or clear one plugin `extra` value on an item.
+pub async fn set_item_extra(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(request): Json<SetExtraRequest>,
+) -> Response {
+    match state.daemon.set_item_extra(
+        &id,
+        &request.namespace,
+        &request.key,
+        request.value.as_deref(),
     ) {
         Ok(item) => Json(item).into_response(),
         Err(error) => {
@@ -1042,11 +1075,12 @@ title = "Drop Target"
         let before = daemon.get_item("lr:zotero:refile-1").unwrap().unwrap();
         assert_eq!(before.categories, vec!["unmatched"]);
 
+        daemon.create_category(CategoryPath::new("Inbox").unwrap()).unwrap();
         daemon
-            .create_category(CategoryPath::new("Inbox").unwrap())
-            .unwrap();
-        daemon
-            .add_item_category("lr:zotero:refile-1", CategoryPath::new("Inbox").unwrap())
+            .add_item_category(
+                "lr:zotero:refile-1",
+                CategoryPath::new("Inbox").unwrap(),
+            )
             .unwrap();
 
         let after = daemon.get_item("lr:zotero:refile-1").unwrap().unwrap();
@@ -1342,13 +1376,21 @@ title = "Distinct"
         assert_eq!(invalid, StatusCode::BAD_REQUEST);
 
         // Delete the schedule, then a second delete reports 404.
-        let deleted =
-            request_status(&app, "DELETE", "/api/schedules/nightly", Value::Null)
-                .await;
+        let deleted = request_status(
+            &app,
+            "DELETE",
+            "/api/schedules/nightly",
+            Value::Null,
+        )
+        .await;
         assert_eq!(deleted, StatusCode::NO_CONTENT);
-        let missing =
-            request_status(&app, "DELETE", "/api/schedules/nightly", Value::Null)
-                .await;
+        let missing = request_status(
+            &app,
+            "DELETE",
+            "/api/schedules/nightly",
+            Value::Null,
+        )
+        .await;
         assert_eq!(missing, StatusCode::NOT_FOUND);
     }
 
@@ -1425,5 +1467,271 @@ title = "Distinct"
         assert!(response.status().is_success(), "{}", response.status());
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// Write a minimal managed item under `All/` and return its directory.
+    fn write_item(root: &std::path::Path, id: &str, title: &str) -> PathBuf {
+        let item_dir = root.join("All").join(title);
+        std::fs::create_dir_all(&item_dir).unwrap();
+        std::fs::write(
+            item_dir.join("metadata.toml"),
+            format!("id = \"{id}\"\ntype = \"document\"\ntitle = \"{title}\"\n"),
+        )
+        .unwrap();
+        item_dir
+    }
+
+    #[test]
+    fn deleting_a_junction_then_scanning_drops_category_and_tombstones() {
+        // (a) A user removing a category by deleting its Cat/ junction is
+        // honored on the next scan: the category leaves metadata and a
+        // tombstone is written so it will not be re-filed.
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        write_item(temp.path(), "lr:test:drop", "Paper");
+        daemon.scan_all().unwrap();
+        daemon
+            .add_item_category(
+                "lr:test:drop",
+                CategoryPath::new("Inbox").unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            daemon.get_item("lr:test:drop").unwrap().unwrap().categories,
+            vec!["Inbox"],
+        );
+
+        // Simulate the user deleting the junction in their file manager.
+        std::fs::remove_dir(temp.path().join("Cat").join("Inbox").join("Paper"))
+            .unwrap();
+        daemon.scan_all().unwrap();
+
+        let item = daemon.get_item("lr:test:drop").unwrap().unwrap();
+        assert!(
+            item.categories.is_empty(),
+            "deleting the junction must drop the category from metadata",
+        );
+        let metadata = std::fs::read_to_string(
+            temp.path().join("All").join("Paper").join("metadata.toml"),
+        )
+        .unwrap();
+        let parsed = Metadata::from_toml_str(&metadata).unwrap();
+        assert_eq!(
+            parsed.state.removed_categories,
+            vec!["Inbox".to_string()],
+            "a tombstone must record the deliberate removal",
+        );
+    }
+
+    #[test]
+    fn relocating_the_library_reprojects_junctions_instead_of_wiping_categories()
+    {
+        // NTFS Cat/ junctions do not survive a copy/restore/sync, but
+        // metadata.toml and cat-manifest.toml do. A scan after a relocation
+        // must NOT read the missing junctions as deliberate user deletions and
+        // strip+tombstone every membership — it must re-project from metadata.
+        let source = tempfile::tempdir().unwrap();
+        {
+            let daemon = LocalrefDaemon::for_library(source.path()).unwrap();
+            write_item(source.path(), "lr:test:move", "Paper");
+            daemon.scan_all().unwrap();
+            daemon
+                .add_item_category(
+                    "lr:test:move",
+                    CategoryPath::new("Inbox").unwrap(),
+                )
+                .unwrap();
+        }
+
+        // Simulate a relocation: copy All/ + .localref/ (which carry metadata
+        // and the manifest) to a new root, but NOT the Cat/ junctions, which a
+        // real copy across machines/drives cannot reproduce.
+        let dest = tempfile::tempdir().unwrap();
+        copy_dir_recursive(
+            &source.path().join("All"),
+            &dest.path().join("All"),
+        );
+        copy_dir_recursive(
+            &source.path().join(".localref"),
+            &dest.path().join(".localref"),
+        );
+
+        let daemon = LocalrefDaemon::for_library(dest.path()).unwrap();
+        daemon.scan_all().unwrap();
+
+        let item = daemon.get_item("lr:test:move").unwrap().unwrap();
+        assert_eq!(
+            item.categories,
+            vec!["Inbox"],
+            "relocation must preserve category membership, not wipe it",
+        );
+        let metadata = std::fs::read_to_string(
+            dest.path().join("All").join("Paper").join("metadata.toml"),
+        )
+        .unwrap();
+        let parsed = Metadata::from_toml_str(&metadata).unwrap();
+        assert!(
+            parsed.state.removed_categories.is_empty(),
+            "relocation must not write spurious tombstones",
+        );
+        // And the junction must be re-projected under the new root.
+        assert!(
+            dest.path().join("Cat").join("Inbox").join("Paper").exists(),
+            "the junction should be re-created from metadata after the move",
+        );
+    }
+
+    /// Recursively copy a directory tree, following/ recreating plain files and
+    /// subdirectories (used to simulate a library relocation in tests).
+    fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let src = entry.path();
+            let dst = to.join(entry.file_name());
+            if src.is_dir() {
+                copy_dir_recursive(&src, &dst);
+            } else {
+                std::fs::copy(&src, &dst).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn tombstoned_category_is_not_refiled_by_a_matching_rule() {
+        // (b) Once a category is tombstoned, an auto-classification rule that
+        // would otherwise match must not re-file the item into it.
+        let temp = tempfile::tempdir().unwrap();
+        let item_dir = write_item(temp.path(), "lr:test:tomb", "Paper");
+        // Metadata already carries the tombstone for "Wireless/RIS".
+        std::fs::write(
+            item_dir.join("metadata.toml"),
+            r#"id = "lr:test:tomb"
+type = "journalArticle"
+title = "RIS Paper"
+
+[state]
+removed_categories = ["Wireless/RIS"]
+"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(temp.path().join(".localref")).unwrap();
+        std::fs::write(
+            temp.path().join(".localref").join("rules.toml"),
+            r#"
+[[rules]]
+name = "ris"
+target = "Wireless/RIS"
+query = 'title:RIS'
+"#,
+        )
+        .unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        daemon.scan_all().unwrap();
+
+        // The scan reconciliation must respect the tombstone: no junction, no
+        // metadata membership for the tombstoned category.
+        let item = daemon.get_item("lr:test:tomb").unwrap().unwrap();
+        assert!(
+            !item.categories.contains(&"Wireless/RIS".to_string()),
+            "a tombstoned category must not be re-filed",
+        );
+    }
+
+    #[test]
+    fn hand_made_junction_is_adopted_into_metadata_on_scan() {
+        // (c) A junction the user creates by hand (present on disk, absent from
+        // metadata and the manifest) is adopted into metadata on scan.
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        let item_dir = write_item(temp.path(), "lr:test:adopt", "Paper");
+        daemon.scan_all().unwrap();
+
+        // Hand-make a junction under Cat/ with no metadata/manifest record.
+        crate::platformfs::LibraryFs::new(temp.path())
+            .create_category_link(
+                &CategoryPath::new("Handmade").unwrap(),
+                &item_dir,
+            )
+            .unwrap();
+        daemon.scan_all().unwrap();
+
+        let item = daemon.get_item("lr:test:adopt").unwrap().unwrap();
+        assert_eq!(
+            item.categories,
+            vec!["Handmade"],
+            "a hand-made junction must be adopted into metadata",
+        );
+    }
+
+    // Verification item (d) — "a plain index rebuild reflects metadata
+    // categories with no junction present" — is covered directly at the storage
+    // layer by `storage::tests::rebuild_reads_categories_from_metadata`.
+
+    #[test]
+    fn set_item_extra_writes_metadata_and_survives_reindex() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        write_item(temp.path(), "lr:test:extra", "Paper");
+        daemon.rebuild_index().unwrap();
+
+        daemon
+            .set_item_extra("lr:test:extra", "bibtexer", "cite_key", Some("smith2020"))
+            .unwrap();
+
+        // Written into metadata.toml (source of truth) ...
+        let metadata = std::fs::read_to_string(
+            temp.path().join("All").join("Paper").join("metadata.toml"),
+        )
+        .unwrap();
+        assert!(metadata.contains("cite_key"));
+        assert!(metadata.contains("smith2020"));
+        // ... and surfaced on the indexed document.
+        let item = daemon.get_item("lr:test:extra").unwrap().unwrap();
+        assert_eq!(item.extra["bibtexer"]["cite_key"], "smith2020");
+    }
+
+    #[test]
+    fn only_declared_indexed_extra_fields_are_searchable() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        write_item(temp.path(), "lr:test:idx", "Paper");
+        // Declare bibtexer.cite_key indexed; rating.note is not declared.
+        daemon
+            .set_indexed_extra_fields(
+                ["bibtexer.cite_key".to_string()].into_iter().collect(),
+            )
+            .unwrap();
+        daemon
+            .set_item_extra("lr:test:idx", "bibtexer", "cite_key", Some("zoodle77"))
+            .unwrap();
+        daemon
+            .set_item_extra("lr:test:idx", "rating", "note", Some("wibblish"))
+            .unwrap();
+
+        // (b) The declared-indexed value is found; the undeclared one is not.
+        assert_eq!(daemon.search("zoodle77").unwrap().len(), 1);
+        assert!(daemon.search("wibblish").unwrap().is_empty());
+    }
+
+    #[test]
+    fn rebuild_repopulates_extra_index_from_metadata() {
+        // (c) The extra index is rebuildable purely from metadata.toml — set a
+        // value, wipe/rebuild, and it is still searchable.
+        let temp = tempfile::tempdir().unwrap();
+        let mut daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        write_item(temp.path(), "lr:test:reidx", "Paper");
+        daemon
+            .set_indexed_extra_fields(
+                ["bibtexer.cite_key".to_string()].into_iter().collect(),
+            )
+            .unwrap();
+        daemon
+            .set_item_extra("lr:test:reidx", "bibtexer", "cite_key", Some("froon42"))
+            .unwrap();
+
+        daemon.rebuild_index().unwrap();
+
+        assert_eq!(daemon.search("froon42").unwrap().len(), 1);
     }
 }

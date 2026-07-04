@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 
 use crate::error::{LocalrefError, Result};
+use crate::types::CategoryPath;
 use serde::{Deserialize, Serialize};
 
 /// Metadata stored in `All/<item>/metadata.toml`.
@@ -36,6 +37,10 @@ pub struct Metadata {
     /// Creators such as authors or editors.
     #[serde(default)]
     pub creators: Vec<Creator>,
+    /// Category paths this item belongs to. Source of truth for membership; the
+    /// `Cat/` junctions are a projection of this list reconciled during scan.
+    #[serde(default)]
+    pub categories: Vec<String>,
     /// Files stored inside the item directory.
     #[serde(default)]
     pub files: MetadataFiles,
@@ -51,6 +56,16 @@ pub struct Metadata {
     /// Connector-specific raw data preserved for future richer mappings.
     #[serde(default)]
     pub raw_connector: BTreeMap<String, String>,
+    /// Plugin-owned per-item data, keyed by plugin namespace then field key.
+    ///
+    /// Each plugin writes under its own `[extra.<namespace>]` table. Values are
+    /// strings; structured data is JSON-encoded by the plugin (as
+    /// `raw_connector` does with `raw_json`). Plugins may declare specific
+    /// `namespace.key` pairs as indexed in their manifest, which makes those
+    /// values participate in search; undeclared entries are preserved but not
+    /// searched.
+    #[serde(default)]
+    pub extra: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// Person or organization associated with a metadata record.
@@ -144,6 +159,11 @@ pub struct MetadataState {
     /// Whether the main file is missing.
     #[serde(default)]
     pub missing_main_file: bool,
+    /// Category paths the user explicitly removed. Tombstones suppress
+    /// auto-classification (rules, re-import) from re-filing these categories;
+    /// an explicit add-category clears the matching tombstone.
+    #[serde(default)]
+    pub removed_categories: Vec<String>,
 }
 
 /// Item document stored in the query database.
@@ -181,6 +201,9 @@ pub struct ItemDocument {
     /// Category paths derived from `Cat/`.
     #[serde(default)]
     pub categories: Vec<String>,
+    /// Plugin-owned per-item data carried through from `metadata.toml`.
+    #[serde(default)]
+    pub extra: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// Files currently present under one item directory.
@@ -366,12 +389,6 @@ impl Metadata {
     ///
     /// Returns an error when the operation cannot be completed.
     pub fn from_toml_str(text: &str) -> Result<Self> {
-        let value: toml::Value = toml::from_str(text)?;
-        if value.get("categories").is_some() {
-            return Err(LocalrefError::Unsupported(
-                "metadata.toml must not contain categories",
-            ));
-        }
         let metadata: Self = toml::from_str(text)?;
         metadata.validate()?;
         Ok(metadata)
@@ -386,6 +403,117 @@ impl Metadata {
         Ok(toml::to_string_pretty(self)?)
     }
 
+    /// Apply category membership edits to existing `metadata.toml` text in place.
+    ///
+    /// - `add`: ensured present in the top-level `categories` array and cleared
+    ///   from the `[state].removed_categories` tombstone list.
+    /// - `remove`: dropped from `categories` and recorded as tombstones so
+    ///   auto-classification will not re-file them (a deliberate user removal).
+    /// - `drop`: dropped from `categories` **without** tombstoning — used for
+    ///   internal remaps (rename/merge) where the old path is simply moving.
+    ///
+    /// Formatting and comments elsewhere in the document are preserved because
+    /// the edit uses `toml_edit` rather than reserializing. The lists are applied
+    /// in order (`add`, then `remove`, then `drop`); pass disjoint sets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the text is not valid TOML.
+    pub fn apply_category_edits(
+        text: &str,
+        add: &[&str],
+        remove: &[&str],
+        drop: &[&str],
+    ) -> Result<String> {
+        let mut doc = text.parse::<toml_edit::DocumentMut>()?;
+
+        ensure_string_array(doc.as_table_mut(), "categories");
+        for category in add {
+            array_insert(&mut doc["categories"], category);
+        }
+        for category in remove.iter().chain(drop) {
+            array_remove(&mut doc["categories"], category);
+        }
+
+        let state_entry = doc.entry("state").or_insert_with(|| {
+            toml_edit::Item::Table(toml_edit::Table::new())
+        });
+        // Tombstones live in `[state].removed_categories`. If `state` somehow is
+        // not a table (hand-edited scalar, or a future schema), replace it with
+        // a fresh table so a `remove` is always tombstoned — otherwise the
+        // category would be dropped from `categories` but silently re-filed by
+        // auto-classification on the next scan.
+        if !state_entry.is_table() {
+            *state_entry = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let state = state_entry
+            .as_table_mut()
+            .expect("state was just ensured to be a table");
+        state.set_implicit(false);
+        ensure_string_array(state, "removed_categories");
+        for category in add.iter().chain(drop) {
+            array_remove(&mut state["removed_categories"], category);
+        }
+        for category in remove {
+            array_insert(&mut state["removed_categories"], category);
+        }
+
+        Ok(doc.to_string())
+    }
+
+    /// Set one plugin `extra` value in existing `metadata.toml` text in place.
+    ///
+    /// Writes `[extra.<namespace>] <key> = <value>`, creating the tables as
+    /// needed and preserving unrelated formatting and comments (the edit uses
+    /// `toml_edit`). Passing `None` for `value` removes the key, and prunes the
+    /// namespace table when it becomes empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the text is not valid TOML.
+    pub fn apply_extra_edit(
+        text: &str,
+        namespace: &str,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<String> {
+        let mut doc = text.parse::<toml_edit::DocumentMut>()?;
+
+        let extra = doc
+            .entry("extra")
+            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+        let Some(extra) = extra.as_table_mut() else {
+            return Err(LocalrefError::InvalidPathComponent {
+                component: "extra".to_string(),
+                reason: "metadata.extra is not a table",
+            });
+        };
+        extra.set_implicit(true);
+
+        match value {
+            Some(value) => {
+                let ns = extra
+                    .entry(namespace)
+                    .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+                if let Some(ns) = ns.as_table_mut() {
+                    ns.insert(key, toml_edit::value(value));
+                }
+            }
+            None => {
+                if let Some(ns) =
+                    extra.get_mut(namespace).and_then(toml_edit::Item::as_table_mut)
+                {
+                    let _ = ns.remove(key);
+                    if ns.is_empty() {
+                        let _ = extra.remove(namespace);
+                    }
+                }
+            }
+        }
+
+        Ok(doc.to_string())
+    }
+
     /// Validate required metadata invariants.
     /// # Errors
     ///
@@ -396,6 +524,14 @@ impl Metadata {
         }
         if self.title.trim().is_empty() {
             return Err(LocalrefError::MissingField("metadata.title"));
+        }
+        for category in &self.categories {
+            if CategoryPath::new(category.as_str()).is_none() {
+                return Err(LocalrefError::InvalidPathComponent {
+                    component: category.clone(),
+                    reason: "metadata.categories entry is not a valid category",
+                });
+            }
         }
         Ok(())
     }
@@ -412,18 +548,44 @@ impl Metadata {
     }
 }
 
+/// Ensure `table[key]` is an array, creating an empty one when absent or when
+/// the existing value is a different type.
+fn ensure_string_array(table: &mut toml_edit::Table, key: &str) {
+    if !table.get(key).is_some_and(toml_edit::Item::is_array) {
+        table.insert(key, toml_edit::value(toml_edit::Array::new()));
+    }
+}
+
+/// Append `value` to a TOML array item if not already present.
+fn array_insert(item: &mut toml_edit::Item, value: &str) {
+    let Some(array) = item.as_array_mut() else {
+        return;
+    };
+    if !array.iter().any(|entry| entry.as_str() == Some(value)) {
+        array.push(value);
+    }
+}
+
+/// Remove every occurrence of `value` from a TOML array item.
+fn array_remove(item: &mut toml_edit::Item, value: &str) {
+    if let Some(array) = item.as_array_mut() {
+        array.retain(|entry| entry.as_str() != Some(value));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn metadata_round_trips_and_rejects_categories() {
+    fn metadata_round_trips_and_reads_categories() {
         let metadata = Metadata::from_toml_str(
             r#"
 id = "lr:test:1"
 type = "journalArticle"
 title = "A Paper"
 abstract = "A short abstract"
+categories = ["Wireless/RIS"]
 
 [files]
 main = "paper.pdf"
@@ -441,17 +603,17 @@ source = "manual-all-directory"
             metadata.abstract_note.as_deref(),
             Some("A short abstract")
         );
+        assert_eq!(metadata.categories, vec!["Wireless/RIS".to_string()]);
         assert!(metadata.to_toml_string().unwrap().contains("journalArticle"));
+
+        // An invalid category string is rejected by validation.
         assert!(
             Metadata::from_toml_str(
                 r#"
 id = "lr:test:1"
 type = "journalArticle"
 title = "A Paper"
-categories = ["Bad"]
-
-[files]
-main = "paper.pdf"
+categories = ["/"]
 
 [import]
 source = "manual"
@@ -459,6 +621,153 @@ source = "manual"
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn apply_category_edits_preserves_comments_and_toggles_tombstones() {
+        let original = r#"# item file
+id = "lr:test:1"
+type = "journalArticle"
+title = "A Paper" # inline comment
+
+[import]
+source = "manual"
+"#;
+
+        // Add a category: appears in categories, no tombstone, comments kept.
+        let added = Metadata::apply_category_edits(
+            original,
+            &["Wireless/RIS"],
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert!(added.contains("# item file"));
+        assert!(added.contains("# inline comment"));
+        let parsed = Metadata::from_toml_str(&added).unwrap();
+        assert_eq!(parsed.categories, vec!["Wireless/RIS".to_string()]);
+        assert!(parsed.state.removed_categories.is_empty());
+
+        // Remove it: dropped from categories, recorded as a tombstone.
+        let removed =
+            Metadata::apply_category_edits(&added, &[], &["Wireless/RIS"], &[])
+                .unwrap();
+        let parsed = Metadata::from_toml_str(&removed).unwrap();
+        assert!(parsed.categories.is_empty());
+        assert_eq!(
+            parsed.state.removed_categories,
+            vec!["Wireless/RIS".to_string()]
+        );
+
+        // Re-add: clears the tombstone.
+        let readded = Metadata::apply_category_edits(
+            &removed,
+            &["Wireless/RIS"],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let parsed = Metadata::from_toml_str(&readded).unwrap();
+        assert_eq!(parsed.categories, vec!["Wireless/RIS".to_string()]);
+        assert!(parsed.state.removed_categories.is_empty());
+
+        // Drop (rename/merge): removed from categories WITHOUT a tombstone.
+        let dropped = Metadata::apply_category_edits(
+            &readded,
+            &[],
+            &[],
+            &["Wireless/RIS"],
+        )
+        .unwrap();
+        let parsed = Metadata::from_toml_str(&dropped).unwrap();
+        assert!(parsed.categories.is_empty());
+        assert!(parsed.state.removed_categories.is_empty());
+    }
+
+    #[test]
+    fn apply_category_edits_tombstones_even_when_state_is_not_a_table() {
+        // A `state` that is not a table (hand-edited, or a stale/other schema)
+        // must not cause a `remove` to skip its tombstone: otherwise the
+        // category is dropped from `categories` but auto-classification silently
+        // re-files it on the next scan.
+        let original = r#"id = "lr:test:1"
+type = "journalArticle"
+title = "A Paper"
+categories = ["Wireless/RIS"]
+state = "unexpected-scalar"
+"#;
+
+        let removed = Metadata::apply_category_edits(
+            original,
+            &[],
+            &["Wireless/RIS"],
+            &[],
+        )
+        .unwrap();
+        let parsed = Metadata::from_toml_str(&removed).unwrap();
+        assert!(parsed.categories.is_empty());
+        assert_eq!(
+            parsed.state.removed_categories,
+            vec!["Wireless/RIS".to_string()],
+            "removal must be tombstoned even when [state] started as a scalar",
+        );
+    }
+
+    #[test]
+    fn extra_round_trips_through_metadata() {
+        let metadata = Metadata::from_toml_str(
+            r#"
+id = "lr:test:1"
+type = "document"
+title = "A Paper"
+
+[extra.bibtexer]
+cite_key = "smith2020"
+
+[extra.rating]
+stars = "5"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            metadata.extra["bibtexer"]["cite_key"],
+            "smith2020".to_string()
+        );
+        assert_eq!(metadata.extra["rating"]["stars"], "5".to_string());
+        // Serializing and reparsing preserves the values.
+        let text = metadata.to_toml_string().unwrap();
+        let reparsed = Metadata::from_toml_str(&text).unwrap();
+        assert_eq!(reparsed.extra, metadata.extra);
+    }
+
+    #[test]
+    fn apply_extra_edit_preserves_comments_and_prunes_empty() {
+        let original = r#"# item file
+id = "lr:test:1"
+type = "document"
+title = "A Paper" # inline comment
+"#;
+
+        // Set a value: table is created, comments kept.
+        let set = Metadata::apply_extra_edit(
+            original,
+            "bibtexer",
+            "cite_key",
+            Some("smith2020"),
+        )
+        .unwrap();
+        assert!(set.contains("# item file"));
+        assert!(set.contains("# inline comment"));
+        let parsed = Metadata::from_toml_str(&set).unwrap();
+        assert_eq!(parsed.extra["bibtexer"]["cite_key"], "smith2020");
+
+        // Remove it: the now-empty namespace table is pruned.
+        let cleared =
+            Metadata::apply_extra_edit(&set, "bibtexer", "cite_key", None)
+                .unwrap();
+        let parsed = Metadata::from_toml_str(&cleared).unwrap();
+        assert!(parsed.extra.get("bibtexer").is_none());
+        assert!(cleared.contains("# inline comment"));
     }
 
     #[test]

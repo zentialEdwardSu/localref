@@ -19,10 +19,13 @@ pub mod error;
 pub mod logging;
 pub mod model;
 
-#[cfg(feature = "server")]
+// `config` is self-contained (std + serde) and useful to lightweight consumers
+// such as plugins that need to resolve the library root without the daemon.
 pub mod config;
 #[cfg(feature = "server")]
 pub mod lock;
+#[cfg(feature = "server")]
+pub mod manifest;
 #[cfg(feature = "server")]
 pub mod platformfs;
 #[cfg(feature = "server")]
@@ -39,7 +42,8 @@ pub mod scan;
 pub mod schedule;
 #[cfg(feature = "server")]
 pub mod storage;
-#[cfg(feature = "server")]
+// `types` is needed by the ungated `model` module (e.g. `CategoryPath` in
+// `Metadata::validate`), so it must build without the `server` feature.
 pub mod types;
 
 #[cfg(feature = "server")]
@@ -61,6 +65,8 @@ use crate::model::{
     MetadataFile, MetadataFiles, MetadataImport, MetadataState, MetadataTags,
 };
 #[cfg(feature = "server")]
+use crate::manifest::CatManifest;
+#[cfg(feature = "server")]
 use crate::platformfs::{LibraryFs, sanitize_ntfs_component};
 #[cfg(feature = "server")]
 use crate::rules::RuleSet;
@@ -69,6 +75,7 @@ use crate::scan::{AllEntryKind, CatEntryKind, scan_library};
 #[cfg(feature = "server")]
 use crate::storage::{
     CategorySummary, ItemDocument, SearchHit, StorageDb, path_from_scan_target,
+    scan_cat_memberships,
 };
 #[cfg(feature = "server")]
 use crate::types::{
@@ -273,9 +280,19 @@ pub enum DaemonEvent {
         /// Number of indexed items after the scan.
         indexed_items: usize,
     },
-    /// The runtime schedule set changed (registered or removed). Not a plugin
-    /// hook event; consumed only by the cron scheduler to reload schedules.
+    /// A file was attached to an existing item.
+    ItemFileAdded {
+        /// Item that received the file.
+        item_id: String,
+    },
+    /// Automatic-classification rules were replaced.
+    RulesChanged,
+    /// The runtime schedule set changed (registered or removed).
     SchedulesChanged,
+    /// A daemon pause mode was enabled.
+    DaemonPaused,
+    /// A daemon pause mode was disabled.
+    DaemonResumed,
 }
 
 #[cfg(feature = "server")]
@@ -289,7 +306,11 @@ impl DaemonEvent {
             Self::MetadataPatched { .. } => "metadata_patched",
             Self::CategoryChanged { .. } => "category_changed",
             Self::ScanCompleted { .. } => "scan_completed",
+            Self::ItemFileAdded { .. } => "item_file_added",
+            Self::RulesChanged => "rules_changed",
             Self::SchedulesChanged => "schedules_changed",
+            Self::DaemonPaused => "daemon_paused",
+            Self::DaemonResumed => "daemon_resumed",
         }
     }
 }
@@ -359,12 +380,37 @@ impl LocalrefDaemon {
         let _ = self.event_tx.send(event);
     }
 
+    /// Publish [`DaemonEvent::SchedulesChanged`] so the cron scheduler reloads
+    /// its schedule set from the current plugin list and runtime calls.
+    ///
+    /// The host calls this after rediscovering plugins so manifest cron jobs
+    /// from newly added plugins register without a restart.
+    pub fn notify_schedules_changed(&self) {
+        self.emit_event(DaemonEvent::SchedulesChanged);
+    }
+
     /// Open storage for a library root and create a daemon facade.
     /// # Errors
     ///
     /// Returns an error when the operation cannot be completed.
     pub fn for_library(library_root: impl Into<PathBuf>) -> Result<Self> {
         Ok(Self::new(StorageDb::open(library_root)?))
+    }
+
+    /// Declare the plugin-contributed `extra` fields that should be indexed.
+    ///
+    /// Each entry is a `"namespace.key"` string, aggregated by the host from
+    /// discovered plugins' manifests. Call this before the daemon is shared and
+    /// before the first rebuild; the next [`Self::rebuild_index`] or scan
+    /// populates the secondary index for these fields. Values of indexed fields
+    /// then participate in [`Self::search`].
+    pub fn set_indexed_extra_fields(
+        &self,
+        fields: BTreeSet<String>,
+    ) -> Result<()> {
+        self.storage.set_indexed_fields(fields);
+        self.storage.rebuild_from_all()?;
+        Ok(())
     }
 
     /// Return the library root this daemon operates on.
@@ -397,14 +443,18 @@ impl LocalrefDaemon {
             .map_err(|source| LocalrefError::io(&dir, source))?;
         let path = dir.join("rules.toml");
         std::fs::write(&path, text)
-            .map_err(|source| LocalrefError::io(&path, source))
+            .map_err(|source| LocalrefError::io(&path, source))?;
+        self.emit_event(DaemonEvent::RulesChanged);
+        Ok(())
     }
 
     /// Return all runtime-registered scheduled plugin calls.
     /// # Errors
     ///
     /// Returns an error when the schedules file cannot be read or parsed.
-    pub fn list_schedules(&self) -> Result<Vec<crate::schedule::ScheduledCall>> {
+    pub fn list_schedules(
+        &self,
+    ) -> Result<Vec<crate::schedule::ScheduledCall>> {
         crate::schedule::load(&self.library_root)
     }
 
@@ -420,7 +470,9 @@ impl LocalrefDaemon {
         call: crate::schedule::ScheduledCall,
     ) -> Result<()> {
         if call.id.trim().is_empty() {
-            return Err(LocalrefError::Rule("schedule id must not be empty".to_string()));
+            return Err(LocalrefError::Rule(
+                "schedule id must not be empty".to_string(),
+            ));
         }
         if cron::Schedule::from_str(&call.schedule).is_err() {
             return Err(LocalrefError::Rule(format!(
@@ -487,13 +539,18 @@ impl LocalrefDaemon {
             event_kind = LogKind::PauseChanged.as_str(),
             "pause mode enabled: {mode:?}",
         );
-        queue.paused_modes.insert(mode);
-        DaemonStatus {
+        let changed = queue.paused_modes.insert(mode);
+        let status = DaemonStatus {
             running: queue.running,
             queued_tasks: queue.queued.len(),
             recent_tasks: queue.history.clone(),
             paused_modes: queue.paused_modes.iter().copied().collect(),
+        };
+        drop(queue);
+        if changed {
+            self.emit_event(DaemonEvent::DaemonPaused);
         }
+        status
     }
 
     /// Remove one active pause mode.
@@ -507,13 +564,18 @@ impl LocalrefDaemon {
             event_kind = LogKind::PauseChanged.as_str(),
             "pause mode disabled: {mode:?}",
         );
-        queue.paused_modes.remove(&mode);
-        DaemonStatus {
+        let changed = queue.paused_modes.remove(&mode);
+        let status = DaemonStatus {
             running: queue.running,
             queued_tasks: queue.queued.len(),
             recent_tasks: queue.history.clone(),
             paused_modes: queue.paused_modes.iter().copied().collect(),
+        };
+        drop(queue);
+        if changed {
+            self.emit_event(DaemonEvent::DaemonResumed);
         }
+        status
     }
 
     /// Enqueue and execute a scan task.
@@ -522,6 +584,20 @@ impl LocalrefDaemon {
     /// Returns an error when the operation cannot be completed.
     pub fn scan_all(&self) -> Result<DaemonTaskRecord> {
         self.execute_task(DaemonTask::ScanAll)
+    }
+
+    /// Rebuild the query index from `All/*/metadata.toml` without normalizing.
+    ///
+    /// Unlike [`Self::scan_all`], this only refreshes the redb cache (items and
+    /// the extra index) from metadata; it does not create metadata for
+    /// unmanaged directories or reconcile `Cat/` junctions. Returns the number
+    /// of indexed items.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the index cannot be rebuilt.
+    pub fn rebuild_index(&self) -> Result<usize> {
+        self.storage.rebuild_from_all()
     }
 
     /// Enqueue and execute one connector import task.
@@ -672,6 +748,74 @@ impl LocalrefDaemon {
         }
     }
 
+    /// Set or clear one plugin `extra` value on an item.
+    ///
+    /// `metadata.toml` is the source of truth; this performs a locked
+    /// read-modify-write via [`Metadata::apply_extra_edit`] (preserving the
+    /// user's formatting) and rebuilds the query index so any declared-indexed
+    /// field becomes searchable. Passing `None` for `value` removes the key.
+    /// This is the write path plugins drive through the REST endpoint; it is
+    /// not revision-gated because a plugin edits only its own namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the item is missing or the metadata cannot be
+    /// read or written.
+    pub fn set_item_extra(
+        &self,
+        item_id: &str,
+        namespace: &str,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<ItemDocument> {
+        let mut record = self.enqueue(DaemonTask::PatchMetadata {
+            item_id: item_id.to_string(),
+        });
+        self.mark_running(record.id);
+        let result = self.ensure_task_allowed(&record.task).and_then(|()| {
+            let item = self
+                .storage
+                .get_item(item_id)?
+                .ok_or(LocalrefError::MissingField("item"))?;
+            let item_dir = self.library_root.join(&item.object_path);
+            let locks = LockManager::new(&self.library_root);
+            let _lock = locks.acquire(item_id, "set_item_extra")?;
+            let metadata_path = item_dir.join("metadata.toml");
+            let current = std::fs::read_to_string(&metadata_path)
+                .map_err(|source| LocalrefError::io(&metadata_path, source))?;
+            let edited = Metadata::apply_extra_edit(
+                &current, namespace, key, value,
+            )?;
+            if edited != current {
+                LibraryFs::new(&self.library_root)
+                    .atomic_write(&metadata_path, edited.as_bytes())?;
+            }
+            self.storage.rebuild_from_all()?;
+            self.storage
+                .get_item(item_id)?
+                .ok_or(LocalrefError::MissingField("item"))
+        });
+
+        match result {
+            Ok(item) => {
+                record.state = DaemonTaskState::Completed;
+                record.message =
+                    Some(format!("set extra {namespace}.{key} for {item_id}"));
+                self.emit_event(DaemonEvent::MetadataPatched {
+                    item_id: item_id.to_string(),
+                });
+                self.finish(record);
+                Ok(item)
+            }
+            Err(error) => {
+                record.state = DaemonTaskState::Failed;
+                record.message = Some(error.to_string());
+                self.finish(record);
+                Err(error)
+            }
+        }
+    }
+
     /// Create minimal metadata for an existing directory under `All/`.
     /// # Errors
     ///
@@ -804,6 +948,9 @@ impl LocalrefDaemon {
                 record.state = DaemonTaskState::Completed;
                 record.message = Some(format!("added file to {item_id}"));
                 self.finish(record);
+                self.emit_event(DaemonEvent::ItemFileAdded {
+                    item_id: item_id.to_string(),
+                });
                 Ok(item)
             }
             Err(error) => {
@@ -853,6 +1000,9 @@ impl LocalrefDaemon {
                 record.state = DaemonTaskState::Completed;
                 record.message = Some(format!("uploaded file to {item_id}"));
                 self.finish(record);
+                self.emit_event(DaemonEvent::ItemFileAdded {
+                    item_id: item_id.to_string(),
+                });
                 Ok(item)
             }
             Err(error) => {
@@ -908,6 +1058,47 @@ impl LocalrefDaemon {
         }
     }
 
+    /// Apply category membership edits to one item's `metadata.toml` in place.
+    ///
+    /// `metadata.toml` is the source of truth for membership; this performs a
+    /// locked read-modify-write using `toml_edit` so the user's formatting and
+    /// comments survive. `add` categories are ensured present (and any matching
+    /// tombstone cleared); `remove` categories are dropped and tombstoned so
+    /// auto-classification will not re-file them. These are daemon-authored
+    /// edits, so — unlike `patch_metadata` — they are not revision-gated.
+    ///
+    /// Returns the item's `All/` directory path for follow-on junction work.
+    fn edit_item_categories(
+        &self,
+        item_id: &str,
+        add: &[&str],
+        remove: &[&str],
+        drop: &[&str],
+    ) -> Result<PathBuf> {
+        let item = self
+            .storage
+            .get_item(item_id)?
+            .ok_or(LocalrefError::MissingField("item"))?;
+        let item_dir = self.library_root.join(&item.object_path);
+        let locks = LockManager::new(&self.library_root);
+        let _lock = locks.acquire(item_id, "edit_item_categories")?;
+        let metadata_path = item_dir.join("metadata.toml");
+        let current = std::fs::read_to_string(&metadata_path)
+            .map_err(|source| LocalrefError::io(&metadata_path, source))?;
+        let edited =
+            Metadata::apply_category_edits(&current, add, remove, drop)?;
+        if edited != current {
+            LibraryFs::new(&self.library_root)
+                .atomic_write(&metadata_path, edited.as_bytes())?;
+        }
+        Ok(item_dir)
+    }
+
+    /// Load the category junction manifest.
+    fn load_manifest(&self) -> Result<CatManifest> {
+        CatManifest::load(&self.library_root)
+    }
+
     /// Create an empty category directory and rebuild category indexes.
     /// # Errors
     ///
@@ -952,27 +1143,61 @@ impl LocalrefDaemon {
         });
         self.mark_running(record.id);
         let result = self.ensure_task_allowed(&record.task).and_then(|()| {
-            let item = self
-                .storage
-                .get_item(item_id)?
-                .ok_or(LocalrefError::MissingField("item"))?;
-            let item_dir = self.library_root.join(&item.object_path);
-            let fs = LibraryFs::new(&self.library_root);
-            let link = fs.create_category_link(category, &item_dir)?;
-            tracing::debug!(
-                event_kind = LogKind::CatLinkCreated.as_str(),
-                item_id = item_id,
-                path = relative_to_root(&self.library_root, &link),
-                "category link created: {}",
-                category.as_str(),
-            );
-            if category.as_str() != UNMATCHED_CATEGORY {
-                Self::clear_unmatched_link(&fs, &item_dir)?;
-            }
+            let mut manifest = self.load_manifest()?;
+            self.file_item_into_category(item_id, category, &mut manifest)?;
+            manifest.save(&self.library_root)?;
             self.storage.rebuild_from_all()?;
             category_summary_for(&self.storage, category)
         });
         self.finish_task_result(record, result)
+    }
+
+    /// File one item into a category: write metadata, project the junction, and
+    /// record it in the manifest. Filing into a real category also clears any
+    /// `unmatched` membership (metadata, junction, and manifest), since an item
+    /// is either `unmatched` or filed under real categories, never both.
+    fn file_item_into_category(
+        &self,
+        item_id: &str,
+        category: &CategoryPath,
+        manifest: &mut CatManifest,
+    ) -> Result<()> {
+        let item_dir = self.edit_item_categories(
+            item_id,
+            &[category.as_str()],
+            &[],
+            &[],
+        )?;
+        let fs = LibraryFs::new(&self.library_root);
+        let link = fs.create_category_link(category, &item_dir)?;
+        manifest.insert(item_id, category.as_str());
+        tracing::debug!(
+            event_kind = LogKind::CatLinkCreated.as_str(),
+            item_id = item_id,
+            path = relative_to_root(&self.library_root, &link),
+            "category link created: {}",
+            category.as_str(),
+        );
+        if category.as_str() != UNMATCHED_CATEGORY {
+            // An item is either `unmatched` or filed under real categories,
+            // never both, so clear any `unmatched` membership, junction, and
+            // manifest record. Removing a non-existent link is a harmless no-op.
+            let unmatched = CategoryPath::new(UNMATCHED_CATEGORY)
+                .expect("UNMATCHED_CATEGORY is a valid category path");
+            let _ = self.edit_item_categories(
+                item_id,
+                &[],
+                &[],
+                &[UNMATCHED_CATEGORY],
+            )?;
+            let entry_name = item_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(LocalrefError::MissingField("item directory name"))?;
+            fs.remove_category_link(&unmatched, entry_name)?;
+            manifest.remove(item_id, unmatched.as_str());
+        }
+        Ok(())
     }
 
     /// Add multiple indexed items to one category with one index rebuild.
@@ -991,25 +1216,11 @@ impl LocalrefDaemon {
         });
         self.mark_running(record.id);
         let result = self.ensure_task_allowed(&record.task).and_then(|()| {
-            let fs = LibraryFs::new(&self.library_root);
+            let mut manifest = self.load_manifest()?;
             for item_id in item_ids {
-                let item = self
-                    .storage
-                    .get_item(item_id)?
-                    .ok_or(LocalrefError::MissingField("item"))?;
-                let item_dir = self.library_root.join(&item.object_path);
-                let link = fs.create_category_link(category, &item_dir)?;
-                tracing::debug!(
-                    event_kind = LogKind::CatLinkCreated.as_str(),
-                    item_id = item_id,
-                    path = relative_to_root(&self.library_root, &link),
-                    "category link created: {}",
-                    category.as_str(),
-                );
-                if category.as_str() != UNMATCHED_CATEGORY {
-                    Self::clear_unmatched_link(&fs, &item_dir)?;
-                }
+                self.file_item_into_category(item_id, category, &mut manifest)?;
             }
+            manifest.save(&self.library_root)?;
             self.storage.rebuild_from_all()?;
             category_summary_for(&self.storage, category)
         });
@@ -1032,45 +1243,46 @@ impl LocalrefDaemon {
         });
         self.mark_running(record.id);
         let result = self.ensure_task_allowed(&record.task).and_then(|()| {
-            let item = self
-                .storage
-                .get_item(item_id)?
-                .ok_or(LocalrefError::MissingField("item"))?;
-            let item_dir = self.library_root.join(&item.object_path);
-            let entry_name = item_dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or(LocalrefError::MissingField("item directory name"))?;
-            let removed = LibraryFs::new(&self.library_root)
-                .remove_category_link(category, entry_name)?;
-            if let Some(path) = removed {
-                tracing::debug!(
-                    event_kind = LogKind::CatLinkDeleted.as_str(),
-                    item_id = item_id,
-                    path = relative_to_root(&self.library_root, &path),
-                    "category link deleted: {}",
-                    category.as_str(),
-                );
-            }
+            let mut manifest = self.load_manifest()?;
+            self.unfile_item_from_category(item_id, category, &mut manifest)?;
+            manifest.save(&self.library_root)?;
             self.storage.rebuild_from_all()?;
             category_summary_for(&self.storage, category)
         });
         self.finish_task_result(record, result)
     }
 
-    /// Remove an item's `unmatched` link once it has a real category.
-    ///
-    /// An item is either `unmatched` or filed under real categories, never
-    /// both, so filing into a real category clears any `unmatched` link.
-    /// Removing a non-existent link is a harmless no-op.
-    fn clear_unmatched_link(fs: &LibraryFs, item_dir: &Path) -> Result<()> {
+    /// Remove one item from a category: drop it from metadata (writing a
+    /// tombstone so auto-classification won't re-file it), remove the junction,
+    /// and drop the manifest record.
+    fn unfile_item_from_category(
+        &self,
+        item_id: &str,
+        category: &CategoryPath,
+        manifest: &mut CatManifest,
+    ) -> Result<()> {
+        let item_dir = self.edit_item_categories(
+            item_id,
+            &[],
+            &[category.as_str()],
+            &[],
+        )?;
         let entry_name = item_dir
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or(LocalrefError::MissingField("item directory name"))?;
-        let unmatched = CategoryPath::new(UNMATCHED_CATEGORY)
-            .expect("UNMATCHED_CATEGORY is a valid category path");
-        fs.remove_category_link(&unmatched, entry_name)?;
+        let removed = LibraryFs::new(&self.library_root)
+            .remove_category_link(category, entry_name)?;
+        manifest.remove(item_id, category.as_str());
+        if let Some(path) = removed {
+            tracing::debug!(
+                event_kind = LogKind::CatLinkDeleted.as_str(),
+                item_id = item_id,
+                path = relative_to_root(&self.library_root, &path),
+                "category link deleted: {}",
+                category.as_str(),
+            );
+        }
         Ok(())
     }
 
@@ -1090,31 +1302,15 @@ impl LocalrefDaemon {
         });
         self.mark_running(record.id);
         let result = self.ensure_task_allowed(&record.task).and_then(|()| {
-            let fs = LibraryFs::new(&self.library_root);
+            let mut manifest = self.load_manifest()?;
             for item_id in item_ids {
-                let item = self
-                    .storage
-                    .get_item(item_id)?
-                    .ok_or(LocalrefError::MissingField("item"))?;
-                let item_dir = self.library_root.join(&item.object_path);
-                let entry_name = item_dir
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or(LocalrefError::MissingField(
-                        "item directory name",
-                    ))?;
-                if let Some(path) =
-                    fs.remove_category_link(category, entry_name)?
-                {
-                    tracing::debug!(
-                        event_kind = LogKind::CatLinkDeleted.as_str(),
-                        item_id = item_id,
-                        path = relative_to_root(&self.library_root, &path),
-                        "category link deleted: {}",
-                        category.as_str(),
-                    );
-                }
+                self.unfile_item_from_category(
+                    item_id,
+                    category,
+                    &mut manifest,
+                )?;
             }
+            manifest.save(&self.library_root)?;
             self.storage.rebuild_from_all()?;
             category_summary_for(&self.storage, category)
         });
@@ -1164,6 +1360,9 @@ impl LocalrefDaemon {
             }
             std::fs::remove_dir_all(&item_dir)
                 .map_err(|source| LocalrefError::io(&item_dir, source))?;
+            let mut manifest = self.load_manifest()?;
+            manifest.remove_item(item_id);
+            manifest.save(&self.library_root)?;
             tracing::warn!(
                 event_kind = LogKind::ItemDeleted.as_str(),
                 item_id = item_id,
@@ -1195,6 +1394,7 @@ impl LocalrefDaemon {
         let result = self.ensure_task_allowed(&record.task).and_then(|()| {
             let path = LibraryFs::new(&self.library_root)
                 .rename_category(from, to)?;
+            self.remap_category_prefix(from, to)?;
             tracing::info!(
                 event_kind = LogKind::CategoryRenamed.as_str(),
                 path = relative_to_root(&self.library_root, &path),
@@ -1206,6 +1406,49 @@ impl LocalrefDaemon {
             category_summary_for(&self.storage, to)
         });
         self.finish_task_result(record, result)
+    }
+
+    /// Rewrite metadata categories and manifest entries after a category tree
+    /// moves from one prefix to another (rename or merge).
+    ///
+    /// Every item whose metadata lists `from` — either exactly or as a `from/…`
+    /// subcategory — has that path rewritten to the corresponding `to` path.
+    /// The junction directory itself is moved by the caller; this keeps the
+    /// source-of-truth metadata and the manifest consistent with the move.
+    fn remap_category_prefix(
+        &self,
+        from: &CategoryPath,
+        to: &CategoryPath,
+    ) -> Result<()> {
+        let from_str = from.as_str();
+        let sub_prefix = format!("{from_str}/");
+        let remap = |category: &str| -> Option<String> {
+            if category == from_str {
+                Some(to.as_str().to_string())
+            } else {
+                category
+                    .strip_prefix(&sub_prefix)
+                    .map(|rest| format!("{}/{rest}", to.as_str()))
+            }
+        };
+
+        let mut manifest = self.load_manifest()?;
+        for item in self.storage.list_items()? {
+            for category in &item.categories {
+                if let Some(new_category) = remap(category) {
+                    let _ = self.edit_item_categories(
+                        &item.id,
+                        &[new_category.as_str()],
+                        &[],
+                        &[category.as_str()],
+                    )?;
+                    manifest.remove(&item.id, category);
+                    manifest.insert(&item.id, &new_category);
+                }
+            }
+        }
+        manifest.save(&self.library_root)?;
+        Ok(())
     }
 
     /// Merge one category directory into another.
@@ -1227,6 +1470,7 @@ impl LocalrefDaemon {
         let result = self.ensure_task_allowed(&record.task).and_then(|()| {
             let path =
                 LibraryFs::new(&self.library_root).merge_category(from, to)?;
+            self.remap_category_prefix(from, to)?;
             tracing::info!(
                 event_kind = LogKind::CategoryMerged.as_str(),
                 path = relative_to_root(&self.library_root, &path),
@@ -1285,6 +1529,22 @@ impl LocalrefDaemon {
             return Ok(false);
         };
         rest_files::open_system_path(&path)?;
+        Ok(true)
+    }
+
+    /// Open a plugin directory with the platform file manager.
+    ///
+    /// The caller passes a directory from a discovered plugin's manifest, so
+    /// the path is host-controlled rather than user-supplied. Returns `false`
+    /// when the path is not an existing directory.
+    /// # Errors
+    ///
+    /// Returns an error when the platform file manager cannot be launched.
+    pub fn open_plugin_folder(&self, dir: &Path) -> Result<bool> {
+        if !dir.is_dir() {
+            return Ok(false);
+        }
+        rest_files::open_system_path(dir)?;
         Ok(true)
     }
 
@@ -1550,12 +1810,184 @@ impl LocalrefDaemon {
             cat_normalizations += 1;
         }
 
+        // Rebuild so category reconciliation sees current metadata, then
+        // reconcile the Cat/ junctions against metadata + manifest.
+        self.storage.rebuild_from_all()?;
+        let reconciled = self.reconcile_categories()?;
+
         let indexed = self.storage.rebuild_from_all()?;
         record.indexed_items = Some(indexed);
         record.message = Some(format!(
-            "indexed {indexed} item(s), imported {all_imports} All folder(s), normalized {cat_normalizations} Cat folder(s)"
+            "indexed {indexed} item(s), imported {all_imports} All folder(s), normalized {cat_normalizations} Cat folder(s), reconciled {reconciled} category change(s)"
         ));
         Ok(())
+    }
+
+    /// Reconcile `Cat/` junctions against metadata membership and the manifest.
+    ///
+    /// `metadata.toml` is authoritative; the manifest records which junctions the
+    /// daemon has projected. Per `(item, category)` the classification is:
+    ///
+    /// - metadata has it, junction present → in sync (ensure manifest records it)
+    /// - metadata has it, junction absent, manifest recorded it → the user
+    ///   deleted the junction: drop the category from metadata and tombstone it
+    /// - metadata has it, junction absent, manifest did not record it → not yet
+    ///   projected: create the junction and record it
+    /// - junction present, metadata lacks it, not tombstoned → a hand-made or
+    ///   pre-existing junction: adopt the category into metadata
+    /// - junction present, metadata lacks it but tombstoned → honor the removal:
+    ///   remove the junction
+    ///
+    /// Returns the number of membership changes applied.
+    fn reconcile_categories(&self) -> Result<usize> {
+        let items = self.storage.list_items()?;
+        let item_pairs: Vec<(String, String)> = items
+            .iter()
+            .map(|item| (item.id.clone(), item.object_path.clone()))
+            .collect();
+        let on_disk = scan_cat_memberships(&self.library_root, &item_pairs)?;
+        let mut manifest = self.load_manifest()?;
+        let fs = LibraryFs::new(&self.library_root);
+        let mut changes = 0_usize;
+
+        // Load tombstones per item so we can honor deliberate removals.
+        let mut tombstones: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for item in &items {
+            let metadata_path =
+                self.library_root.join(&item.object_path).join("metadata.toml");
+            if let Ok(text) = std::fs::read_to_string(&metadata_path)
+                && let Ok(metadata) = Metadata::from_toml_str(&text)
+            {
+                let _ = tombstones.insert(
+                    item.id.clone(),
+                    metadata.state.removed_categories,
+                );
+            }
+        }
+        let disk_set: std::collections::BTreeSet<(String, String)> =
+            on_disk.iter().cloned().collect();
+
+        // Detect a library relocation. `metadata.toml` and the manifest are
+        // plain files that survive a copy / backup / cloud-sync / restore, but
+        // the `Cat/` item-link junctions are NTFS reparse points that do NOT —
+        // so after a move every membership would look like "manifest recorded
+        // it, junction gone", i.e. a deliberate user deletion, and the
+        // destructive branch would strip the category from metadata AND
+        // tombstone it: silent, permanent loss of all membership on the first
+        // scan after a move. The manifest records the absolute root it was
+        // projected against; when that differs from the current root the tree
+        // was relocated, so we re-project from metadata rather than honoring the
+        // missing junctions as deletions (re-projection is recoverable — the
+        // user can delete again — a wipe+tombstone is not).
+        // A stable key for the current root: canonicalize when possible so
+        // equivalent spellings compare equal, falling back to the lossy path.
+        let current_root = self
+            .library_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.library_root.clone())
+            .to_string_lossy()
+            .replace('\\', "/");
+        let relocated = manifest
+            .projected_root()
+            .is_some_and(|projected| projected != current_root);
+        if relocated {
+            tracing::warn!(
+                target: "localref::core",
+                "cat-manifest was projected against a different library root; \
+                 treating missing junctions as a relocation and re-projecting \
+                 from metadata instead of removing category membership",
+            );
+        }
+
+        for item in &items {
+            let entry_name = Path::new(&item.object_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(LocalrefError::MissingField("item directory name"))?;
+
+            // metadata-driven directions
+            for category in &item.categories {
+                let pair = (item.id.clone(), category.clone());
+                let category_path = CategoryPath::new(category.as_str())
+                    .ok_or_else(|| LocalrefError::InvalidPathComponent {
+                        component: category.clone(),
+                        reason: "indexed category path is invalid",
+                    })?;
+                if disk_set.contains(&pair) {
+                    manifest.insert(&item.id, category); // in sync
+                } else if manifest.contains(&item.id, category) && !relocated {
+                    // user deleted the junction → drop + tombstone
+                    let _ = self.edit_item_categories(
+                        &item.id,
+                        &[],
+                        &[category.as_str()],
+                        &[],
+                    )?;
+                    manifest.remove(&item.id, category);
+                    changes += 1;
+                    tracing::info!(
+                        event_kind = LogKind::CatLinkDeleted.as_str(),
+                        item_id = item.id,
+                        "category dropped after user removed junction: {category}",
+                    );
+                } else {
+                    // Not yet projected, or the whole junction tree was lost to
+                    // a relocation → (re)create the junction from metadata.
+                    let item_dir = self.library_root.join(&item.object_path);
+                    let _ =
+                        fs.create_category_link(&category_path, &item_dir)?;
+                    manifest.insert(&item.id, category);
+                    changes += 1;
+                }
+            }
+
+            // junction-driven adoption: on disk but not in metadata
+            let metadata_categories: std::collections::BTreeSet<&str> =
+                item.categories.iter().map(String::as_str).collect();
+            let item_tombstones = tombstones.get(&item.id);
+            for (disk_id, disk_category) in &on_disk {
+                if disk_id != &item.id
+                    || metadata_categories.contains(disk_category.as_str())
+                {
+                    continue;
+                }
+                let category_path = CategoryPath::new(disk_category.as_str())
+                    .ok_or_else(|| LocalrefError::InvalidPathComponent {
+                        component: disk_category.clone(),
+                        reason: "Cat junction category is invalid",
+                    })?;
+                let is_suppressed = item_tombstones
+                    .is_some_and(|list| list.contains(disk_category));
+                if is_suppressed {
+                    // honor the removal: remove the stray junction
+                    let _ =
+                        fs.remove_category_link(&category_path, entry_name)?;
+                    manifest.remove(&item.id, disk_category);
+                    changes += 1;
+                } else {
+                    // adopt hand-made / pre-existing junction into metadata
+                    let _ = self.edit_item_categories(
+                        &item.id,
+                        &[disk_category.as_str()],
+                        &[],
+                        &[],
+                    )?;
+                    manifest.insert(&item.id, disk_category);
+                    changes += 1;
+                    tracing::info!(
+                        event_kind = LogKind::CatLinkCreated.as_str(),
+                        item_id = item.id,
+                        "adopted existing junction into metadata: {disk_category}",
+                    );
+                }
+            }
+        }
+
+        // Record the root we just (re)projected against, so a later scan can
+        // recognise a relocation instead of destroying membership.
+        manifest.set_projected_root(current_root);
+        manifest.save(&self.library_root)?;
+        Ok(changes)
     }
 
     /// Internal helper for enqueue.
@@ -1712,13 +2144,27 @@ impl ImportPipeline {
             written_files.push(file_path);
         }
 
+        // No rule matched: fall back to the `unmatched` category so the item
+        // is always reachable from Cat/ and never orphaned.
+        let categories = if categories.is_empty() {
+            vec![CategoryPath::new(UNMATCHED_CATEGORY).expect(
+                "UNMATCHED_CATEGORY must be a valid category path",
+            )]
+        } else {
+            categories
+        };
+
         let metadata_path = item_dir.join("metadata.toml");
-        let metadata = metadata_from_import(
+        let mut metadata = metadata_from_import(
             &item_id,
             import,
             &attachments,
             &written_files,
         );
+        // metadata.toml is the source of truth for membership; record the
+        // resolved categories there before projecting the Cat/ junctions.
+        metadata.categories =
+            categories.iter().map(|c| c.as_str().to_string()).collect();
         let metadata_bytes = metadata.to_toml_string()?.into_bytes();
         self.fs.atomic_write(&metadata_path, &metadata_bytes)?;
         written_files.push(metadata_path);
@@ -1741,17 +2187,6 @@ impl ImportPipeline {
             path = relative_to_root(self.fs.root(), &item_dir),
             "connector import finished",
         );
-
-        // No rule matched: fall back to the `unmatched` category so the item
-        // is always reachable from Cat/ and never orphaned.
-        let categories = if categories.is_empty() {
-            vec![
-                CategoryPath::new(UNMATCHED_CATEGORY)
-                    .expect("UNMATCHED_CATEGORY must be a valid category path"),
-            ]
-        } else {
-            categories
-        };
 
         for category in &categories {
             let link_path =
@@ -1943,6 +2378,7 @@ impl ImportPipeline {
             venue: None,
             language: None,
             creators: Vec::new(),
+            categories: Vec::new(),
             files: MetadataFiles {
                 main: Some(imported_filename.clone()),
                 extra: vec![MetadataFile {
@@ -1959,6 +2395,7 @@ impl ImportPipeline {
             },
             state: MetadataState::default(),
             raw_connector: BTreeMap::default(),
+            extra: BTreeMap::default(),
         };
         let metadata_path = item_dir.join("metadata.toml");
         let metadata_text = metadata.to_toml_string()?;
@@ -2120,6 +2557,20 @@ impl ImportPipeline {
             &entry_name,
             &item_dir,
         )?;
+        // metadata.toml is the source of truth for membership; record the
+        // category there so a rebuild reflects it without the junction.
+        let item_metadata_path = item_dir.join("metadata.toml");
+        let current = std::fs::read_to_string(&item_metadata_path)
+            .map_err(|source| LocalrefError::io(&item_metadata_path, source))?;
+        let edited = Metadata::apply_category_edits(
+            &current,
+            &[category.as_str()],
+            &[],
+            &[],
+        )?;
+        if edited != current {
+            self.fs.atomic_write(&item_metadata_path, edited.as_bytes())?;
+        }
         tracing::info!(
             event_kind = LogKind::CatCopyReplacedByLink.as_str(),
             item_id = item_id.as_str(),
@@ -2313,6 +2764,7 @@ fn metadata_from_import(
                     .collect()
             })
             .unwrap_or_default(),
+        categories: Vec::new(),
         files: MetadataFiles { main, extra: attachment_files },
         tags: MetadataTags::from(&import.item.raw),
         import: MetadataImport {
@@ -2322,6 +2774,7 @@ fn metadata_from_import(
         },
         state: MetadataState::default(),
         raw_connector,
+        extra: BTreeMap::default(),
     }
 }
 
@@ -2415,6 +2868,7 @@ fn metadata_from_all_directory(
         venue: None,
         language: None,
         creators: Vec::new(),
+        categories: Vec::new(),
         files: MetadataFiles { main, extra },
         tags: MetadataTags::default(),
         import: MetadataImport {
@@ -2424,6 +2878,7 @@ fn metadata_from_all_directory(
         },
         state: MetadataState::default(),
         raw_connector: BTreeMap::default(),
+        extra: BTreeMap::default(),
     })
 }
 

@@ -33,6 +33,10 @@ pub enum LocalrefError {
     #[error("toml deserialization error: {0}")]
     TomlDe(#[from] toml::de::Error),
 
+    /// In-place TOML editing failed.
+    #[error("toml edit error: {0}")]
+    TomlEdit(#[from] toml_edit::TomlError),
+
     /// A required connector payload field is missing.
     #[error("missing required connector field: {0}")]
     MissingField(&'static str),

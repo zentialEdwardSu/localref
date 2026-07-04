@@ -6,25 +6,34 @@ edition = "2024"
 [features]
 default = ["server"]
 # Host-side daemon: filesystem orchestration, query database, REST router, and
-# the Win32 shell bridge. Disabled by lightweight consumers (e.g. the REST
+# OS shell integration. Disabled by lightweight consumers (e.g. the REST
 # client used by plugins) that only need the platform-neutral DTOs.
-server = ["dep:axum", "dep:http", "dep:redb", "dep:native-win32", "dep:cron"]
+server = ["dep:axum", "dep:http", "dep:redb", "dep:open", "dep:cron"]
 
 [dependencies]
 axum = { workspace = true, optional = true }
 cron = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
+open = { version = "5", optional = true }
 redb = { workspace = true, optional = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-native-win32 = { path = "../native-win32", optional = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+toml_edit = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

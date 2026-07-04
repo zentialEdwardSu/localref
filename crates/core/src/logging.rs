@@ -273,7 +273,17 @@ where
 /// The default filter level is `info`. Set the `LOCALREF_LOG` environment
 /// variable to override (e.g. `LOCALREF_LOG=debug` or
 /// `LOCALREF_LOG=warn,localref_core=debug`).
-pub fn init(library_root: impl Into<PathBuf>, quiet: bool) -> LogHandle {
+///
+/// Returns `None` when a global subscriber is already installed in this
+/// process (e.g. a second `start_daemon` call in the same test binary); the
+/// existing ring buffer keeps serving `events()`, so this is not an error.
+pub fn init(library_root: impl Into<PathBuf>, quiet: bool) -> Option<LogHandle> {
+    // Idempotent: the tracing subscriber is a process-global singleton and
+    // installing it twice panics. If it is already set, reuse it.
+    if GLOBAL_BUFFER.get().is_some() {
+        return None;
+    }
+
     let library_root: PathBuf = library_root.into();
     let log_dir = library_root.join(".localref").join("logs");
 
@@ -308,16 +318,25 @@ pub fn init(library_root: impl Into<PathBuf>, quiet: bool) -> LogHandle {
             .with_level(true)
             .compact();
 
-        tracing_subscriber::registry()
+        if tracing_subscriber::registry()
             .with(filter)
             .with(jsonl_layer)
             .with(stderr_layer)
-            .init();
-    } else {
-        tracing_subscriber::registry().with(filter).with(jsonl_layer).init();
+            .try_init()
+            .is_err()
+        {
+            return None;
+        }
+    } else if tracing_subscriber::registry()
+        .with(filter)
+        .with(jsonl_layer)
+        .try_init()
+        .is_err()
+    {
+        return None;
     }
 
-    LogHandle { buffer, _guard: guard }
+    Some(LogHandle { buffer, _guard: guard })
 }
 
 /// Emit a log record with a runtime-chosen target and level.

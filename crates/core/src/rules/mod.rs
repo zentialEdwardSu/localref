@@ -323,11 +323,13 @@ query = 'tags:ris'
             venue: None,
             language: None,
             creators: Vec::new(),
+            categories: Vec::new(),
             files: MetadataFiles::default(),
             tags: MetadataTags { items: vec!["RIS".to_string()] },
             import: MetadataImport::default(),
             state: MetadataState::default(),
             raw_connector: BTreeMap::default(),
+            extra: BTreeMap::default(),
         };
 
         let categories = rules.match_metadata(&metadata).unwrap();

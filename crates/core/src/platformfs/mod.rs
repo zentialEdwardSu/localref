@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 #[cfg(not(windows))]
 use std::fs::File;
 
+mod junction;
+
 use crate::error::{LocalrefError, Result};
 use crate::types::CategoryPath;
 
@@ -268,8 +270,7 @@ impl LibraryFs {
             Err(source) => return Err(LocalrefError::io(&link_path, source)),
         }
         #[cfg(windows)]
-        native_win32::create_directory_junction(&link_path, item_dir)
-            .map_err(|source| LocalrefError::Platform(source.to_string()))?;
+        junction::create_directory_junction(&link_path, item_dir)?;
         #[cfg(unix)]
         std::os::unix::fs::symlink(item_dir, &link_path)
             .map_err(|source| LocalrefError::io(&link_path, source))?;

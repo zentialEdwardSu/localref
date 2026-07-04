@@ -93,6 +93,9 @@ mod tests {
         let loaded = load(temp.path()).unwrap();
         assert_eq!(loaded, schedules);
         // Params survive the round-trip.
-        assert_eq!(loaded[0].params.get("format").map(String::as_str), Some("bibtex"));
+        assert_eq!(
+            loaded[0].params.get("format").map(String::as_str),
+            Some("bibtex")
+        );
     }
 }

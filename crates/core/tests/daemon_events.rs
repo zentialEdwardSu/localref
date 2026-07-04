@@ -4,7 +4,7 @@
 //! relies on.
 
 use localref_core::types::{ConnectorImport, ConnectorItem};
-use localref_core::{DaemonEvent, LocalrefDaemon};
+use localref_core::{DaemonEvent, LocalrefDaemon, PauseMode};
 use serde_json::json;
 
 fn connector_import(id: &str, title: &str) -> ConnectorImport {
@@ -65,7 +65,8 @@ fn create_category_emits_category_changed() {
     let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
     let mut rx = daemon.subscribe();
 
-    let category = localref_core::types::CategoryPath::new("Inbox/New").unwrap();
+    let category =
+        localref_core::types::CategoryPath::new("Inbox/New").unwrap();
     daemon.create_category(&category).unwrap();
 
     assert_eq!(
@@ -114,4 +115,31 @@ fn event_name_matches_wire_names() {
         DaemonEvent::ScanCompleted { indexed_items: 0 }.event_name(),
         "scan_completed",
     );
+    assert_eq!(
+        DaemonEvent::ItemFileAdded { item_id: String::new() }.event_name(),
+        "item_file_added",
+    );
+    assert_eq!(DaemonEvent::RulesChanged.event_name(), "rules_changed");
+    assert_eq!(
+        DaemonEvent::SchedulesChanged.event_name(),
+        "schedules_changed",
+    );
+    assert_eq!(DaemonEvent::DaemonPaused.event_name(), "daemon_paused");
+    assert_eq!(DaemonEvent::DaemonResumed.event_name(), "daemon_resumed");
+}
+
+#[test]
+fn rules_and_pause_changes_emit_hooks() {
+    let temp = tempfile::tempdir().unwrap();
+    let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+    let mut rx = daemon.subscribe();
+
+    daemon.write_rules_text("").unwrap();
+    assert_eq!(rx.try_recv().unwrap(), DaemonEvent::RulesChanged);
+
+    daemon.pause(PauseMode::Indexing);
+    assert_eq!(rx.try_recv().unwrap(), DaemonEvent::DaemonPaused);
+
+    daemon.resume(PauseMode::Indexing);
+    assert_eq!(rx.try_recv().unwrap(), DaemonEvent::DaemonResumed);
 }
