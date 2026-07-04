@@ -1,0 +1,110 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Localref.Desktop.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        d:DesignWidth="720"
+        d:DesignHeight="620"
+        x:Class="Localref.Desktop.Views.SettingsWindow"
+        x:DataType="vm:SettingsWindowViewModel"
+        Icon="/Assets/localref.ico"
+        Width="720"
+        Height="620"
+        MinWidth="600"
+        MinHeight="520"
+        WindowStartupLocation="CenterOwner"
+        Title="Localref — Settings">
+
+  <Grid RowDefinitions="Auto,*,Auto">
+    <!--<Border Grid.Row="0" Background="{DynamicResource Brush.Surface}" Padding="22,16">
+      <StackPanel Spacing="3">
+        <TextBlock Text="Settings" Classes="h1" />
+        <TextBlock Text="Library and service configuration" Classes="muted" FontSize="11" />
+      </StackPanel>
+    </Border>-->
+
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+      <StackPanel Margin="22,18" Spacing="20">
+        <StackPanel Spacing="10">
+          <TextBlock Text="Library" Classes="section-title" />
+          <StackPanel Spacing="4">
+            <TextBlock Text="Workspace name" Classes="eyebrow" />
+            <TextBox Text="{Binding RepoName}" />
+          </StackPanel>
+          <StackPanel Spacing="4">
+            <TextBlock Text="Library folder" Classes="eyebrow" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBox Text="{Binding LibraryRoot}" />
+              <Button Grid.Column="1" Classes="secondary" Content="Browse…"
+                      Click="OnBrowseLibraryClick" />
+            </Grid>
+          </StackPanel>
+        </StackPanel>
+
+        <StackPanel Spacing="10">
+          <TextBlock Text="Services" Classes="section-title" />
+          <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+            <StackPanel Grid.Column="0" Spacing="4">
+              <TextBlock Text="REST bind address" Classes="eyebrow" />
+              <TextBox Text="{Binding RestAddr}" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="4">
+              <TextBlock Text="Connector bind address" Classes="eyebrow" />
+              <TextBox Text="{Binding CscAddr}" />
+            </StackPanel>
+          </Grid>
+          <StackPanel Spacing="4">
+            <TextBlock Text="Public REST endpoint" Classes="eyebrow" />
+            <TextBox Text="{Binding RestEndpoint}" />
+          </StackPanel>
+          <TextBlock Text="Service and library changes take effect after restart."
+                     Classes="muted" FontSize="11" />
+        </StackPanel>
+
+        <StackPanel Spacing="10">
+          <TextBlock Text="Windows startup" Classes="section-title" />
+          <CheckBox Content="Start Localref when I sign in to Windows"
+                    IsChecked="{Binding LaunchAtStartup}" />
+          <CheckBox Content="Start silently in the system tray"
+                    IsChecked="{Binding StartHidden}" />
+          <Grid ColumnDefinitions="*,Auto">
+            <TextBlock Text="Create a shortcut in the current user's Windows Start menu."
+                       Classes="muted" VerticalAlignment="Center" TextWrapping="Wrap" />
+            <Button Grid.Column="1" Classes="secondary" Content="Add to Start menu"
+                    Command="{Binding AddToStartMenuCommand}" Margin="12,0,0,0" />
+          </Grid>
+          <TextBlock Text="Closing the main window keeps Localref running in the tray. Use Quit from the tray menu to exit."
+                     Classes="muted" FontSize="11" TextWrapping="Wrap" />
+        </StackPanel>
+
+        <StackPanel Spacing="10">
+          <TextBlock Text="Notifications" Classes="section-title" />
+          <Grid ColumnDefinitions="*,Auto">
+            <TextBlock Text="Send a Windows notification using the active Localref service."
+                       Classes="muted" VerticalAlignment="Center" />
+            <Button Grid.Column="1" Classes="secondary" Content="Send test"
+                    Command="{Binding TestNotificationCommand}" />
+          </Grid>
+        </StackPanel>
+
+        <StackPanel Spacing="4">
+          <TextBlock Text="Configuration file" Classes="eyebrow" />
+          <TextBlock Text="{Binding ConfigPath}" Classes="muted" FontSize="11"
+                     TextWrapping="Wrap" />
+        </StackPanel>
+      </StackPanel>
+    </ScrollViewer>
+
+    <Border Grid.Row="2" Background="{DynamicResource Brush.Surface}" Padding="20,10">
+      <Grid ColumnDefinitions="*,Auto,Auto">
+        <TextBlock Text="{Binding StatusText}" Classes="muted" FontSize="11"
+                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+        <Button Grid.Column="1" Classes="secondary" Content="Reload"
+                Command="{Binding LoadCommand}" Margin="8,0,0,0" />
+        <Button Grid.Column="2" Classes="primary" Content="Save settings"
+                Command="{Binding SaveCommand}" Margin="8,0,0,0" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

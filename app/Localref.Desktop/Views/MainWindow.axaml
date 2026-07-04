@@ -1,0 +1,474 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Localref.Desktop.ViewModels"
+        xmlns:ffi="using:uniffi.localref_ffi"
+        xmlns:chrome="using:Avalonia.Controls.Chrome"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        d:DesignWidth="1240"
+        d:DesignHeight="780"
+        x:Class="Localref.Desktop.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Icon="/Assets/localref.ico"
+        Width="1240"
+        Height="780"
+        MinWidth="940"
+        MinHeight="620"
+        WindowDecorations="BorderOnly"
+        ExtendClientAreaToDecorationsHint="True"
+        ExtendClientAreaTitleBarHeightHint="42"
+        WindowStartupLocation="CenterScreen"
+        Title="Localref — Reference library">
+
+  <Design.DataContext>
+    <vm:MainWindowViewModel />
+  </Design.DataContext>
+
+  <Window.Resources>
+    <ControlTheme x:Key="LibraryColumnHeaderTheme"
+                  TargetType="DataGridColumnHeader"
+                  BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </ControlTheme>
+  </Window.Resources>
+
+  <Window.Styles>
+    <Style Selector="Menu.titlebar-menu">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="VerticalAlignment" Value="Stretch" />
+    </Style>
+    <Style Selector="Menu.titlebar-menu > MenuItem">
+      <Setter Property="MinHeight" Value="42" />
+      <Setter Property="Padding" Value="12,0" />
+      <Setter Property="Foreground" Value="{DynamicResource Brush.Text.Muted}" />
+    </Style>
+    <Style Selector="Button.titlebar-button">
+      <Setter Property="Width" Value="46" />
+      <Setter Property="MinWidth" Value="46" />
+      <Setter Property="Height" Value="42" />
+      <Setter Property="MinHeight" Value="42" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Foreground" Value="{DynamicResource Brush.Text}" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.titlebar-button:pointerover">
+      <Setter Property="Background" Value="{DynamicResource Brush.Surface.Selected}" />
+    </Style>
+    <Style Selector="Button.titlebar-close:pointerover">
+      <Setter Property="Background" Value="#C42B1C" />
+      <Setter Property="Foreground" Value="White" />
+    </Style>
+  </Window.Styles>
+
+  <Grid RowDefinitions="Auto,*,Auto">
+    <!-- App-drawn title bar: app commands live beside the native window actions. -->
+    <Border Grid.Row="0"
+            Background="{DynamicResource Brush.Surface}"
+            BorderBrush="{DynamicResource Brush.Border}"
+            BorderThickness="0,0,0,1"
+            Height="42"
+            chrome:WindowDecorationProperties.ElementRole="TitleBar">
+      <Grid ColumnDefinitions="Auto,Auto,*,Auto">
+        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8"
+                    Margin="12,0,4,0" VerticalAlignment="Center"
+                    chrome:WindowDecorationProperties.ElementRole="User">
+          <Image Width="22" Height="22"
+                 Source="/Assets/localref.ico"
+                 Stretch="Uniform"
+                 AutomationProperties.Name="Localref" />
+          <TextBlock Text="{Binding WorkspaceName}" FontSize="12" FontWeight="SemiBold"
+                     VerticalAlignment="Center" MaxWidth="180" TextTrimming="CharacterEllipsis" />
+        </StackPanel>
+
+        <Menu Grid.Column="1" Classes="titlebar-menu"
+              chrome:WindowDecorationProperties.ElementRole="User">
+          <MenuItem Header="Library">
+            <MenuItem Header="Scan library" Command="{Binding ScanCommand}" />
+            <MenuItem Header="Refresh" Command="{Binding RefreshCommand}" />
+          </MenuItem>
+          <MenuItem Header="Tools">
+            <MenuItem Header="Plugin tools" SubmenuOpened="OnPluginToolsSubmenuOpened">
+              <MenuItem Header="No plugin tools for this context" IsEnabled="False" />
+            </MenuItem>
+            <MenuItem Header="Manage plugins" Click="OnManagePluginsClick" />
+            <Separator />
+            <MenuItem Header="Rules editor" Click="OnRulesClick" />
+            <MenuItem Header="Daemon logs" Click="OnLogsClick" />
+          </MenuItem>
+          <MenuItem Header="Settings">
+            <MenuItem Header="Open settings" Click="OnSettingsClick" />
+          </MenuItem>
+        </Menu>
+
+        <Border Grid.Column="2" Background="Transparent"
+                chrome:WindowDecorationProperties.ElementRole="TitleBar" />
+
+        <StackPanel Grid.Column="3" Orientation="Horizontal"
+                    chrome:WindowDecorationProperties.ElementRole="User">
+          <Button Classes="titlebar-button" ToolTip.Tip="Minimize"
+                  Click="OnMinimizeClick"
+                  chrome:WindowDecorationProperties.ElementRole="MinimizeButton"
+                  AutomationProperties.Name="Minimize window">
+            <PathIcon Width="14" Height="14"
+                      Data="M 1,6 L 13,6 L 13,8 L 1,8 Z" />
+          </Button>
+          <Button Classes="titlebar-button" ToolTip.Tip="Maximize or restore"
+                  Click="OnMaximizeClick"
+                  chrome:WindowDecorationProperties.ElementRole="MaximizeButton"
+                  AutomationProperties.Name="Maximize or restore window">
+            <PathIcon Width="14" Height="14"
+                      Data="M 1,1 L 13,1 L 13,13 L 1,13 Z M 3,3 L 3,11 L 11,11 L 11,3 Z" />
+          </Button>
+          <Button Classes="titlebar-button titlebar-close" ToolTip.Tip="Close to tray"
+                  Click="OnCloseClick"
+                  chrome:WindowDecorationProperties.ElementRole="CloseButton"
+                  AutomationProperties.Name="Close window to tray">
+            <PathIcon Width="14" Height="14"
+                      Data="M 2,1 L 7,6 L 12,1 L 13,2 L 8,7 L 13,12 L 12,13 L 7,8 L 2,13 L 1,12 L 6,7 L 1,2 Z" />
+          </Button>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- List/detail workspace -->
+    <Grid Grid.Row="1" Margin="0" x:Name="WorkspaceGrid">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" MinWidth="480" />
+        <ColumnDefinition Width="8" />
+        <ColumnDefinition Width="420" MinWidth="340" MaxWidth="620" />
+      </Grid.ColumnDefinitions>
+      <Border Grid.Column="0" Classes="card" ClipToBounds="True">
+        <Grid RowDefinitions="Auto,*">
+          <Grid Grid.Row="0" ColumnDefinitions="*,180" ColumnSpacing="12" Margin="18,14,18,12">
+            <TextBox Grid.Column="0"
+                     Classes="search"
+                     Height="40"
+                     VerticalAlignment="Center"
+                     HorizontalAlignment="Stretch"
+                     PlaceholderText="Search references…"
+                     Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
+                     AutomationProperties.Name="Search references" />
+
+            <ComboBox Grid.Column="1"
+                      Height="40"
+                      VerticalAlignment="Center"
+                      ItemsSource="{Binding CategoryFilters}"
+                      SelectedItem="{Binding CategoryFilter, Mode=TwoWay}"
+                      AutomationProperties.Name="Filter references by category" />
+          </Grid>
+
+          <DataGrid Grid.Row="1"
+                    x:Name="LibraryGrid"
+                    Classes="library-grid"
+                    ItemsSource="{Binding Items}"
+                    SelectedItem="{Binding SelectedItem}"
+                    AutoGenerateColumns="False"
+                    ColumnHeaderTheme="{StaticResource LibraryColumnHeaderTheme}"
+                    IsReadOnly="True"
+                    CanUserResizeColumns="True"
+                    CanUserSortColumns="True"
+                    SelectionMode="Extended"
+                    SelectionChanged="OnLibrarySelectionChanged"
+                    DoubleTapped="OnLibraryDoubleTapped"
+                    AutomationProperties.Name="Reference library">
+            <DataGrid.Resources>
+              <!-- Keep selected rows blue even when the grid or window loses focus. -->
+              <SolidColorBrush x:Key="DataGridRowSelectedBackgroundBrush"
+                               Color="{DynamicResource Color.Selection}" />
+              <SolidColorBrush x:Key="DataGridRowSelectedHoveredBackgroundBrush"
+                               Color="{DynamicResource Color.Selection}" />
+              <SolidColorBrush x:Key="DataGridRowSelectedUnfocusedBackgroundBrush"
+                               Color="{DynamicResource Color.Selection}" />
+              <SolidColorBrush x:Key="DataGridRowSelectedHoveredUnfocusedBackgroundBrush"
+                               Color="{DynamicResource Color.Selection}" />
+              <x:Double x:Key="DataGridRowSelectedBackgroundOpacity">1</x:Double>
+              <x:Double x:Key="DataGridRowSelectedHoveredBackgroundOpacity">1</x:Double>
+              <x:Double x:Key="DataGridRowSelectedUnfocusedBackgroundOpacity">1</x:Double>
+              <x:Double x:Key="DataGridRowSelectedHoveredUnfocusedBackgroundOpacity">1</x:Double>
+            </DataGrid.Resources>
+            <DataGrid.Columns>
+              <DataGridTemplateColumn Width="46" CanUserSort="False">
+                <DataGridTemplateColumn.Header>
+                  <Grid Height="30" HorizontalAlignment="Stretch">
+                    <CheckBox x:Name="SelectAllCheckBox"
+                              IsThreeState="True"
+                              Width="18"
+                              Height="18"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center"
+                              Click="OnSelectAllClick"
+                              AutomationProperties.Name="Select all references" />
+                  </Grid>
+                </DataGridTemplateColumn.Header>
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate x:DataType="vm:LibraryItemViewModel">
+                    <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                              Click="OnRowSelectionCheckBoxClick"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center"
+                              AutomationProperties.Name="Select reference" />
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Header="Reference" Width="2.2*" SortMemberPath="Title">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate x:DataType="vm:LibraryItemViewModel">
+                    <StackPanel Orientation="Horizontal">
+                      <Border Width="3" Margin="0,2,0,2" CornerRadius="1.5"
+                              Background="{Binding StatusBarBrush}"
+                              IsVisible="{Binding StatusBarBrush, Converter={x:Static ObjectConverters.IsNotNull}}"
+                              AutomationProperties.Name="Status indicator" />
+                      <TextBlock Text="{Binding Title}" FontWeight="SemiBold"
+                                 TextTrimming="CharacterEllipsis"
+                                 VerticalAlignment="Center" Margin="8,5" />
+                    </StackPanel>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTextColumn Header="Author" Width="1.25*" Binding="{Binding Authors}"
+                                  SortMemberPath="Authors" />
+              <DataGridTextColumn Header="Venue" Width="1.05*" Binding="{Binding Venue}"
+                                  SortMemberPath="Venue" />
+              <DataGridTextColumn Header="Year" Width="72" Binding="{Binding Year}"
+                                  SortMemberPath="Year" />
+              <DataGridTemplateColumn Header="Type" Width="112" SortMemberPath="Type">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate x:DataType="vm:LibraryItemViewModel">
+                    <Border Background="{DynamicResource Brush.Accent.Soft}"
+                            CornerRadius="10" Padding="8,3" Margin="6,0"
+                            HorizontalAlignment="Left" VerticalAlignment="Center">
+                      <TextBlock Text="{Binding Type}" Foreground="{DynamicResource Brush.Accent}"
+                                 FontSize="10" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    </Border>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTextColumn Header="Categories" Width="1.1*"
+                                  Binding="{Binding Categories}" SortMemberPath="Categories"
+                                  IsVisible="False" />
+            </DataGrid.Columns>
+          </DataGrid>
+
+          <StackPanel Grid.Row="1" IsVisible="{Binding !HasItems}"
+                      IsHitTestVisible="False" HorizontalAlignment="Center"
+                      VerticalAlignment="Center" Spacing="5" Margin="24">
+            <TextBlock Text="No references found" FontSize="15" FontWeight="SemiBold"
+                       HorizontalAlignment="Center" />
+            <TextBlock Text="Scan the library or try a different search."
+                       Classes="muted" FontSize="11" HorizontalAlignment="Center" />
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <GridSplitter Grid.Column="1"
+                    ResizeDirection="Columns"
+                    ResizeBehavior="PreviousAndNext"
+                    DragCompleted="OnWorkspaceSplitterDragCompleted"
+                    Background="{DynamicResource Brush.Border}"
+                    Margin="3,0"
+                    AutomationProperties.Name="Resize library and detail panels" />
+
+      <Border Grid.Column="2" Classes="card" Background="{DynamicResource Brush.Surface.Subtle}"
+              ClipToBounds="True">
+        <Grid>
+          <StackPanel IsVisible="{Binding !HasSelection}"
+                      HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8" Margin="30">
+            <Border Width="48" Height="48" CornerRadius="24" Background="{DynamicResource Brush.Accent.Soft}">
+              <TextBlock Text="i" Foreground="{DynamicResource Brush.Accent}" FontSize="20"
+                         FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <TextBlock Text="Choose a reference" FontSize="16" FontWeight="SemiBold"
+                       HorizontalAlignment="Center" />
+            <TextBlock Text="Metadata, categories, and files will appear here."
+                       Classes="muted" TextWrapping="Wrap" TextAlignment="Center" />
+          </StackPanel>
+
+          <Grid IsVisible="{Binding HasSelection}" RowDefinitions="Auto,*">
+            <Border Grid.Row="0" BorderThickness="0"
+                    Padding="18,16,18,12">
+              <Grid ColumnDefinitions="*,Auto">
+                <StackPanel>
+                  <TextBlock Text="{Binding SelectedItem.Title}" FontSize="17" FontWeight="SemiBold"
+                             TextWrapping="Wrap" MaxLines="2" />
+                  <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,0">
+                    <TextBlock Text="{Binding SelectedItem.Authors}" Classes="muted" FontSize="11"
+                               TextTrimming="CharacterEllipsis" MaxWidth="280" />
+                    <TextBlock Text="·" Classes="muted" FontSize="11" />
+                    <TextBlock Text="{Binding SelectedItem.FileSummary}" Classes="muted" FontSize="11" />
+                  </StackPanel>
+                  <ItemsControl ItemsSource="{Binding SelectedItem.CategoryPaths}" Margin="0,8,0,0">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <WrapPanel Orientation="Horizontal" />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="x:String">
+                        <Border Background="{DynamicResource Brush.Accent.Soft}"
+                                CornerRadius="10" Padding="8,3" Margin="0,0,6,4">
+                          <TextBlock Text="{Binding}" Foreground="{DynamicResource Brush.Accent}"
+                                     FontSize="10" FontWeight="SemiBold" />
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+                <Button Grid.Column="1" Classes="secondary" Content="Open folder"
+                        Command="{Binding OpenFolderCommand}" Margin="12,0,0,0" VerticalAlignment="Top" />
+              </Grid>
+            </Border>
+
+            <TabControl Grid.Row="1" Classes="inspector" Padding="0">
+              <TabItem Header="Metadata">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                  <StackPanel Margin="8,12,8,16" Spacing="10">
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock Text="Bibliographic details" Classes="section-title" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="1" Text="Unsaved changes" Foreground="{DynamicResource Brush.Danger}"
+                                 FontSize="10" IsVisible="{Binding HasUnsavedMetadata}" VerticalAlignment="Center" />
+                    </Grid>
+
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="Title" Classes="eyebrow" />
+                      <TextBox Text="{Binding EditTitle}" AutomationProperties.Name="Reference title" />
+                    </StackPanel>
+                    <Grid ColumnDefinitions="1.35*,0.65*" ColumnSpacing="10">
+                      <StackPanel Grid.Column="0" Spacing="4">
+                        <TextBlock Text="Type" Classes="eyebrow" />
+                        <TextBox Text="{Binding EditType}" />
+                      </StackPanel>
+                      <StackPanel Grid.Column="1" Spacing="4">
+                        <TextBlock Text="Year" Classes="eyebrow" />
+                        <TextBox Text="{Binding EditYear}" />
+                      </StackPanel>
+                    </Grid>
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="Publication / venue" Classes="eyebrow" />
+                      <TextBox Text="{Binding EditVenue}" />
+                    </StackPanel>
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="DOI" Classes="eyebrow" />
+                      <TextBox Text="{Binding EditDoi}" />
+                    </StackPanel>
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="URL" Classes="eyebrow" />
+                      <TextBox Text="{Binding EditUri}" />
+                    </StackPanel>
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="Abstract" Classes="eyebrow" />
+                      <TextBox Text="{Binding EditAbstract}" AcceptsReturn="True" TextWrapping="Wrap"
+                               MinHeight="100" VerticalContentAlignment="Top" />
+                    </StackPanel>
+                    <Button Classes="primary" Content="Save metadata" Command="{Binding SaveMetadataCommand}"
+                            HorizontalAlignment="Right" />
+                  </StackPanel>
+                </ScrollViewer>
+              </TabItem>
+
+              <TabItem Header="Categories">
+                <Grid Margin="12,14" RowDefinitions="Auto,Auto,*">
+                  <Grid Grid.Row="0" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <TextBox Text="{Binding NewCategory}"
+                             PlaceholderText="Enter a new category path" />
+                    <Button Grid.Column="1" Classes="primary" Content="Create"
+                            Command="{Binding CreateCategoryCommand}" />
+                  </Grid>
+                  <TextBlock Grid.Row="1" Text="{Binding SelectionText}" Classes="muted"
+                             FontSize="10" Margin="0,8" />
+                  <Grid Grid.Row="2" ColumnDefinitions="*,*" ColumnSpacing="12">
+                    <Grid Grid.Column="0" RowDefinitions="Auto,*">
+                      <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,6">
+                        <TextBlock Text="Current" Classes="section-title" VerticalAlignment="Center" />
+                        <Button Grid.Column="1" Classes="secondary" Content="Remove"
+                                Command="{Binding RemoveSelectedCategoryCommand}" />
+                      </Grid>
+                      <ListBox Grid.Row="1"
+                               ItemsSource="{Binding AssignedCategories}"
+                               SelectedItem="{Binding SelectedAssignedCategory}"
+                               AutomationProperties.Name="Categories assigned to all selected references" />
+                    </Grid>
+                    <Grid Grid.Column="1" RowDefinitions="Auto,*">
+                      <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,6">
+                        <TextBlock Text="Available" Classes="section-title" VerticalAlignment="Center" />
+                        <Button Grid.Column="1" Classes="primary" Content="Add"
+                                Command="{Binding AddSelectedCategoryCommand}" />
+                      </Grid>
+                      <ListBox Grid.Row="1"
+                               ItemsSource="{Binding AvailableCategories}"
+                               SelectedItem="{Binding SelectedAvailableCategory}"
+                               AutomationProperties.Name="Categories available to add" />
+                    </Grid>
+                  </Grid>
+                </Grid>
+              </TabItem>
+
+              <TabItem Header="Files">
+                <Grid x:Name="FilesDropTarget"
+                      Margin="8,12,8,16"
+                      RowDefinitions="Auto,*,Auto"
+                      DragDrop.AllowDrop="True">
+                  <StackPanel Grid.Row="0" Spacing="4" Margin="0,0,0,10">
+                    <TextBlock Text="Attached files" Classes="section-title" />
+                    <TextBlock Text="Double-click a file to open it with the system viewer."
+                               Classes="muted" FontSize="11" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <ListBox Grid.Row="1" ItemsSource="{Binding Files}" SelectedItem="{Binding SelectedFile}"
+                           DoubleTapped="OnFileDoubleTapped" AutomationProperties.Name="Attached files">
+                    <ListBox.ItemTemplate>
+                      <DataTemplate x:DataType="vm:ItemFileViewModel">
+                        <Grid ColumnDefinitions="*,Auto" Margin="4,6">
+                          <StackPanel>
+                            <TextBlock Text="{Binding Path}" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding Role}" Foreground="{DynamicResource Brush.Accent}"
+                                       FontSize="10" FontWeight="SemiBold" />
+                          </StackPanel>
+                          <TextBlock Grid.Column="1" Text="{Binding Size}" Classes="muted"
+                                     FontSize="10" VerticalAlignment="Center" Margin="8,0" />
+                        </Grid>
+                      </DataTemplate>
+                    </ListBox.ItemTemplate>
+                  </ListBox>
+                  <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"
+                              Spacing="8" Margin="0,12,0,0">
+                    <Button Classes="secondary" Content="{Binding MainFileActionText}"
+                            Command="{Binding ToggleMainFileCommand}" />
+                    <Button Classes="secondary" Content="Open selected" Command="{Binding OpenFileCommand}" />
+                    <Button Classes="primary" Content="Add file…" Click="OnAddFileClick" />
+                  </StackPanel>
+                  <Border Grid.RowSpan="3" Background="#CCDBEAFE"
+                          IsVisible="{Binding IsFileDragOver}" IsHitTestVisible="False">
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="6">
+                      <TextBlock Text="Drop files to attach" FontSize="18" FontWeight="SemiBold"
+                                 Foreground="{DynamicResource Brush.Accent}" />
+                      <TextBlock Text="Multiple files are supported" Classes="muted"
+                                 HorizontalAlignment="Center" />
+                    </StackPanel>
+                  </Border>
+                </Grid>
+              </TabItem>
+
+            </TabControl>
+          </Grid>
+        </Grid>
+      </Border>
+    </Grid>
+
+    <Border Grid.Row="2" Background="{DynamicResource Brush.Surface}"
+            BorderThickness="0"
+            Padding="20,7">
+      <Grid ColumnDefinitions="Auto,*,Auto">
+        <Ellipse Width="7" Height="7" Fill="{DynamicResource Brush.Success}" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="1" Text="{Binding StatusText}" Classes="muted" FontSize="11"
+                   VerticalAlignment="Center" Margin="8,0" />
+        <TextBlock Grid.Column="2" Text="Right-click a header to choose columns · Double-click a row to open its main file"
+                   Classes="muted" FontSize="10" VerticalAlignment="Center" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

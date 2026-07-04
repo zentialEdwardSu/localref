@@ -1,0 +1,35 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Localref.Desktop.App"
+             xmlns:local="using:Localref.Desktop"
+             RequestedThemeVariant="Light">
+
+    <Application.DataTemplates>
+        <local:ViewLocator/>
+    </Application.DataTemplates>
+
+    <!-- Tray icon: replaces the old tao/tray-icon native tray. Menu actions are
+         handled in App.axaml.cs (show window, scan, quit). -->
+    <TrayIcon.Icons>
+        <TrayIcons>
+            <TrayIcon Icon="/Assets/localref.ico"
+                      ToolTipText="Localref"
+                      Clicked="OnTrayClicked">
+                <TrayIcon.Menu>
+                    <NativeMenu>
+                        <NativeMenuItem Header="Open Localref" Click="OnTrayOpen"/>
+                        <NativeMenuItem Header="Scan Library" Click="OnTrayScan"/>
+                        <NativeMenuItemSeparator/>
+                        <NativeMenuItem Header="Quit" Click="OnTrayQuit"/>
+                    </NativeMenu>
+                </TrayIcon.Menu>
+            </TrayIcon>
+        </TrayIcons>
+    </TrayIcon.Icons>
+
+    <Application.Styles>
+        <FluentTheme />
+        <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.xaml" />
+        <StyleInclude Source="/Styles/DesignSystem.axaml" />
+    </Application.Styles>
+</Application>

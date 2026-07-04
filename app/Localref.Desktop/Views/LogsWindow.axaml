@@ -1,0 +1,61 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Localref.Desktop.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        d:DesignWidth="820"
+        d:DesignHeight="560"
+        x:Class="Localref.Desktop.Views.LogsWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Icon="/Assets/localref.ico"
+        Width="820"
+        Height="560"
+        MinWidth="560"
+        MinHeight="360"
+        WindowStartupLocation="CenterOwner"
+        Title="Localref — Daemon logs">
+
+  <Design.DataContext>
+    <vm:MainWindowViewModel />
+  </Design.DataContext>
+
+  <Grid RowDefinitions="Auto,*,Auto">
+    <Border Grid.Row="0" Background="{DynamicResource Brush.Surface}"
+            BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,0,0,1"
+            Padding="20,14">
+      <StackPanel Spacing="2">
+        <TextBlock Text="Daemon logs" Classes="h1" />
+        <TextBlock Text="Recent activity from the running daemon (in-memory ring buffer)."
+                   Classes="muted" FontSize="11" />
+      </StackPanel>
+    </Border>
+
+    <Border Grid.Row="1" Background="{DynamicResource Brush.Surface.Subtle}">
+      <ScrollViewer VerticalScrollBarVisibility="Auto"
+                    HorizontalScrollBarVisibility="Auto">
+        <ItemsControl ItemsSource="{Binding Logs}" Padding="14">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <TextBlock Text="{Binding}"
+                         FontFamily="Consolas"
+                         FontSize="12"
+                         TextWrapping="NoWrap" />
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+    </Border>
+
+    <Border Grid.Row="2" Background="{DynamicResource Brush.Surface}"
+            BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,1,0,0"
+            Padding="16,10">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock Text="{Binding StatusText}" Classes="muted" FontSize="11"
+                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+        <Button Grid.Column="1" Classes="secondary" Content="Refresh"
+                Command="{Binding RefreshCommand}" Margin="8,0,0,0" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

@@ -1,0 +1,170 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Localref.Desktop.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        d:DesignWidth="980"
+        d:DesignHeight="640"
+        x:Class="Localref.Desktop.Views.PluginsWindow"
+        x:DataType="vm:PluginsWindowViewModel"
+        Icon="/Assets/localref.ico"
+        Width="980"
+        Height="640"
+        MinWidth="760"
+        MinHeight="480"
+        WindowStartupLocation="CenterOwner"
+        Title="Localref — Plugin manager">
+
+  <Design.DataContext>
+    <vm:PluginsWindowViewModel />
+  </Design.DataContext>
+
+  <Grid RowDefinitions="Auto,*,Auto">
+    <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="20,16">
+      <StackPanel>
+        <TextBlock Text="Plugin manager" Classes="h1" />
+        <TextBlock Text="Enable, disable, and inspect installed plugins."
+                   Classes="muted" FontSize="11" />
+      </StackPanel>
+      <Button Grid.Column="1" Content="Scan for plugins"
+              Command="{Binding RescanCommand}" VerticalAlignment="Center" />
+    </Grid>
+
+    <TabControl Grid.Row="1" Padding="0">
+      <TabItem Header="Installed plugins">
+        <Grid ColumnDefinitions="380,*">
+      <DataGrid Grid.Column="0"
+                ItemsSource="{Binding Plugins}"
+                SelectedItem="{Binding SelectedPlugin}"
+                AutoGenerateColumns="False"
+                IsReadOnly="True"
+                CanUserResizeColumns="True"
+                CanUserSortColumns="True"
+                GridLinesVisibility="None"
+                HeadersVisibility="Column"
+                RowHeight="48">
+        <DataGrid.Columns>
+          <DataGridTemplateColumn Header="On" Width="54">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate x:DataType="vm:PluginManagerItemViewModel">
+                <CheckBox IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+                          HorizontalAlignment="Center" VerticalAlignment="Center"
+                          AutomationProperties.Name="Enable plugin" />
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
+          <DataGridTextColumn Header="Plugin" Width="*"
+                              Binding="{Binding Name}" SortMemberPath="Name" />
+          <DataGridTextColumn Header="Surfaces" Width="120"
+                              Binding="{Binding SurfaceSummary}" SortMemberPath="SurfaceSummary" />
+        </DataGrid.Columns>
+      </DataGrid>
+
+      <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto"
+                    Background="{DynamicResource Brush.Surface.Subtle}">
+        <StackPanel Margin="22,18" Spacing="16">
+          <StackPanel Spacing="4">
+            <TextBlock Text="{Binding SelectedPlugin.Name}" FontSize="20" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding SelectedPlugin.Description}" Classes="muted"
+                       TextWrapping="Wrap" />
+          </StackPanel>
+
+          <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+            <TextBlock Grid.Row="0" Text="Directory" Classes="eyebrow" />
+            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedPlugin.Directory}"
+                       TextWrapping="Wrap" />
+            <TextBlock Grid.Row="1" Text="Hooks" Classes="eyebrow" />
+            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedPlugin.Hooks}"
+                       TextWrapping="Wrap" />
+            <TextBlock Grid.Row="2" Text="Schedules" Classes="eyebrow" />
+            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedPlugin.Schedules}"
+                       TextWrapping="Wrap" />
+          </Grid>
+
+          <Button Classes="secondary" Content="Open folder"
+                  Command="{Binding SelectedPlugin.OpenFolderCommand}"
+                  HorizontalAlignment="Left" />
+
+          <Border Background="{DynamicResource Brush.Surface}" Padding="14" CornerRadius="8">
+            <StackPanel Spacing="5">
+              <TextBlock Text="Declared UI" Classes="section-title" />
+              <TextBlock Text="{Binding SelectedPlugin.SurfaceDescription}"
+                         Classes="muted" TextWrapping="Wrap" />
+              <TextBlock Text="Plugin UI opens in a separate window from the relevant item, selection, or import context."
+                         Classes="muted" FontSize="11" TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </ScrollViewer>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Schedules">
+        <Grid RowDefinitions="*,Auto" Background="{DynamicResource Brush.Surface.Subtle}">
+          <DataGrid Grid.Row="0"
+                    ItemsSource="{Binding Schedules}"
+                    SelectedItem="{Binding SelectedSchedule}"
+                    AutoGenerateColumns="False"
+                    IsReadOnly="True"
+                    CanUserResizeColumns="True"
+                    CanUserSortColumns="True"
+                    GridLinesVisibility="None"
+                    HeadersVisibility="Column"
+                    RowHeight="42">
+            <DataGrid.Columns>
+              <DataGridTextColumn Header="ID" Width="1.1*" Binding="{Binding Id}" SortMemberPath="Id" />
+              <DataGridTextColumn Header="Plugin" Width="*" Binding="{Binding Plugin}" SortMemberPath="Plugin" />
+              <DataGridTextColumn Header="Action" Width="1.1*" Binding="{Binding Action}" SortMemberPath="Action" />
+              <DataGridTextColumn Header="Schedule" Width="1.35*" Binding="{Binding Schedule}" SortMemberPath="Schedule" />
+              <DataGridTextColumn Header="Source" Width="90" Binding="{Binding Source}" SortMemberPath="Source" />
+            </DataGrid.Columns>
+          </DataGrid>
+
+          <Border Grid.Row="1" Background="{DynamicResource Brush.Surface}" Padding="18,14">
+            <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="10">
+              <Grid Grid.Row="0" ColumnDefinitions="1.1*,1.1*,1.1*,1.4*" ColumnSpacing="10">
+                <StackPanel Grid.Column="0" Spacing="4">
+                  <TextBlock Text="Schedule ID" Classes="eyebrow" />
+                  <TextBox Text="{Binding NewScheduleId}" PlaceholderText="nightly-export" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Spacing="4">
+                  <TextBlock Text="Plugin" Classes="eyebrow" />
+                  <ComboBox ItemsSource="{Binding AvailablePluginNames}"
+                            SelectedItem="{Binding NewSchedulePlugin}" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="4">
+                  <TextBlock Text="Action" Classes="eyebrow" />
+                  <TextBox Text="{Binding NewScheduleAction}" PlaceholderText="export_bibtex" />
+                </StackPanel>
+                <StackPanel Grid.Column="3" Spacing="4">
+                  <TextBlock Text="Cron (sec min hour day month weekday)" Classes="eyebrow" />
+                  <TextBox Text="{Binding NewScheduleExpression}" />
+                </StackPanel>
+              </Grid>
+
+              <StackPanel Grid.Row="1" Spacing="4">
+                <TextBlock Text="Parameters" Classes="eyebrow" />
+                <TextBox Text="{Binding NewScheduleParameters}"
+                         PlaceholderText="format=bibtex; destination=archive" />
+              </StackPanel>
+
+              <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto">
+                <TextBlock Text="Manifest schedules are read-only; runtime schedules can be removed here."
+                           Classes="muted" FontSize="11" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Classes="secondary" Content="Remove selected"
+                        Command="{Binding RemoveScheduleCommand}" Margin="8,0,0,0" />
+                <Button Grid.Column="2" Classes="primary" Content="Add schedule"
+                        Command="{Binding AddScheduleCommand}" Margin="8,0,0,0" />
+              </Grid>
+            </Grid>
+          </Border>
+        </Grid>
+      </TabItem>
+    </TabControl>
+
+    <Border Grid.Row="2" Background="{DynamicResource Brush.Surface}" Padding="20,7">
+      <TextBlock Text="{Binding StatusText}" Classes="muted" FontSize="11" />
+    </Border>
+  </Grid>
+</Window>

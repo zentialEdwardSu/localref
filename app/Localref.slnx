@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Localref.Desktop.Tests/Localref.Desktop.Tests.csproj" />
+  <Project Path="Localref.Desktop/Localref.Desktop.csproj" />
+</Solution>

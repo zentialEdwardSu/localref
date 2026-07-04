@@ -1,0 +1,42 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Localref.Desktop.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="500" d:DesignHeight="400"
+             x:Class="Localref.Desktop.Views.PluginPageView"
+             x:DataType="vm:PluginPageViewModel">
+
+    <DockPanel Margin="8">
+        <TextBlock DockPanel.Dock="Top" Text="{Binding Label}"
+                   FontWeight="Bold" FontSize="15" Margin="0,0,0,8"/>
+
+        <Button DockPanel.Dock="Bottom" Content="Run"
+                Command="{Binding RunCommand}"
+                IsVisible="{Binding HasAction}" Margin="0,8,0,0"/>
+
+        <TextBox DockPanel.Dock="Bottom" Text="{Binding ResultText}"
+                 IsReadOnly="True" AcceptsReturn="True" MaxHeight="160"
+                 IsVisible="{Binding ResultText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+
+        <!-- One row per declared field, rendered by kind. -->
+        <ItemsControl ItemsSource="{Binding Fields}">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:PluginFieldViewModel">
+                    <StackPanel Margin="0,4">
+                        <TextBlock Text="{Binding Label}" FontSize="12" Margin="0,0,0,2"/>
+                        <!-- text / number / textarea -->
+                        <TextBox Text="{Binding Value}" IsVisible="{Binding IsText}"/>
+                        <!-- checkbox -->
+                        <CheckBox IsChecked="{Binding BoolValue}" IsVisible="{Binding IsCheckbox}"/>
+                        <!-- select -->
+                        <ComboBox ItemsSource="{Binding Options}"
+                                  SelectedItem="{Binding Value}"
+                                  IsVisible="{Binding IsSelect}" HorizontalAlignment="Stretch"/>
+                    </StackPanel>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+    </DockPanel>
+
+</UserControl>

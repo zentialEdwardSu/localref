@@ -1,0 +1,67 @@
+using System;
+using System.IO;
+using uniffi.localref_ffi;
+
+namespace Localref.Desktop.Services;
+
+/// <summary>
+/// Owns the process-wide <see cref="DaemonHandle"/> and the paths it was booted
+/// with. Created once at startup (<see cref="Start"/>) and disposed on exit.
+/// </summary>
+/// <remarks>
+/// The handle must outlive the app: it owns the Rust Tokio runtime and the REST
+/// + CSC servers. Hold this in <c>App</c> and call <see cref="Stop"/> from the
+/// desktop lifetime's exit path so the servers shut down cleanly.
+/// </remarks>
+public sealed class DaemonService
+{
+    private DaemonHandle? _handle;
+
+    /// <summary>The live daemon handle. Throws if accessed before <see cref="Start"/>.</summary>
+    public DaemonHandle Handle =>
+        _handle ?? throw new InvalidOperationException("daemon not started");
+
+    /// <summary>
+    /// True while the daemon is started and not yet stopped. Callbacks that may
+    /// fire during teardown (e.g. late daemon events) should check this before
+    /// touching <see cref="Handle"/>, which throws once <see cref="Stop"/> runs.
+    /// </summary>
+    public bool IsRunning => _handle is not null;
+
+    /// <summary>The public REST endpoint plugins were told to call.</summary>
+    public string RestEndpoint { get; private set; } = "";
+    public string RepoName { get; private set; } = "Localref";
+    public string LibraryRoot { get; private set; } = "";
+
+    /// <summary>
+    /// Boot the daemon using the shared on-disk configuration.
+    /// </summary>
+    /// <remarks>
+    /// Configuration comes from the Rust core's <c>load_config()</c> — the same
+    /// resolution the CLI uses (<c>LOCALREF_CONFIG</c> env var, else
+    /// <c>~/.localref/config.toml</c>, creating it with defaults on first run).
+    /// The desktop app no longer hardcodes ports or paths, so it and the CLI
+    /// stay in sync.
+    /// </remarks>
+    public void Start()
+    {
+        var config = LocalrefFfiMethods.LoadConfig();
+        var settings = LocalrefFfiMethods.LoadAppSettings();
+        // The library + plugins directories must exist before the daemon opens
+        // storage; config resolution does not create them.
+        Directory.CreateDirectory(config.libraryRoot);
+        Directory.CreateDirectory(config.pluginsDir);
+
+        RestEndpoint = config.restEndpoint;
+        RepoName = settings.repoName;
+        LibraryRoot = config.libraryRoot;
+        _handle = LocalrefFfiMethods.StartDaemon(config);
+    }
+
+    /// <summary>Stop subscriptions/servers. Safe to call more than once.</summary>
+    public void Stop()
+    {
+        _handle?.Shutdown();
+        _handle = null;
+    }
+}

@@ -1,0 +1,102 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Localref.Desktop.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        d:DesignWidth="940"
+        d:DesignHeight="700"
+        x:Class="Localref.Desktop.Views.RulesWindow"
+        x:DataType="vm:RulesWindowViewModel"
+        Icon="/Assets/localref.ico"
+        Width="940"
+        Height="700"
+        MinWidth="720"
+        MinHeight="520"
+        WindowStartupLocation="CenterOwner"
+        Title="Localref — Rules editor">
+
+  <Design.DataContext>
+    <vm:RulesWindowViewModel />
+  </Design.DataContext>
+
+  <Grid RowDefinitions="Auto,*,Auto">
+    <Border Grid.Row="0" Background="{DynamicResource Brush.Surface}"
+            BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,0,0,1"
+            Padding="20,14">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="2">
+          <TextBlock Text="Rules editor" Classes="h1" />
+          <TextBlock Text="Automatic classification rules applied when references are imported."
+                     Classes="muted" FontSize="11" />
+        </StackPanel>
+        <TextBlock Grid.Column="1" Text="Unsaved changes"
+                   Foreground="{DynamicResource Brush.Danger}"
+                   FontSize="11" VerticalAlignment="Center"
+                   IsVisible="{Binding HasUnsavedChanges}" />
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,280">
+      <TextBox Grid.Column="0"
+               Text="{Binding RulesText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+               AcceptsReturn="True"
+               AcceptsTab="True"
+               TextWrapping="NoWrap"
+               FontFamily="Consolas"
+               FontSize="13"
+               Padding="14"
+               CornerRadius="0"
+               BorderThickness="0"
+               VerticalContentAlignment="Top"
+               HorizontalContentAlignment="Stretch"
+               ScrollViewer.HorizontalScrollBarVisibility="Auto"
+               ScrollViewer.VerticalScrollBarVisibility="Auto"
+               AutomationProperties.Name="Rules TOML editor" />
+
+      <Border Grid.Column="1" Background="{DynamicResource Brush.Surface.Subtle}"
+              BorderBrush="{DynamicResource Brush.Border}" BorderThickness="1,0,0,0"
+              Padding="16">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+          <StackPanel Spacing="14">
+            <StackPanel Spacing="5">
+              <TextBlock Text="Rule format" Classes="section-title" />
+              <TextBlock FontFamily="Consolas" FontSize="11" TextWrapping="Wrap"
+                         Text="[[rules]]&#10;name = &quot;near-field&quot;&#10;target = &quot;Wireless/RIS&quot;&#10;query = 'title:/near[- ]field/i'" />
+            </StackPanel>
+
+            <StackPanel Spacing="5">
+              <TextBlock Text="Query grammar" Classes="section-title" />
+              <TextBlock FontFamily="Consolas" FontSize="11" TextWrapping="Wrap"
+                         Text="field:substring OR field:/regex/i" />
+              <TextBlock Text="OR must be uppercase with one space on each side. Matching is case-insensitive unless a regex omits the i flag."
+                         Classes="muted" FontSize="11" TextWrapping="Wrap" />
+            </StackPanel>
+
+            <StackPanel Spacing="5">
+              <TextBlock Text="Supported fields" Classes="section-title" />
+              <TextBlock Text="title, abstract, doi, uri, type, venue, year, tags"
+                         Classes="muted" FontSize="11" TextWrapping="Wrap" />
+            </StackPanel>
+
+            <TextBlock Text="Saving validates the complete file before replacing the active rules."
+                       Classes="muted" FontSize="11" TextWrapping="Wrap" />
+          </StackPanel>
+        </ScrollViewer>
+      </Border>
+    </Grid>
+
+    <Border Grid.Row="2" Background="{DynamicResource Brush.Surface}"
+            BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,1,0,0"
+            Padding="16,10">
+      <Grid ColumnDefinitions="*,Auto,Auto">
+        <TextBlock Text="{Binding StatusText}" Classes="muted" FontSize="11"
+                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+        <Button Grid.Column="1" Classes="secondary" Content="Reload"
+                Command="{Binding LoadCommand}" Margin="8,0,0,0" />
+        <Button Grid.Column="2" Classes="primary" Content="Validate and save"
+                Command="{Binding SaveCommand}" Margin="8,0,0,0" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>
