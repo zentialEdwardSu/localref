@@ -112,7 +112,8 @@ pub enum NotifyKind {
 pub struct LocalrefClient {
     endpoint: String,
     http: reqwest::Client,
-}impl LocalrefClient {
+}
+impl LocalrefClient {
     /// Build a client for the given REST base URL (e.g. `http://127.0.0.1:8787`).
     #[must_use]
     pub fn new(endpoint: impl Into<String>) -> Self {
@@ -224,9 +225,7 @@ pub struct LocalrefClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(ClientError::Status { status: status.as_u16(), body });
         }
-        resp.json::<T>()
-            .await
-            .map_err(|e| ClientError::Decode(e.to_string()))
+        resp.json::<T>().await.map_err(|e| ClientError::Decode(e.to_string()))
     }
 
     /// Return all indexed item documents.
@@ -239,8 +238,7 @@ pub struct LocalrefClient {
         &self,
         item_id: &str,
     ) -> Result<ItemDocument, ClientError> {
-        self.get_json(&format!("/api/items/{}", encode_segment(item_id)))
-            .await
+        self.get_json(&format!("/api/items/{}", encode_segment(item_id))).await
     }
 
     /// Return the files present in one item directory.
@@ -248,10 +246,24 @@ pub struct LocalrefClient {
         &self,
         item_id: &str,
     ) -> Result<ItemFilesDocument, ClientError> {
-        self.get_json(&format!(
-            "/api/items/{}/files",
-            encode_segment(item_id)
-        ))
+        self.get_json(&format!("/api/items/{}/files", encode_segment(item_id)))
+            .await
+    }
+
+    /// Add an existing local file to an item, copying it into the item
+    /// directory under a managed name and recording it in the item's metadata.
+    ///
+    /// `path` is a local filesystem path the daemon can read (absolute, or
+    /// relative to the library root). Returns the reindexed item.
+    pub async fn add_file(
+        &self,
+        item_id: &str,
+        path: &str,
+    ) -> Result<ItemDocument, ClientError> {
+        self.post_json(
+            &format!("/api/items/{}/files", encode_segment(item_id)),
+            &serde_json::json!({ "path": path }),
+        )
         .await
     }
 
@@ -287,13 +299,50 @@ pub struct LocalrefClient {
         .await
     }
 
+    /// Set or clear one plugin `extra` value on an item.
+    ///
+    /// Pass `None` for `value` to remove the key. Returns the reindexed item.
+    /// This is how a plugin persists its own per-item data; declaring the field
+    /// as indexed in `plugin.toml` makes the value searchable.
+    pub async fn set_item_extra(
+        &self,
+        item_id: &str,
+        namespace: &str,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<ItemDocument, ClientError> {
+        self.post_json(
+            &format!("/api/items/{}/extra", encode_segment(item_id)),
+            &serde_json::json!({
+                "namespace": namespace,
+                "key": key,
+                "value": value,
+            }),
+        )
+        .await
+    }
+
+    /// Set (or clear, with `None`) the status-bar color shown on this item's
+    /// row in the desktop library list.
+    ///
+    /// `color` is a CSS hex string like `"#e11d48"`; `None` removes it. This is
+    /// a thin convenience over [`set_item_extra`](Self::set_item_extra) writing
+    /// the reserved `ui.bar_color` extra, which the desktop app renders as a
+    /// colored bar on the item's row (e.g. to flag a sync conflict).
+    pub async fn set_bar_color(
+        &self,
+        item_id: &str,
+        color: Option<&str>,
+    ) -> Result<ItemDocument, ClientError> {
+        self.set_item_extra(item_id, "ui", "bar_color", color).await
+    }
+
     /// Search indexed items by term.
     pub async fn search(
         &self,
         term: &str,
     ) -> Result<Vec<SearchHit>, ClientError> {
-        self.get_json(&format!("/api/search?q={}", encode_segment(term)))
-            .await
+        self.get_json(&format!("/api/search?q={}", encode_segment(term))).await
     }
 
     /// Return daemon queue and pause status.
@@ -302,13 +351,27 @@ pub struct LocalrefClient {
     }
 
     /// Pause one daemon mode.
-    pub async fn pause(&self, mode: &str) -> Result<DaemonStatus, ClientError> {
-        self.post_json("/api/daemon/pause", &serde_json::json!({ "mode": mode })).await
+    pub async fn pause(
+        &self,
+        mode: &str,
+    ) -> Result<DaemonStatus, ClientError> {
+        self.post_json(
+            "/api/daemon/pause",
+            &serde_json::json!({ "mode": mode }),
+        )
+        .await
     }
 
     /// Resume one daemon mode.
-    pub async fn resume(&self, mode: &str) -> Result<DaemonStatus, ClientError> {
-        self.post_json("/api/daemon/resume", &serde_json::json!({ "mode": mode })).await
+    pub async fn resume(
+        &self,
+        mode: &str,
+    ) -> Result<DaemonStatus, ClientError> {
+        self.post_json(
+            "/api/daemon/resume",
+            &serde_json::json!({ "mode": mode }),
+        )
+        .await
     }
 
     /// Request a daemon scan.
@@ -468,9 +531,8 @@ mod tests {
         let daemon = localref_core::LocalrefDaemon::for_library(temp.path())
             .expect("for_library");
         let router = localref_core::rest::router_with_daemon(daemon);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
+        let listener =
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("addr");
         let handle = tokio::spawn(async move {
             let _temp = temp;
@@ -550,9 +612,8 @@ mod tests {
             "/api/notify",
             axum::routing::post(move || async move { status }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
+        let listener =
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("addr");
         let handle = tokio::spawn(async move {
             axum::serve(listener, router).await.expect("serve");
