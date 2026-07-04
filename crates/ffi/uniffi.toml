@@ -1,0 +1,4 @@
+[bindings.csharp]
+# Emit public types so the Avalonia app (a separate compilation view) can expose
+# DaemonHandle/DTOs from its own public services and view models.
+access_modifier = "public"

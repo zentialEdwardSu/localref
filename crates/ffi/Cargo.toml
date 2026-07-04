@@ -1,0 +1,25 @@
+[package]
+name = "localref-ffi"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+name = "localref_ffi"
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+localref_core = { package = "localref-core", path = "../core" }
+localref_host = { package = "localref-host", path = "../host" }
+localref_plugin = { package = "localref-plugin", path = "../plugin" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uniffi = { version = "=0.29.4", features = ["tokio"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
