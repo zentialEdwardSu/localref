@@ -47,7 +47,7 @@ event = "item_deleted"
 
 | Key     | Type | Required | Values |
 |---------|------|----------|--------|
-| `event` | enum | yes      | `item_imported` · `category_changed` · `item_deleted` · `metadata_patched` · `scan_completed` |
+| `event` | enum | yes      | `item_imported` · `category_changed` · `item_deleted` · `metadata_patched` · `scan_completed` · `item_file_added` · `rules_changed` · `schedules_changed` · `daemon_paused` · `daemon_resumed` |
 
 A plugin may declare any number of hooks. The same plugin can bind to several
 events; it dispatches on the `<event>` argument at runtime.
@@ -89,7 +89,6 @@ form. Actions appear in `[[actions]]` tables.
 [[actions]]
 id     = "export_ris"
 label  = "Export RIS"
-mount  = "context_menu"
 target = "selection"
 ```
 
@@ -97,8 +96,11 @@ target = "selection"
 |----------|--------|----------|--------|
 | `id`     | string | yes      | Action id passed to the binary as `run <id>` |
 | `label`  | string | yes      | Display label |
-| `mount`  | enum   | yes      | `action_button` · `context_menu` |
 | `target` | enum   | no       | `selection` · `active` · `none` (default) |
+
+The host derives action placement from `target`: selection/active actions are
+offered in contextual menus; `none` actions appear in the global Plugin tools
+menu. `mount` is accepted only for compatibility with older plugin bundles.
 
 ### Pages
 
@@ -109,10 +111,10 @@ have any number of `[[pages.fields]]` and `[[pages.display]]` sub-tables.
 [[pages]]
 id      = "export"
 label   = "Export"
-mount   = "selection_page"
 route   = "export"
 action  = "export_bibtex"
 target  = "selection"
+requires = ["selection"]
 preview = { action = "preview_export", debounce_ms = 300, into = "preview_pane" }
 ```
 
@@ -120,11 +122,18 @@ preview = { action = "preview_export", debounce_ms = 300, into = "preview_pane" 
 |-----------|-------------|----------|-------|
 | `id`      | string      | yes      | Page id |
 | `label`   | string      | yes      | Tab or page heading |
-| `mount`   | enum        | yes      | `detail_tab` · `metadata_page` · `selection_page` |
 | `route`   | string      | yes      | URL route segment |
 | `action`  | string      | no       | Action id spawned on form submit |
 | `target`  | enum        | no       | `selection` · `active` · `none` (default) |
+| `requires`| string[]    | no       | Host data required by the page; determines its contextual surface |
 | `preview` | inline table| no       | See [Live preview](#live-preview) |
+
+Supported requirements are `library`, `selection`, `active_item`,
+`item_metadata`, `item_files`, `item_categories`, and `imported_item`.
+Item-related requirements open from an active Item context; `selection` opens
+from a selection context; `imported_item` opens after import; and `library`
+appears globally. Legacy `mount` values remain a fallback when `requires` is
+absent.
 
 #### Fields
 
@@ -256,7 +265,7 @@ plugin-bin cron <id>    --endpoint <url>
 |----------------|-------|
 | `hook`         | Literal subcommand |
 | `<event>`      | The event name that fired (one of the five hook events) |
-| `--item`       | Affected item id, present for item-scoped events (`item_imported`, `item_deleted`, `metadata_patched`, and item-targeted category changes) |
+| `--item`       | Affected item id, present for item-scoped events (`item_imported`, `item_deleted`, `metadata_patched`, `item_file_added`, and item-targeted category changes) |
 | `--category`   | Affected category path, present for `category_changed` events that name one |
 | `cron`         | Literal subcommand |
 | `<id>`         | The cron job id declared in `plugin.toml` |
@@ -371,6 +380,70 @@ client.log_with("bibtexer", LogLevel::Warn, "skipped 1 item",
     Some("plugin_action"), Some("lr:zotero:abc"), None).await?;
 ```
 
+### Per-item plugin data — `set_item_extra`
+
+A plugin stores its own per-item state in the item's `extra` table, keyed by a
+namespace it owns and a field key, via `POST /api/items/{id}/extra`:
+
+```jsonc
+// POST <endpoint>/api/items/{id}/extra
+{
+  "namespace": "s3sync",   // the plugin's namespace
+  "key": "status",         // field key within the namespace
+  "value": "synced"        // null removes the key
+}
+```
+
+Declaring a field as `indexed` in `plugin.toml` makes its value searchable:
+
+```toml
+[[extra_fields]]
+namespace = "s3sync"
+key       = "status"
+indexed   = true
+```
+
+From the SDK:
+
+```rust
+client.set_item_extra("lr:zotero:abc", "s3sync", "status", Some("synced")).await?;
+client.set_item_extra("lr:zotero:abc", "s3sync", "status", None).await?; // clear
+```
+
+### Adding a file to an item — `add_file`
+
+A plugin can attach an existing local file to an item with
+`POST /api/items/{id}/files`. The daemon copies the file into the item
+directory under a managed, sanitized name and records it in the item's
+metadata — so pass a path the daemon can read (absolute, or library-relative),
+not raw bytes:
+
+```rust
+// Stage bytes to a temp file, then hand the path to the daemon.
+client.add_file("lr:zotero:abc", "/tmp/localref-s3sync/paper (conflict).pdf").await?;
+```
+
+This is how the `s3sync` plugin lands a "keep both" conflict copy back into the
+item after the sync engine reports a divergent binary edit.
+
+### Item row color — `set_bar_color`
+
+The reserved extra `ui.bar_color` tints an item's row in the desktop library
+list — a leading colored bar the app renders when the value is a valid CSS hex
+string (e.g. to flag a sync conflict). Set it with the `set_bar_color`
+convenience, or clear it with `None`:
+
+```rust
+// Flag the row red, then clear it once resolved.
+client.set_bar_color("lr:zotero:abc", Some("#e11d48")).await?;
+client.set_bar_color("lr:zotero:abc", None).await?;
+```
+
+`set_bar_color(id, color)` is exactly `set_item_extra(id, "ui", "bar_color", color)`;
+the `ui` namespace is a UI convention and does not need an `[[extra_fields]]`
+declaration. The bar refreshes on the next library reload (e.g. after the
+`metadata_patched` event the write emits).
+
 ### Desktop notifications
 
 A plugin can request a desktop notification with `POST /api/notify`:
@@ -430,10 +503,10 @@ No `ui` key, so the host reads `ui.toml` by default.
 [[pages]]
 id      = "export"
 label   = "Export"
-mount   = "selection_page"
 route   = "export"
 action  = "export_bibtex"
 target  = "selection"
+requires = ["selection"]
 preview = { action = "preview_export", debounce_ms = 300, into = "preview_pane" }
 
 [[pages.fields]]
@@ -454,13 +527,12 @@ text = ""
 [[actions]]
 id     = "export_ris"
 label  = "Export RIS"
-mount  = "context_menu"
 target = "selection"
 ```
 
 This exposes:
 
-- A `selection_page` with a format dropdown, a Tier-1 count readout, and a
+- A selection-context page with a format dropdown, a Tier-1 count readout, and a
   Tier-2 debounced preview pane.
 - A context-menu entry that runs `export_ris` directly on the selection.
 

@@ -1,0 +1,24 @@
+[package]
+name = "localref-plugin-s3sync"
+version = "0.1.0"
+edition = "2024"
+description = "Sync item files to S3-compatible storage with history and conflict resolution"
+
+[[bin]]
+name = "s3sync"
+path = "src/main.rs"
+
+[dependencies]
+localref-plugin-sdk = { path = "../../../crates/plugin-sdk" }
+localref-core = { package = "localref-core", path = "../../../crates/core", default-features = false }
+rollforward = { git = "https://github.com/zentialEdwardSu/rollforward" }
+object_store = { version = "0.11", features = ["aws"] }
+futures = "0.3"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+url = "2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

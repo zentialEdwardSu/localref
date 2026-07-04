@@ -1,10 +1,10 @@
 [[pages]]
 id = "export"
 label = "Export"
-mount = "selection_page"
 route = "export"
 action = "export_bibtex"
 target = "selection"
+requires = ["selection"]
 preview = { action = "preview_export", debounce_ms = 300, into = "preview_pane" }
 
 [[pages.fields]]
@@ -25,5 +25,4 @@ text = ""
 [[actions]]
 id = "export_ris"
 label = "Export RIS"
-mount = "context_menu"
 target = "selection"

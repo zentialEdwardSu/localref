@@ -28,9 +28,7 @@ const PLUGIN_NAME: &str = "hooklog";
 #[tokio::main]
 async fn main() {
     let Some(invocation) = parse_args(std::env::args().skip(1)) else {
-        emit(&RunOutput::error(
-            "usage: hooklog <hook|cron> … --endpoint …",
-        ));
+        emit(&RunOutput::error("usage: hooklog <hook|cron> … --endpoint …"));
         return;
     };
     let line = match invocation {
@@ -67,11 +65,16 @@ async fn report_to_daemon(
 ) {
     let client = LocalrefClient::new(endpoint);
     let _ = client
-        .log_with(PLUGIN_NAME, LogLevel::Info, summary, Some(event), item, None)
+        .log_with(
+            PLUGIN_NAME,
+            LogLevel::Info,
+            summary,
+            Some(event),
+            item,
+            None,
+        )
         .await;
-    let _ = client
-        .notify("hooklog", summary, NotifyKind::Info)
-        .await;
+    let _ = client.notify("hooklog", summary, NotifyKind::Info).await;
 }
 
 /// Append one line to the log file, returning the result envelope.

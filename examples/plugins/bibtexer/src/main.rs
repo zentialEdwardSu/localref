@@ -19,7 +19,9 @@ async fn main() {
     match invocation {
         Invocation::Manifest => {
             // Author self-check: identity only; the host reads plugin.toml.
-            println!("bibtexer (BibTeX/RIS export) — see plugin.toml / ui.toml");
+            println!(
+                "bibtexer (BibTeX/RIS export) — see plugin.toml / ui.toml"
+            );
         }
         Invocation::Run { action, endpoint, selected, active, params } => {
             let ctx = ActionContext {
@@ -32,7 +34,9 @@ async fn main() {
         }
         // bibtexer is interactive-only; it declares no hooks or cron jobs.
         Invocation::Hook { .. } | Invocation::Cron { .. } => {
-            emit(&RunOutput::error("bibtexer has no hook or cron entry points"));
+            emit(&RunOutput::error(
+                "bibtexer has no hook or cron entry points",
+            ));
         }
     }
 }
@@ -105,10 +109,8 @@ fn format_citation(
             item.title
         ),
         _ => {
-            let key = format!(
-                "{}{year}",
-                first.to_lowercase().replace(' ', "")
-            );
+            let key =
+                format!("{}{year}", first.to_lowercase().replace(' ', ""));
             format!(
                 "@article{{{key},\n  author = {{{first}}},\n  title = {{{}}},\n  year = {{{year}}}\n}}",
                 item.title

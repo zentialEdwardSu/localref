@@ -1,0 +1,14 @@
+name        = "s3sync"
+executable  = "s3sync"
+description = "Sync item files to S3-compatible storage with history and conflict resolution"
+
+# Nightly full sync (cron: sec min hour day-of-month month day-of-week).
+[[cron]]
+id       = "nightly_sync"
+schedule = "0 0 3 * * *"
+
+# Per-item sync status, made searchable so conflicts can be listed via search.
+[[extra_fields]]
+namespace = "s3sync"
+key       = "status"
+indexed   = true

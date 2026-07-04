@@ -1,0 +1,58 @@
+# Sync the checked selection to S3.
+[[pages]]
+id       = "sync"
+label    = "Sync to S3"
+route    = "sync"
+action   = "sync_selected"
+target   = "selection"
+requires = ["selection"]
+
+[[pages.display]]
+id   = "count"
+text = "Syncing {selection.count} item(s) to S3"
+
+# Version history for the active item, with a rollback control.
+[[pages]]
+id       = "history"
+label    = "S3 History"
+route    = "history"
+action   = "rollback"
+target   = "active"
+requires = ["active_item"]
+preview  = { action = "list_history", debounce_ms = 200, into = "history_pane" }
+
+[[pages.fields]]
+name     = "sequence"
+label    = "Roll back to version (sequence)"
+kind     = "number"
+required = true
+
+[[pages.display]]
+id   = "history_pane"
+text = ""
+
+# Library-wide conflict review + resolution.
+[[pages]]
+id      = "conflicts"
+label   = "S3 Conflicts"
+route   = "conflicts"
+action  = "resolve_conflicts"
+target  = "none"
+preview = { action = "list_conflicts", debounce_ms = 200, into = "conflict_pane" }
+
+[[pages.fields]]
+name    = "policy"
+label   = "Resolution policy"
+kind    = "select"
+options = ["keep_both", "keep_local", "keep_remote"]
+default = "keep_both"
+
+[[pages.display]]
+id   = "conflict_pane"
+text = ""
+
+# Global action: sync the entire library.
+[[actions]]
+id     = "sync_all"
+label  = "Sync all to S3"
+target = "none"
