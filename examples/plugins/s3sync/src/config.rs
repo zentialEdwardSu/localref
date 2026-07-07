@@ -1,8 +1,10 @@
 //! Plugin configuration: where the S3 bucket is and this device's client id.
 //!
 //! Stored at `<library>/.localref/s3sync/config.toml`. TOML is used so the
-//! generated starter file can carry explanatory comments. Credentials are
-//! **not** stored here — they come from the standard AWS environment chain
+//! generated starter file can carry explanatory comments. Credentials may be
+//! set here (`access_key_id` / `secret_access_key` / optional `session_token`)
+//! to make configuring an S3-compatible store like Cloudflare R2 a single-file
+//! edit; when left blank they fall back to the standard AWS environment chain
 //! (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`). The
 //! `client_id` is generated once (into the starter template) and persisted.
 
@@ -29,6 +31,16 @@ pub struct S3SyncConfig {
     /// Optional HTTP(S) proxy for reaching the S3 endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyConfig>,
+    /// Access key id. When set, it is passed to the S3 client directly;
+    /// otherwise credentials come from the AWS environment chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_key_id: Option<String>,
+    /// Secret access key. Only used when `access_key_id` is also set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_access_key: Option<String>,
+    /// Optional session token, for temporary/STS credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
     /// Stable per-device client id (generated on first run).
     #[serde(default)]
     pub client_id: String,
@@ -137,17 +149,17 @@ impl S3SyncConfig {
 /// annotated file to fill in rather than a blank one.
 const CONFIG_TEMPLATE: &str = "\
 # s3sync configuration.
-# Credentials are NOT stored here — set them via the AWS environment chain:
-#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
 
 # Target bucket name (required). For local testing you may use a
 # \"file:///abs/path\" pseudo-bucket instead of a real S3 bucket.
 bucket = \"\"
 
 # AWS region, e.g. \"us-east-1\". Optional for S3-compatible endpoints.
+# For Cloudflare R2 use \"auto\".
 # region = \"us-east-1\"
 
 # Custom endpoint URL for S3-compatible stores (MinIO, Cloudflare R2, …).
+# For R2: \"https://<accountid>.r2.cloudflarestorage.com\"
 # endpoint = \"http://127.0.0.1:9000\"
 
 # Allow plain HTTP (needed for local MinIO). Defaults to false.
@@ -155,6 +167,13 @@ allow_http = false
 
 # Key prefix under which all sync objects live in the bucket.
 prefix = \"\"
+
+# Credentials. Set these to configure an S3-compatible store (e.g. Cloudflare
+# R2) in one place. Leave them blank/commented to use the AWS environment chain
+# instead (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN).
+# access_key_id = \"\"
+# secret_access_key = \"\"
+# session_token = \"\"   # only for temporary/STS credentials
 
 # Optional HTTP(S) proxy for reaching the S3 endpoint. Remove this section to
 # connect directly. `scheme` defaults to \"http\"; username/password are only

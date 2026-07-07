@@ -25,10 +25,10 @@ use config::S3SyncConfig;
 use listener::RecordingListener;
 use localref_core::config::LocalrefConfig;
 use localref_plugin_sdk::{
-    ActionContext, Invocation, LocalrefClient, NotifyKind, RunOutput, emit, parse_args,
+    ActionContext, Invocation, LocalrefClient, LogLevel, NotifyKind, RunOutput, emit, parse_args,
 };
 use object_store::ObjectStore;
-use object_store::aws::AmazonS3Builder;
+use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::local::LocalFileSystem;
 use rollforward::types::{BinaryConflictPolicy, OpLogEntry};
 use rollforward::{RedbStore, RemoteStorage, SyncEngine};
@@ -82,6 +82,13 @@ async fn main() {
             emit(&RunOutput::error("s3sync has no hook entry points"));
         }
     }
+}
+
+/// Forward a line into the daemon's unified log under `localref::plugin::s3sync`,
+/// so plugin activity shows up alongside daemon logs in the app. Best-effort:
+/// a logging transport failure must never fail the action itself.
+async fn log(ctx: &ActionContext, level: LogLevel, message: &str) {
+    let _ = ctx.client.log(PLUGIN_NAME, level, message).await;
 }
 
 /// Dispatch a `run` action.
@@ -170,12 +177,32 @@ fn build_object_store(cfg: &S3SyncConfig) -> Result<Arc<dyn ObjectStore>, String
     if let Some(local) = cfg.bucket.strip_prefix("file://") {
         return Ok(Arc::new(LocalFileSystem::new_with_prefix(local).map_err(|e| e.to_string())?));
     }
-    let mut builder = AmazonS3Builder::from_env().with_bucket_name(&cfg.bucket).with_allow_http(cfg.allow_http);
+    // Start from the AWS environment chain, then let explicit config values
+    // (credentials, region, endpoint) override it. This keeps env-based setups
+    // working while making an R2/MinIO config a single-file edit.
+    //
+    // `ETagMatch` conditional puts are required for `PutMode::Create` (used by
+    // the engine's oplog CAS): object_store's S3 backend returns
+    // `NotImplemented` for create/update-if-absent unless a conditional-put
+    // strategy is set. R2, MinIO and modern S3 all honor `If-None-Match`.
+    let mut builder = AmazonS3Builder::from_env()
+        .with_bucket_name(&cfg.bucket)
+        .with_allow_http(cfg.allow_http)
+        .with_conditional_put(S3ConditionalPut::ETagMatch);
     if let Some(region) = &cfg.region {
         builder = builder.with_region(region);
     }
     if let Some(endpoint) = &cfg.endpoint {
         builder = builder.with_endpoint(endpoint);
+    }
+    if let Some(access_key_id) = &cfg.access_key_id {
+        builder = builder.with_access_key_id(access_key_id);
+    }
+    if let Some(secret_access_key) = &cfg.secret_access_key {
+        builder = builder.with_secret_access_key(secret_access_key);
+    }
+    if let Some(session_token) = &cfg.session_token {
+        builder = builder.with_token(session_token);
     }
     if let Some(proxy) = &cfg.proxy {
         builder = builder.with_proxy_url(proxy.to_url()?);
@@ -213,6 +240,7 @@ async fn sync_items(ctx: &ActionContext, item_ids: &[String]) -> RunOutput {
         Ok(s) => s,
         Err(e) => return RunOutput::error(e),
     };
+    log(ctx, LogLevel::Info, &format!("starting sync of {} item(s)", item_ids.len())).await;
 
     let mut synced_files = 0usize;
     let mut conflicts = 0usize;
@@ -222,13 +250,18 @@ async fn sync_items(ctx: &ActionContext, item_ids: &[String]) -> RunOutput {
                 synced_files += files;
                 conflicts += item_conflicts;
             }
-            Err(e) => return RunOutput::error(format!("sync failed for {item_id}: {e}")),
+            Err(e) => {
+                let msg = format!("sync failed for {item_id}: {e}");
+                log(ctx, LogLevel::Warn, &msg).await;
+                return RunOutput::error(msg);
+            }
         }
     }
     let summary = format!(
         "Synced {synced_files} file(s) across {} item(s); {conflicts} conflict(s)",
         item_ids.len()
     );
+    log(ctx, LogLevel::Info, &summary).await;
     RunOutput::ok(summary)
 }
 
@@ -275,6 +308,7 @@ async fn sync_one_item(
         }
         let _ = ctx.client.set_item_extra(item_id, NS, "status", Some("conflict")).await;
         let _ = ctx.client.set_bar_color(item_id, Some(CONFLICT_COLOR)).await;
+        log(ctx, LogLevel::Warn, &format!("{item_id}: {n_conflicts} conflict(s) kept as copies")).await;
     }
     let _ = session.listener.take_updated();
     Ok((count, n_conflicts))
