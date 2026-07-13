@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Localref.Desktop.Services;
@@ -12,9 +13,11 @@ namespace Localref.Desktop.ViewModels;
 public partial class PluginsWindowViewModel : ViewModelBase
 {
     private readonly DaemonService? _daemon;
+    private readonly DispatcherTimer? _runningTimer;
 
     public ObservableCollection<PluginManagerItemViewModel> Plugins { get; } = new();
     public ObservableCollection<ScheduledPluginCallViewModel> Schedules { get; } = new();
+    public ObservableCollection<RunningInvocationViewModel> Running { get; } = new();
     public ObservableCollection<string> AvailablePluginNames { get; } = new();
 
     [ObservableProperty]
@@ -50,9 +53,47 @@ public partial class PluginsWindowViewModel : ViewModelBase
     {
         _daemon = daemon;
         Refresh();
+        RefreshRunning();
+        // Poll the running list while the window is open so the panel stays live
+        // without the daemon pushing per-invocation events. Stopped in Dispose.
+        _runningTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _runningTimer.Tick += (_, _) => RefreshRunning();
+        _runningTimer.Start();
     }
 
     public PluginsWindowViewModel() { }
+
+    /// Stop the polling timer. Called when the plugins window closes.
+    public void Dispose()
+    {
+        _runningTimer?.Stop();
+    }
+
+    // Refresh the list of currently-running plugin invocations. Runs on the UI
+    // thread (driven by the dispatcher timer); the FFI read is a cheap in-memory
+    // registry snapshot, so no Task.Run is needed. Preserves nothing across
+    // refreshes — the set is small and fully replaced each tick.
+    public void RefreshRunning()
+    {
+        if (_daemon is null || !_daemon.IsRunning) return;
+        try
+        {
+            var invocations = _daemon.Handle.ListRunningPlugins();
+            Running.Clear();
+            foreach (var invocation in invocations)
+            {
+                Running.Add(new RunningInvocationViewModel(
+                    _daemon,
+                    invocation,
+                    message => StatusText = message));
+            }
+        }
+        catch (Exception)
+        {
+            // Transient read failures (e.g. during shutdown) are ignored; the
+            // next tick recovers.
+        }
+    }
 
     // Initial in-memory load when the window opens. Rediscovery from disk is
     // the "Scan for plugins" command (Rescan); there is no separate refresh

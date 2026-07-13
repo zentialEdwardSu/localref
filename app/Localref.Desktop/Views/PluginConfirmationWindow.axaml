@@ -1,0 +1,19 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Localref.Desktop.Views.PluginConfirmationWindow"
+        Icon="/Assets/localref.ico"
+        Width="460" Height="240" CanResize="False" ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner" Title="Confirm plugin action">
+  <Grid RowDefinitions="*,Auto" Margin="24">
+    <StackPanel Spacing="12">
+      <TextBlock x:Name="TitleText" FontSize="20" FontWeight="SemiBold" />
+      <TextBlock x:Name="MessageText" TextWrapping="Wrap" />
+    </StackPanel>
+    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Classes="secondary" Content="Cancel" Click="OnCancelClick"
+              AutomationProperties.Name="Cancel plugin action" />
+      <Button x:Name="ConfirmButton" Classes="primary" Click="OnConfirmClick"
+              AutomationProperties.Name="Confirm plugin action" />
+    </StackPanel>
+  </Grid>
+</Window>

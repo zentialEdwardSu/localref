@@ -26,6 +26,7 @@ public sealed partial class PluginManagerItemViewModel : ViewModelBase
     public PluginDescriptor Descriptor { get; }
     public string Name => Descriptor.name;
     public string Description => Descriptor.description ?? "No description provided";
+    public string Version => Descriptor.version is { } v ? $"v{v}" : "—";
     public string Directory => Descriptor.dir;
     public string Hooks => Descriptor.hooks.Length == 0 ? "None" : string.Join(", ", Descriptor.hooks);
     public string Schedules => Descriptor.cron.Length == 0 ? "None" : string.Join(", ", Descriptor.cron);

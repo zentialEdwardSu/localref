@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using Avalonia;
+using Avalonia.Media;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -66,6 +68,9 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
     private string _statusText = "Ready";
 
     [ObservableProperty]
+    private IBrush _statusBrush = ResolveStatusBrush("Brush.Success");
+
+    [ObservableProperty]
     private string _sortColumn = "Title";
 
     [ObservableProperty]
@@ -73,6 +78,9 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
 
     [ObservableProperty]
     private string _editTitle = "";
+
+    [ObservableProperty]
+    private string _detailAuthors = "";
 
     [ObservableProperty]
     private string _editType = "";
@@ -484,12 +492,42 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         {
             return;
         }
+        // A plugin-pushed status message carries its own text and severity and
+        // must not be clobbered by the idle "N indexed" recompute, so set it
+        // and stop before Refresh().
+        if (@event is DaemonEvent.StatusMessage status)
+        {
+            StatusText = status.text;
+            StatusBrush = ResolveStatusBrush(status.kind switch
+            {
+                StatusKind.Success => "Brush.Success",
+                StatusKind.Error => "Brush.Danger",
+                _ => "Brush.Accent",
+            });
+            return;
+        }
         Refresh();
         if (@event is DaemonEvent.ItemImported imported)
         {
             ItemImported?.Invoke(imported.itemId);
         }
     });
+
+    /// <summary>
+    /// Resolve a named design-system brush from application resources, falling
+    /// back to a neutral gray when resources are unavailable (e.g. at design
+    /// time before the app is built).
+    /// </summary>
+    private static IBrush ResolveStatusBrush(string key)
+    {
+        if (Application.Current is { } app
+            && app.TryGetResource(key, app.ActualThemeVariant, out var resource)
+            && resource is IBrush brush)
+        {
+            return brush;
+        }
+        return Brushes.Gray;
+    }
 
     private void LoadInspector(LibraryItemViewModel? item)
     {
@@ -518,6 +556,7 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         _loadedMetadataItemId = SelectedItem?.Id;
         var metadata = _metadataDocument?.metadata;
         EditTitle = metadata?.title ?? "";
+        DetailAuthors = FormatAuthors(metadata?.creators);
         EditType = metadata?.itemType ?? "";
         EditYear = metadata?.year?.ToString() ?? "";
         EditVenue = metadata?.venue ?? "";
@@ -577,6 +616,28 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         {
             HasUnsavedMetadata = true;
         }
+    }
+
+    private static string FormatAuthors(IEnumerable<Creator>? creators)
+    {
+        var authors = creators?
+            .Where(creator => creator.role.Contains("author", StringComparison.OrdinalIgnoreCase))
+            .Select(creator => !string.IsNullOrWhiteSpace(creator.name)
+                ? creator.name.Trim()
+                : string.Join(" ", new[] { creator.given, creator.family }
+                    .Where(part => !string.IsNullOrWhiteSpace(part))
+                    .Select(part => part!.Trim())))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Take(16)
+            .ToArray() ?? Array.Empty<string>();
+
+        if (authors.Length == 0)
+        {
+            return "Unknown author";
+        }
+
+        var visibleAuthors = string.Join("; ", authors.Take(15));
+        return authors.Length > 15 ? $"{visibleAuthors}; …" : visibleAuthors;
     }
 
     private IEnumerable<ItemDocument> Sort(IEnumerable<ItemDocument> documents)

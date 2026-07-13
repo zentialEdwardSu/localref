@@ -24,6 +24,9 @@ public partial class PluginFieldViewModel : ViewModelBase
     /// <summary>Display label.</summary>
     public string Label => _field.label;
 
+    /// <summary>Whether the host must collect a non-empty value before submit.</summary>
+    public bool Required => _field.required;
+
     /// <summary>Control kind the view switches on.</summary>
     public FieldKind Kind => _field.kind;
 

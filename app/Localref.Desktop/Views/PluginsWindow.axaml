@@ -70,15 +70,18 @@
                        TextWrapping="Wrap" />
           </StackPanel>
 
-          <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
-            <TextBlock Grid.Row="0" Text="Directory" Classes="eyebrow" />
-            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedPlugin.Directory}"
+          <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="8">
+            <TextBlock Grid.Row="0" Text="Version" Classes="eyebrow" />
+            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedPlugin.Version}"
                        TextWrapping="Wrap" />
-            <TextBlock Grid.Row="1" Text="Hooks" Classes="eyebrow" />
-            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedPlugin.Hooks}"
+            <TextBlock Grid.Row="1" Text="Directory" Classes="eyebrow" />
+            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedPlugin.Directory}"
                        TextWrapping="Wrap" />
-            <TextBlock Grid.Row="2" Text="Schedules" Classes="eyebrow" />
-            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedPlugin.Schedules}"
+            <TextBlock Grid.Row="2" Text="Hooks" Classes="eyebrow" />
+            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedPlugin.Hooks}"
+                       TextWrapping="Wrap" />
+            <TextBlock Grid.Row="3" Text="Schedules" Classes="eyebrow" />
+            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedPlugin.Schedules}"
                        TextWrapping="Wrap" />
           </Grid>
 
@@ -159,6 +162,39 @@
               </Grid>
             </Grid>
           </Border>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Running">
+        <Grid RowDefinitions="Auto,*" Background="{DynamicResource Brush.Surface.Subtle}">
+          <TextBlock Grid.Row="0" Margin="18,12"
+                     Text="Plugin invocations currently executing. Cancel a run to stop it and kill its process."
+                     Classes="muted" FontSize="11" TextWrapping="Wrap" />
+          <DataGrid Grid.Row="1"
+                    ItemsSource="{Binding Running}"
+                    AutoGenerateColumns="False"
+                    IsReadOnly="True"
+                    CanUserResizeColumns="True"
+                    CanUserSortColumns="True"
+                    GridLinesVisibility="None"
+                    HeadersVisibility="Column"
+                    RowHeight="42">
+            <DataGrid.Columns>
+              <DataGridTextColumn Header="Plugin" Width="*" Binding="{Binding Plugin}" SortMemberPath="Plugin" />
+              <DataGridTextColumn Header="Action" Width="1.2*" Binding="{Binding Action}" SortMemberPath="Action" />
+              <DataGridTextColumn Header="Kind" Width="90" Binding="{Binding Kind}" SortMemberPath="Kind" />
+              <DataGridTextColumn Header="Started" Width="110" Binding="{Binding Started}" SortMemberPath="Started" />
+              <DataGridTemplateColumn Header="" Width="90">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate x:DataType="vm:RunningInvocationViewModel">
+                    <Button Classes="secondary" Content="Cancel"
+                            Command="{Binding CancelCommand}"
+                            HorizontalAlignment="Center" VerticalAlignment="Center" />
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+            </DataGrid.Columns>
+          </DataGrid>
         </Grid>
       </TabItem>
     </TabControl>

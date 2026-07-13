@@ -7,36 +7,109 @@
              x:Class="Localref.Desktop.Views.PluginPageView"
              x:DataType="vm:PluginPageViewModel">
 
-    <DockPanel Margin="8">
-        <TextBlock DockPanel.Dock="Top" Text="{Binding Label}"
-                   FontWeight="Bold" FontSize="15" Margin="0,0,0,8"/>
+  <DockPanel Margin="8">
+    <TextBlock DockPanel.Dock="Top" Text="{CompiledBinding Label}"
+               FontWeight="Bold" FontSize="15" Margin="0,0,0,8" />
 
-        <Button DockPanel.Dock="Bottom" Content="Run"
-                Command="{Binding RunCommand}"
-                IsVisible="{Binding HasAction}" Margin="0,8,0,0"/>
+    <Button DockPanel.Dock="Bottom" Content="{CompiledBinding RunLabel}"
+            Command="{CompiledBinding RunCommand}"
+            IsEnabled="{CompiledBinding CanRun}"
+            IsVisible="{CompiledBinding HasAction}" Classes="primary"
+            AutomationProperties.Name="Run plugin action" Margin="0,12,0,0" />
 
-        <TextBox DockPanel.Dock="Bottom" Text="{Binding ResultText}"
-                 IsReadOnly="True" AcceptsReturn="True" MaxHeight="160"
-                 IsVisible="{Binding ResultText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+    <TextBox DockPanel.Dock="Bottom" Text="{CompiledBinding ResultText}"
+             IsReadOnly="True" AcceptsReturn="True" MaxHeight="160"
+             AutomationProperties.LiveSetting="Polite"
+             IsVisible="{Binding ResultText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
-        <!-- One row per declared field, rendered by kind. -->
-        <ItemsControl ItemsSource="{Binding Fields}">
-            <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="vm:PluginFieldViewModel">
-                    <StackPanel Margin="0,4">
-                        <TextBlock Text="{Binding Label}" FontSize="12" Margin="0,0,0,2"/>
-                        <!-- text / number / textarea -->
-                        <TextBox Text="{Binding Value}" IsVisible="{Binding IsText}"/>
-                        <!-- checkbox -->
-                        <CheckBox IsChecked="{Binding BoolValue}" IsVisible="{Binding IsCheckbox}"/>
-                        <!-- select -->
-                        <ComboBox ItemsSource="{Binding Options}"
-                                  SelectedItem="{Binding Value}"
-                                  IsVisible="{Binding IsSelect}" HorizontalAlignment="Stretch"/>
-                    </StackPanel>
-                </DataTemplate>
-            </ItemsControl.ItemTemplate>
-        </ItemsControl>
-    </DockPanel>
+    <StackPanel Spacing="10">
+      <ItemsControl ItemsSource="{CompiledBinding Displays}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:PluginDisplayViewModel">
+            <StackPanel Spacing="6">
+              <TextBlock Text="{CompiledBinding Title}" Classes="section-title"
+                         IsVisible="{Binding Title, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+              <TextBlock Text="{CompiledBinding ErrorText}" Foreground="{DynamicResource Brush.Danger}"
+                         TextWrapping="Wrap"
+                         IsVisible="{Binding ErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
+              <TextBlock Text="{CompiledBinding Text}" TextWrapping="Wrap"
+                         AutomationProperties.LiveSetting="Polite"
+                         IsVisible="{CompiledBinding IsText}" />
+              <Border Background="{DynamicResource Brush.Accent.Soft}" Padding="10"
+                      IsVisible="{CompiledBinding IsStatus}">
+                <TextBlock Text="{CompiledBinding Text}" TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Polite" />
+              </Border>
+
+              <StackPanel IsVisible="{CompiledBinding IsTable}" Spacing="4">
+                <ItemsControl ItemsSource="{CompiledBinding Columns}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="14" /></ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:PluginDisplayColumnViewModel">
+                      <TextBlock Text="{CompiledBinding Label}" Classes="eyebrow" MinWidth="110" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <ListBox ItemsSource="{CompiledBinding Rows}"
+                         SelectedItem="{CompiledBinding SelectedRow, Mode=TwoWay}"
+                         AutomationProperties.Name="Plugin preview table">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:PluginDisplayRowViewModel">
+                      <ItemsControl ItemsSource="{CompiledBinding Cells}">
+                        <ItemsControl.ItemsPanel>
+                          <ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="14" /></ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="x:String">
+                            <TextBlock Text="{CompiledBinding}" MinWidth="110" TextTrimming="CharacterEllipsis" />
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+                <TextBlock Text="{CompiledBinding EmptyText}" Classes="muted"
+                           IsVisible="{Binding HasRows, Converter={x:Static BoolConverters.Not}}" />
+              </StackPanel>
+
+              <ItemsControl IsVisible="{CompiledBinding IsDetails}"
+                            ItemsSource="{CompiledBinding Details}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:PluginDisplayDetailViewModel">
+                    <Grid ColumnDefinitions="130,*" ColumnSpacing="10">
+                      <TextBlock Text="{CompiledBinding Label}" Classes="eyebrow" />
+                      <TextBlock Grid.Column="1" Text="{CompiledBinding Value}" TextWrapping="Wrap" />
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+
+      <!-- One row per declared field, rendered by kind. -->
+      <ItemsControl ItemsSource="{CompiledBinding Fields}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:PluginFieldViewModel">
+            <StackPanel Margin="0,4" Spacing="2">
+              <TextBlock Text="{CompiledBinding Label}" FontSize="12" />
+              <TextBox Text="{CompiledBinding Value, Mode=TwoWay}"
+                       AutomationProperties.Name="{CompiledBinding Label}"
+                       IsVisible="{CompiledBinding IsText}" />
+              <CheckBox IsChecked="{CompiledBinding BoolValue, Mode=TwoWay}"
+                        Content="{CompiledBinding Label}"
+                        IsVisible="{CompiledBinding IsCheckbox}" />
+              <ComboBox ItemsSource="{CompiledBinding Options}"
+                        SelectedItem="{CompiledBinding Value, Mode=TwoWay}"
+                        IsVisible="{CompiledBinding IsSelect}" HorizontalAlignment="Stretch" />
+            </StackPanel>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </StackPanel>
+  </DockPanel>
 </UserControl>

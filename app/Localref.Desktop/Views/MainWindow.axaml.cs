@@ -334,6 +334,7 @@ public partial class MainWindow : Window
         var pluginContext = new PluginsWindowViewModel(daemon);
         if (_pluginsWindow is not null)
         {
+            (_pluginsWindow.DataContext as PluginsWindowViewModel)?.Dispose();
             _pluginsWindow.DataContext = pluginContext;
             _pluginsWindow.Activate();
             return;
@@ -343,7 +344,11 @@ public partial class MainWindow : Window
         {
             DataContext = pluginContext,
         };
-        _pluginsWindow.Closed += (_, _) => _pluginsWindow = null;
+        _pluginsWindow.Closed += (_, _) =>
+        {
+            pluginContext.Dispose();
+            _pluginsWindow = null;
+        };
         _pluginsWindow.Show(this);
     }
 

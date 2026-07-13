@@ -338,6 +338,13 @@
                       <TextBlock Text="Title" Classes="eyebrow" />
                       <TextBox Text="{Binding EditTitle}" AutomationProperties.Name="Reference title" />
                     </StackPanel>
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="Authors" Classes="eyebrow" />
+                      <TextBlock Text="{Binding DetailAuthors}"
+                                 TextWrapping="NoWrap"
+                                 TextTrimming="CharacterEllipsis"
+                                 AutomationProperties.Name="Reference authors" />
+                    </StackPanel>
                     <Grid ColumnDefinitions="1.35*,0.65*" ColumnSpacing="10">
                       <StackPanel Grid.Column="0" Spacing="4">
                         <TextBlock Text="Type" Classes="eyebrow" />
@@ -463,7 +470,7 @@
             BorderThickness="0"
             Padding="20,7">
       <Grid ColumnDefinitions="Auto,*,Auto">
-        <Ellipse Width="7" Height="7" Fill="{DynamicResource Brush.Success}" VerticalAlignment="Center" />
+        <Ellipse Width="7" Height="7" Fill="{Binding StatusBrush}" VerticalAlignment="Center" />
         <TextBlock Grid.Column="1" Text="{Binding StatusText}" Classes="muted" FontSize="11"
                    VerticalAlignment="Center" Margin="8,0" />
         <TextBlock Grid.Column="2" Text="Right-click a header to choose columns · Double-click a row to open its main file"

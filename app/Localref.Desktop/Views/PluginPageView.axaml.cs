@@ -6,6 +6,7 @@ using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
 using Localref.Desktop.ViewModels;
+using uniffi.localref_ffi;
 
 namespace Localref.Desktop.Views;
 
@@ -29,6 +30,7 @@ public partial class PluginPageView : UserControl
         if (DataContext is PluginPageViewModel vm)
         {
             vm.SaveRequested += SaveAsync;
+            vm.ConfirmationRequested += ConfirmAsync;
         }
     }
 
@@ -48,5 +50,19 @@ public partial class PluginPageView : UserControl
         await using var stream = await file.OpenWriteAsync();
         await using var writer = new StreamWriter(stream);
         await writer.WriteAsync(content);
+    }
+
+    private async Task<bool> ConfirmAsync(UiConfirmation confirmation, string message)
+    {
+        var top = TopLevel.GetTopLevel(this) as Window;
+        if (top is null)
+        {
+            return false;
+        }
+        var dialog = new PluginConfirmationWindow(
+            confirmation.title,
+            message,
+            confirmation.confirmLabel ?? "Confirm");
+        return await dialog.ShowDialog<bool>(top);
     }
 }
