@@ -1,11 +1,14 @@
 # Sync the checked selection to S3.
 [[pages]]
-id       = "sync"
-label    = "Sync to S3"
-route    = "sync"
-action   = "sync_selected"
-target   = "selection"
-requires = ["selection"]
+id           = "sync"
+label        = "Sync to S3"
+route        = "sync"
+action       = "sync_selected"
+target       = "selection"
+requires     = ["selection"]
+# A selection sync does per-file network round-trips; allow well beyond the
+# 30s host default so a large selection isn't cut short.
+timeout_secs = 1800
 
 [[pages.display]]
 id   = "count"
@@ -13,13 +16,20 @@ text = "Syncing {selection.count} item(s) to S3"
 
 # Version history for the active item, with a rollback control.
 [[pages]]
-id       = "history"
-label    = "S3 History"
-route    = "history"
-action   = "rollback"
-target   = "active"
-requires = ["active_item"]
-preview  = { action = "list_history", debounce_ms = 200, into = "history_pane" }
+id           = "history"
+label        = "S3 History"
+route        = "history"
+action       = "rollback"
+target       = "active"
+requires     = ["active_item"]
+# Rollback syncs then reassembles one file from the remote; a moderate bump.
+timeout_secs = 300
+preview      = { action = "list_history", debounce_ms = 200, into = "history_pane" }
+
+[pages.submit]
+label = "Restore selected version"
+refresh_after_submit = true
+confirm = { title = "Restore historical version?", message = "Restore version {field.sequence}. This creates a new current version; existing history remains intact.", confirm_label = "Restore version" }
 
 [[pages.fields]]
 name     = "sequence"
@@ -29,16 +39,49 @@ required = true
 
 [[pages.display]]
 id   = "history_pane"
-text = ""
+kind = "table"
+title = "Version history"
+empty_text = "No versions yet — sync this item first."
+selection_field = "sequence"
+columns = [
+  { key = "sequence", label = "Version" },
+  { key = "timestamp", label = "Time" },
+  { key = "client", label = "Source" },
+  { key = "file", label = "File" },
+]
+
+[[pages.display]]
+id = "history_details"
+kind = "details"
+title = "Selected version"
+selection_of = "history_pane"
+columns = [
+  { key = "sequence", label = "Version" },
+  { key = "timestamp", label = "Time" },
+  { key = "client", label = "Source" },
+  { key = "file", label = "File" },
+]
 
 # Library-wide conflict review + resolution.
 [[pages]]
-id      = "conflicts"
-label   = "S3 Conflicts"
-route   = "conflicts"
-action  = "resolve_conflicts"
-target  = "none"
-preview = { action = "list_conflicts", debounce_ms = 200, into = "conflict_pane" }
+id           = "conflicts"
+label        = "S3 Conflicts"
+route        = "conflicts"
+action       = "resolve_conflicts"
+target       = "none"
+# Re-syncs every conflicted item; allow well beyond the 30s host default.
+timeout_secs = 1800
+preview      = { action = "list_conflicts", debounce_ms = 200, into = "conflict_pane" }
+
+[pages.submit]
+label = "Resolve selected conflict"
+refresh_after_submit = true
+
+[[pages.fields]]
+name = "conflict_id"
+label = "Selected conflict"
+kind = "text"
+required = true
 
 [[pages.fields]]
 name    = "policy"
@@ -49,10 +92,41 @@ default = "keep_both"
 
 [[pages.display]]
 id   = "conflict_pane"
-text = ""
+kind = "table"
+title = "Blocked files"
+empty_text = "No file conflicts require review."
+selection_field = "conflict_id"
+columns = [
+  { key = "item", label = "Item" },
+  { key = "file", label = "File" },
+  { key = "detected", label = "Detected" },
+  { key = "local_chunks", label = "Local" },
+  { key = "remote_chunks", label = "Remote" },
+]
 
-# Global action: sync the entire library.
+[[pages.display]]
+id = "conflict_details"
+kind = "details"
+title = "Selected conflict"
+selection_of = "conflict_pane"
+columns = [
+  { key = "item", label = "Item" },
+  { key = "file", label = "File" },
+  { key = "detected", label = "Detected" },
+  { key = "local_chunks", label = "Local chunks" },
+  { key = "remote_chunks", label = "Remote chunks" },
+]
+
+# Global action: sync the entire library. A full-library sync can run for many
+# minutes, so it needs a generous timeout above the 30s host default.
 [[actions]]
-id     = "sync_all"
-label  = "Sync all to S3"
+id           = "sync_all"
+label        = "Sync all to S3"
+target       = "none"
+timeout_secs = 3600
+
+# Global action: validate the config and check the backend is reachable.
+[[actions]]
+id     = "check_config"
+label  = "Check S3 config"
 target = "none"

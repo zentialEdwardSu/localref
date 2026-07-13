@@ -3,9 +3,12 @@ executable  = "s3sync"
 description = "Sync item files to S3-compatible storage with history and conflict resolution"
 
 # Nightly full sync (cron: sec min hour day-of-month month day-of-week).
+# A full-library sync runs unattended and can take many minutes, so it needs a
+# generous timeout above the 30s host default.
 [[cron]]
-id       = "nightly_sync"
-schedule = "0 0 3 * * *"
+id           = "nightly_sync"
+schedule     = "0 0 3 * * *"
+timeout_secs = 3600
 
 # Per-item sync status, made searchable so conflicts can be listed via search.
 [[extra_fields]]

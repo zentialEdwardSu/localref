@@ -11,6 +11,7 @@ use rollforward::types::EngineNotificationListener;
 use std::sync::Mutex;
 
 /// A conflict the engine asked the host to duplicate ("keep both").
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConflictCopy {
     /// The engine file id (`"{item_id}/{relative_path}"`).

@@ -1,20 +1,42 @@
-//! Plugin configuration: where the S3 bucket is and this device's client id.
+//! Plugin configuration: which backend to sync to, its credentials, and this
+//! device's client id.
 //!
 //! Stored at `<library>/.localref/s3sync/config.toml`. TOML is used so the
-//! generated starter file can carry explanatory comments. Credentials may be
-//! set here (`access_key_id` / `secret_access_key` / optional `session_token`)
-//! to make configuring an S3-compatible store like Cloudflare R2 a single-file
-//! edit; when left blank they fall back to the standard AWS environment chain
-//! (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`). The
-//! `client_id` is generated once (into the starter template) and persisted.
+//! generated starter file can carry explanatory comments. Two backends are
+//! supported, selected by `backend`:
+//!
+//! - `s3` — any S3-compatible store (AWS, Cloudflare R2, MinIO). Credentials come
+//!   from the config (`access_key_id` / `secret_access_key` / optional
+//!   `session_token`); the AWS environment chain is intentionally *not* consulted,
+//!   so the config file is the single source of truth.
+//! - `http` — a generic HTTP/WebDAV server (Nextcloud, ownCloud, Apache mod_dav),
+//!   configured under `[http]` with a `url` and optional Basic-auth
+//!   `username`/`password`.
+//!
+//! The `client_id` is generated once (into the starter template) and persisted.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Which storage backend to sync to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    /// S3-compatible object storage (AWS, R2, MinIO).
+    #[default]
+    S3,
+    /// Generic HTTP/WebDAV server.
+    Http,
+}
+
 /// User-editable S3 sync configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct S3SyncConfig {
-    /// Target bucket name.
+    /// Which backend to sync to. Defaults to `s3`.
+    #[serde(default)]
+    pub backend: Backend,
+    /// Target bucket name (S3 backend).
+    #[serde(default)]
     pub bucket: String,
     /// AWS region (e.g. `us-east-1`). Optional for S3-compatible endpoints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -31,23 +53,53 @@ pub struct S3SyncConfig {
     /// Optional HTTP(S) proxy for reaching the S3 endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyConfig>,
-    /// Access key id. When set, it is passed to the S3 client directly;
-    /// otherwise credentials come from the AWS environment chain.
+    /// Access key id (S3 backend). Passed to the S3 client directly; the AWS
+    /// environment chain is not consulted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_key_id: Option<String>,
-    /// Secret access key. Only used when `access_key_id` is also set.
+    /// Secret access key (S3 backend). Only used when `access_key_id` is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_access_key: Option<String>,
-    /// Optional session token, for temporary/STS credentials.
+    /// Optional session token, for temporary/STS credentials (S3 backend).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_token: Option<String>,
+    /// HTTP/WebDAV backend settings. Required when `backend = "http"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http: Option<HttpConfig>,
     /// Stable per-device client id (generated on first run).
     #[serde(default)]
     pub client_id: String,
 }
 
-/// Proxy for outbound S3 requests. Assembled into a single proxy URL for
-/// `object_store` (`scheme://[user:pass@]host:port`).
+/// HTTP/WebDAV backend settings (`backend = "http"`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpConfig {
+    /// Base URL of the WebDAV collection, e.g. `https://dav.example.com/localref`.
+    pub url: String,
+    /// Optional Basic-auth username. When set, requests carry an
+    /// `Authorization: Basic …` header built from `username:password`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// Optional Basic-auth password (used only when `username` is set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+impl HttpConfig {
+    /// Build the `Authorization` header value for Basic auth, or `None` for
+    /// anonymous access. Kept separate from the store builder so the encoding is
+    /// unit-testable without a live server.
+    pub fn auth_header(&self) -> Option<String> {
+        use base64::Engine as _;
+        let user = self.username.as_deref().filter(|u| !u.is_empty())?;
+        let pass = self.password.as_deref().unwrap_or("");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
+        Some(format!("Basic {encoded}"))
+    }
+}
+
+/// Proxy for outbound requests. Assembled into a single proxy URL for
+/// `object_store` (`scheme://host:port`). Proxy authentication is not supported.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
     /// Proxy host or IP (e.g. `127.0.0.1`).
@@ -57,12 +109,6 @@ pub struct ProxyConfig {
     /// URL scheme: `http`, `https`, or `socks5`. Defaults to `http`.
     #[serde(default = "default_proxy_scheme")]
     pub scheme: String,
-    /// Optional proxy username for authenticating proxies.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>,
-    /// Optional proxy password (used only when `username` is set).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
 }
 
 /// Default proxy scheme when unspecified.
@@ -71,18 +117,11 @@ fn default_proxy_scheme() -> String {
 }
 
 impl ProxyConfig {
-    /// Build the proxy URL for `object_store`, percent-encoding any credentials.
-    /// Returns an error if the assembled URL is invalid (bad scheme/host).
+    /// Build the proxy URL for `object_store`. Returns an error if the assembled
+    /// URL is invalid (bad scheme/host).
     pub fn to_url(&self) -> Result<String, String> {
-        let mut url = url::Url::parse(&format!("{}://{}:{}", self.scheme, self.host, self.port))
+        let url = url::Url::parse(&format!("{}://{}:{}", self.scheme, self.host, self.port))
             .map_err(|e| format!("invalid proxy host/port/scheme: {e}"))?;
-        if let Some(user) = self.username.as_deref().filter(|u| !u.is_empty()) {
-            url.set_username(user)
-                .map_err(|()| "cannot set proxy username on this URL".to_owned())?;
-            // A password is only meaningful alongside a username.
-            url.set_password(self.password.as_deref())
-                .map_err(|()| "cannot set proxy password on this URL".to_owned())?;
-        }
         Ok(url.into())
     }
 }
@@ -114,19 +153,35 @@ impl S3SyncConfig {
                 }
                 return Err(format!(
                     "s3sync is not configured. A starter config was written to {}. \
-                     Edit it (set `bucket` at minimum), set AWS credentials via \
-                     environment variables, then run the action again.",
+                     Edit it (pick a `backend` and fill in its settings — `bucket` \
+                     for s3, `[http].url` for http), then run the action again.",
                     path.display()
                 ));
             }
         };
         let mut config: Self =
             toml::from_str(&text).map_err(|e| format!("invalid s3sync config: {e}"))?;
-        if config.bucket.trim().is_empty() {
-            return Err(format!(
-                "s3sync config at {} has an empty `bucket`; fill it in before syncing.",
-                path.display()
-            ));
+        match config.backend {
+            Backend::S3 => {
+                if config.bucket.trim().is_empty() {
+                    return Err(format!(
+                        "s3sync config at {} uses backend `s3` but has an empty `bucket`; \
+                         fill it in before syncing.",
+                        path.display()
+                    ));
+                }
+            }
+            Backend::Http => {
+                let url_ok =
+                    config.http.as_ref().is_some_and(|h| !h.url.trim().is_empty());
+                if !url_ok {
+                    return Err(format!(
+                        "s3sync config at {} uses backend `http` but `[http].url` is \
+                         missing or empty; set it before syncing.",
+                        path.display()
+                    ));
+                }
+            }
         }
         // Backfill a client id on first load and persist it.
         if config.client_id.trim().is_empty() {
@@ -150,7 +205,12 @@ impl S3SyncConfig {
 const CONFIG_TEMPLATE: &str = "\
 # s3sync configuration.
 
-# Target bucket name (required). For local testing you may use a
+# Which backend to sync to: \"s3\" (S3-compatible) or \"http\" (HTTP/WebDAV).
+backend = \"s3\"
+
+# ── S3 backend (backend = \"s3\") ─────────────────────────────────────────────
+
+# Target bucket name (required for s3). For local testing you may use a
 # \"file:///abs/path\" pseudo-bucket instead of a real S3 bucket.
 bucket = \"\"
 
@@ -162,28 +222,35 @@ bucket = \"\"
 # For R2: \"https://<accountid>.r2.cloudflarestorage.com\"
 # endpoint = \"http://127.0.0.1:9000\"
 
-# Allow plain HTTP (needed for local MinIO). Defaults to false.
-allow_http = false
-
-# Key prefix under which all sync objects live in the bucket.
-prefix = \"\"
-
-# Credentials. Set these to configure an S3-compatible store (e.g. Cloudflare
-# R2) in one place. Leave them blank/commented to use the AWS environment chain
-# instead (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN).
+# Credentials for the s3 backend. These are the only source of credentials —
+# the AWS environment chain is not consulted.
 # access_key_id = \"\"
 # secret_access_key = \"\"
 # session_token = \"\"   # only for temporary/STS credentials
 
-# Optional HTTP(S) proxy for reaching the S3 endpoint. Remove this section to
-# connect directly. `scheme` defaults to \"http\"; username/password are only
-# needed for authenticating proxies.
+# ── HTTP/WebDAV backend (backend = \"http\") ──────────────────────────────────
+
+# Uncomment and set when backend = \"http\". `url` is the WebDAV collection base;
+# username/password enable Basic auth (leave blank for anonymous access).
+# [http]
+# url = \"https://dav.example.com/localref\"
+# username = \"\"
+# password = \"\"
+
+# ── Shared ───────────────────────────────────────────────────────────────────
+
+# Allow plain HTTP (needed for local MinIO or an http:// WebDAV server).
+allow_http = false
+
+# Key prefix under which all sync objects live.
+prefix = \"\"
+
+# Optional proxy for reaching the backend. Remove this section to connect
+# directly. `scheme` defaults to \"http\". Proxy authentication is not supported.
 # [proxy]
 # host = \"127.0.0.1\"
 # port = 7890
 # scheme = \"http\"
-# username = \"\"
-# password = \"\"
 
 # Stable per-device client id. Leave empty — it is generated on first use.
 client_id = \"\"
@@ -216,33 +283,51 @@ fn generate_client_id() -> String {
 mod tests {
     use super::*;
 
-    fn proxy(scheme: &str, user: Option<&str>, pass: Option<&str>) -> ProxyConfig {
-        ProxyConfig {
-            host: "127.0.0.1".to_owned(),
-            port: 7890,
-            scheme: scheme.to_owned(),
+    fn proxy(scheme: &str) -> ProxyConfig {
+        ProxyConfig { host: "127.0.0.1".to_owned(), port: 7890, scheme: scheme.to_owned() }
+    }
+
+    fn http(user: Option<&str>, pass: Option<&str>) -> HttpConfig {
+        HttpConfig {
+            url: "https://dav.example.com/localref".to_owned(),
             username: user.map(str::to_owned),
             password: pass.map(str::to_owned),
         }
     }
 
     #[test]
-    fn to_url_without_auth_omits_userinfo() {
-        // A bare proxy must not grow an empty `@` that reqwest would reject.
-        assert_eq!(proxy("http", None, None).to_url().unwrap(), "http://127.0.0.1:7890/");
+    fn to_url_has_no_userinfo() {
+        // Proxy auth was dropped; the URL is a plain scheme://host:port.
+        assert_eq!(proxy("http").to_url().unwrap(), "http://127.0.0.1:7890/");
+        // Non-special schemes (socks5) get no trailing-slash normalization.
+        assert_eq!(proxy("socks5").to_url().unwrap(), "socks5://127.0.0.1:7890");
     }
 
     #[test]
-    fn to_url_embeds_credentials() {
-        let url = proxy("http", Some("alice"), Some("s3cr3t")).to_url().unwrap();
-        assert_eq!(url, "http://alice:s3cr3t@127.0.0.1:7890/");
+    fn auth_header_encodes_basic_credentials() {
+        // base64("alice:s3cr3t") — Basic auth is what WebDAV servers expect.
+        assert_eq!(http(Some("alice"), Some("s3cr3t")).auth_header().unwrap(), "Basic YWxpY2U6czNjcjN0");
     }
 
     #[test]
-    fn to_url_percent_encodes_special_characters() {
-        // Credentials with `@`/`:` must be encoded so the host is still parsed
-        // as 127.0.0.1, not smuggled in via the password.
-        let url = proxy("http", Some("user@corp"), Some("p:@ss")).to_url().unwrap();
-        assert_eq!(url, "http://user%40corp:p%3A%40ss@127.0.0.1:7890/");
+    fn auth_header_absent_without_username() {
+        // No username means anonymous access — no Authorization header at all.
+        assert!(http(None, None).auth_header().is_none());
+        assert!(http(Some(""), Some("x")).auth_header().is_none());
+    }
+
+    #[test]
+    fn backend_defaults_to_s3_when_omitted() {
+        // An older config without a `backend` key must keep working as s3.
+        let cfg: S3SyncConfig = toml::from_str("bucket = \"b\"").unwrap();
+        assert_eq!(cfg.backend, Backend::S3);
+    }
+
+    #[test]
+    fn backend_parses_http_lowercase() {
+        let cfg: S3SyncConfig =
+            toml::from_str("backend = \"http\"\n[http]\nurl = \"https://x\"").unwrap();
+        assert_eq!(cfg.backend, Backend::Http);
+        assert_eq!(cfg.http.unwrap().url, "https://x");
     }
 }

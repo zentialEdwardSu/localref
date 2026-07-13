@@ -11,7 +11,8 @@
 //! ```text
 //! <prefix>/<file_id>/oplogs/{seq}_{client}.oplog
 //! <prefix>/<file_id>/baselines/baseline_<seq>.zst
-//! <prefix>/chunks/<hash>
+//! <prefix>/packs/<pack_id>
+//! <prefix>/pack-indexes/<pack_id>
 //! <prefix>/clients_status/<client>.status
 //! ```
 //!
@@ -116,9 +117,39 @@ impl S3Remote {
             Ok(names)
         })
     }
+
+    /// Distinct file ids that have oplog history under the prefix: the first path
+    /// segment of any key shaped `<file_id>/oplogs/...`. Scans every object under
+    /// the prefix (no delimiter support assumed) and dedups the segment. The
+    /// reserved global stores (`packs`, `pack-indexes`, `clients_status`) never
+    /// have an `oplogs` child, so they are excluded by construction.
+    fn list_file_ids(&self) -> Result<Vec<String>, SyncError> {
+        let base = self.key(&[]);
+        // Strip the prefix so the remaining leading segment is the file id.
+        let strip = if self.prefix.is_empty() { String::new() } else { format!("{}/", self.prefix) };
+        self.block(async {
+            let mut stream = self.store.list(Some(&base));
+            let mut ids = std::collections::BTreeSet::new();
+            while let Some(meta) = stream.next().await {
+                let meta = meta.map_err(io)?;
+                let key = meta.location.as_ref();
+                let rel = key.strip_prefix(&strip).unwrap_or(key);
+                if let Some((file_id, rest)) = rel.split_once('/')
+                    && rest.starts_with("oplogs/")
+                {
+                    ids.insert(file_id.to_owned());
+                }
+            }
+            Ok(ids.into_iter().collect())
+        })
+    }
 }
 
 impl RemoteStorage for S3Remote {
+    fn list_files(&self) -> Result<Vec<String>, SyncError> {
+        self.list_file_ids()
+    }
+
     fn list_oplogs(&self, file_id: String) -> Result<Vec<RemoteLogItem>, SyncError> {
         let dir = self.key(&[&file_id, "oplogs"]);
         let mut out = Vec::new();
@@ -175,29 +206,55 @@ impl RemoteStorage for S3Remote {
         }
     }
 
-    fn put_chunk(&self, hash: String, data: Vec<u8>) -> Result<(), SyncError> {
-        let key = self.key(&["chunks", &hash]);
-        // Content-addressed: identical bytes under the same hash, so an existing
-        // object is fine — an unconditional put is idempotent here.
+    fn put_pack(&self, pack_id: String, data: Vec<u8>) -> Result<(), SyncError> {
+        let key = self.key(&["packs", &pack_id]);
+        // Content-addressed by pack id: identical bytes, so an unconditional put
+        // is idempotent — re-writing an existing pack is a harmless no-op.
         self.block(async { self.store.put(&key, data.into()).await }).map_err(io)?;
         Ok(())
     }
 
-    fn get_chunk(&self, hash: String) -> Result<Vec<u8>, SyncError> {
-        let key = self.key(&["chunks", &hash]);
-        self.get_opt(&key)?.ok_or_else(|| io(format!("chunk not found: {hash}")))
+    fn get_pack_range(&self, pack_id: String, offset: u64, length: u32) -> Result<Vec<u8>, SyncError> {
+        let key = self.key(&["packs", &pack_id]);
+        let start = usize::try_from(offset).map_err(io)?;
+        let end = start.checked_add(length as usize).ok_or_else(|| io("pack range overflow"))?;
+        let bytes = self.block(async { self.store.get_range(&key, start..end).await }).map_err(io)?;
+        Ok(bytes.to_vec())
     }
 
-    fn delete_chunk(&self, hash: String) -> Result<(), SyncError> {
-        let key = self.key(&["chunks", &hash]);
+    fn list_packs(&self) -> Result<Vec<String>, SyncError> {
+        self.list_names(&self.key(&["packs"]))
+    }
+
+    fn delete_pack(&self, pack_id: String) -> Result<(), SyncError> {
+        let key = self.key(&["packs", &pack_id]);
         match self.block(async { self.store.delete(&key).await }) {
             Ok(()) | Err(ObjectStoreError::NotFound { .. }) => Ok(()),
             Err(e) => Err(io(e)),
         }
     }
 
-    fn list_chunks(&self) -> Result<Vec<String>, SyncError> {
-        self.list_names(&self.key(&["chunks"]))
+    fn put_pack_index(&self, index_id: String, data: Vec<u8>) -> Result<(), SyncError> {
+        let key = self.key(&["pack-indexes", &index_id]);
+        self.block(async { self.store.put(&key, data.into()).await }).map_err(io)?;
+        Ok(())
+    }
+
+    fn get_pack_index(&self, index_id: String) -> Result<Vec<u8>, SyncError> {
+        let key = self.key(&["pack-indexes", &index_id]);
+        self.get_opt(&key)?.ok_or_else(|| io(format!("pack index not found: {index_id}")))
+    }
+
+    fn list_pack_indexes(&self) -> Result<Vec<String>, SyncError> {
+        self.list_names(&self.key(&["pack-indexes"]))
+    }
+
+    fn delete_pack_index(&self, index_id: String) -> Result<(), SyncError> {
+        let key = self.key(&["pack-indexes", &index_id]);
+        match self.block(async { self.store.delete(&key).await }) {
+            Ok(()) | Err(ObjectStoreError::NotFound { .. }) => Ok(()),
+            Err(e) => Err(io(e)),
+        }
     }
 
     fn put_baseline(&self, file_id: String, seq: u64, data: Vec<u8>) -> Result<(), SyncError> {
@@ -316,15 +373,41 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn chunks_round_trip_and_list() {
+    async fn packs_round_trip_range_and_list() {
         let dir = tempfile::TempDir::new().unwrap();
         let remote = temp_remote(dir.path());
-        remote.put_chunk("h1".into(), b"hello".to_vec()).unwrap();
-        remote.put_chunk("h1".into(), b"hello".to_vec()).unwrap();
-        assert_eq!(remote.get_chunk("h1".into()).unwrap(), b"hello");
-        assert_eq!(remote.list_chunks().unwrap(), vec!["h1".to_string()]);
-        remote.delete_chunk("h1".into()).unwrap();
-        assert!(remote.list_chunks().unwrap().is_empty());
+        remote.put_pack("p1".into(), b"HELLOWORLD".to_vec()).unwrap();
+        remote.put_pack("p1".into(), b"HELLOWORLD".to_vec()).unwrap(); // idempotent
+        // Range reads pull a chunk-sized slice out of the pack.
+        assert_eq!(remote.get_pack_range("p1".into(), 0, 5).unwrap(), b"HELLO");
+        assert_eq!(remote.get_pack_range("p1".into(), 5, 5).unwrap(), b"WORLD");
+        assert_eq!(remote.list_packs().unwrap(), vec!["p1".to_string()]);
+        remote.delete_pack("p1".into()).unwrap();
+        assert!(remote.list_packs().unwrap().is_empty());
+        remote.delete_pack("p1".into()).unwrap(); // absent = no-op
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pack_indexes_round_trip_and_list() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let remote = temp_remote(dir.path());
+        remote.put_pack_index("p1".into(), b"idx".to_vec()).unwrap();
+        assert_eq!(remote.get_pack_index("p1".into()).unwrap(), b"idx");
+        assert_eq!(remote.list_pack_indexes().unwrap(), vec!["p1".to_string()]);
+        remote.delete_pack_index("p1".into()).unwrap();
+        assert!(remote.list_pack_indexes().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn list_files_reports_only_file_ids_with_oplogs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let remote = temp_remote(dir.path());
+        // A file id gets an oplog; the reserved global stores get objects too.
+        remote.put_oplog("f1".into(), entry(1, "a")).unwrap();
+        remote.put_pack("p1".into(), b"x".to_vec()).unwrap();
+        remote.put_status("a".into(), 1).unwrap();
+        // Only the file id with oplog history is listed.
+        assert_eq!(remote.list_files().unwrap(), vec!["f1".to_string()]);
     }
 
     #[tokio::test(flavor = "multi_thread")]

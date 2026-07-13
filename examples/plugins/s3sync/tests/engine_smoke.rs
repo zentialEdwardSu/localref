@@ -76,12 +76,9 @@ async fn two_clients_converge_on_binary() {
         "B should converge to A's content after sync"
     );
 
-    // Reassembling B's manifest from the shared remote yields A's bytes.
-    let manifest = engine_b.get_manifest("doc.bin".into()).unwrap();
-    let mut content = Vec::new();
-    for hash in &manifest {
-        content.extend_from_slice(&shared.get_chunk(hash.clone()).unwrap());
-    }
+    // Reading B's converged binary back through the engine (pack index resolve +
+    // range read + per-chunk verify) yields A's bytes.
+    let content = engine_b.read_binary("doc.bin".into()).unwrap();
     assert_eq!(content, b"hello world");
 }
 
@@ -113,25 +110,21 @@ async fn divergent_binary_edit_triggers_conflict_copy() {
     engine_a.modify_binary("doc.bin".into(), b"base".to_vec()).unwrap();
     engine_b.sync("doc.bin".into()).unwrap();
 
-    // Force a genuine fork: both publish a divergent edit at the same next
+    // Force a genuine fork: both publish a divergent snapshot at the same next
     // sequence via the non-CAS put (mirrors rollforward's own fork injection).
+    // Under KeepBoth the kept side is the local manifest, so the injected remote
+    // side's chunks are never read back — placeholder hashes suffice to diverge.
     let fork_seq = engine_a.head("doc.bin".into()) + 1;
-    let mk = |client: &str, bytes: &[u8]| {
-        let chunks = rollforward::binary::chunk_data(bytes);
-        for (info, data) in &chunks {
-            shared.put_chunk(info.hash.clone(), data.clone()).unwrap();
-        }
-        rollforward::types::OpLogEntry {
-            sequence: fork_seq,
-            client_id: client.to_owned(),
-            timestamp: 0,
-            change_type: rollforward::types::ChangeType::BinarySnapshot {
-                chunk_hashes: chunks.iter().map(|(c, _)| c.hash.clone()).collect(),
-            },
-        }
+    let mk = |client: &str, hash: &str| rollforward::types::OpLogEntry {
+        sequence: fork_seq,
+        client_id: client.to_owned(),
+        timestamp: 0,
+        change_type: rollforward::types::ChangeType::BinarySnapshot {
+            chunk_hashes: vec![hash.to_owned()],
+        },
     };
-    shared.put_oplog("doc.bin".into(), mk("clientA", b"alpha edit")).unwrap();
-    shared.put_oplog("doc.bin".into(), mk("clientB", b"beta edit")).unwrap();
+    shared.put_oplog("doc.bin".into(), mk("clientA", "alphahash")).unwrap();
+    shared.put_oplog("doc.bin".into(), mk("clientB", "betahash")).unwrap();
 
     // Syncing sees the forked tip and must request a keep-both copy.
     engine_a.sync("doc.bin".into()).unwrap();

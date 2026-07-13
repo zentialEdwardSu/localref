@@ -11,8 +11,10 @@ path = "src/main.rs"
 [dependencies]
 localref-plugin-sdk = { path = "../../../crates/plugin-sdk" }
 localref-core = { package = "localref-core", path = "../../../crates/core", default-features = false }
-rollforward = { git = "https://github.com/zentialEdwardSu/rollforward" }
-object_store = { version = "0.11", features = ["aws"] }
+rollforward = { git = "https://github.com/zentialEdwardSu/rollforward", rev = "9483073f9847809a2c9b0360f4b51fefc0612794" }
+object_store = { version = "0.11", features = ["aws", "http"] }
+base64 = "0.22"
+http = "1"
 futures = "0.3"
 tokio = { workspace = true }
 serde = { workspace = true }
