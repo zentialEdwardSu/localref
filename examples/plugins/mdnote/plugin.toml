@@ -1,0 +1,3 @@
+name        = "mdnote"
+executable  = "mdnote"
+description = "Create and open a Markdown note in the active item's folder"

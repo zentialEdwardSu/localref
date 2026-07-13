@@ -1,0 +1,18 @@
+[package]
+name = "localref-plugin-mdnote"
+version = "0.1.0"
+edition = "2024"
+description = "Example Localref plugin: create and open a Markdown note per item"
+
+[[bin]]
+name = "mdnote"
+path = "src/main.rs"
+
+[dependencies]
+localref-plugin-sdk = { path = "../../../crates/plugin-sdk" }
+localref-core = { package = "localref-core", path = "../../../crates/core", default-features = false }
+open = "5"
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -10,83 +10,74 @@ import build
 class BuildScriptTests(TestCase):
     """Verify build.py constructs the intended command sequence."""
 
-    def test_debug_build_commands_use_debug_wasm_output(self) -> None:
-        """Debug builds should refresh assets before rebuilding localref."""
-        root = Path("repo")
+    def test_build_cli_uses_debug_profile_by_default(self) -> None:
+        """The CLI build targets the `localref` package without --release."""
+        captured: list[list[str]] = []
+        original = build.run_checked
+        build.run_checked = lambda cmd, root: captured.append(cmd)
+        try:
+            build.build_cli(Path("repo"), release=False)
+        finally:
+            build.run_checked = original
 
-        commands = build.build_commands(root, release=False)
+        self.assertEqual(captured, [["cargo", "build", "-p", "localref"]])
 
-        self.assertEqual(commands[0], [build.npm_command(), "run", "build:css"])
+    def test_build_cli_uses_release_profile(self) -> None:
+        """A release build passes --release to the CLI build."""
+        captured: list[list[str]] = []
+        original = build.run_checked
+        build.run_checked = lambda cmd, root: captured.append(cmd)
+        try:
+            build.build_cli(Path("repo"), release=True)
+        finally:
+            build.run_checked = original
+
         self.assertEqual(
-            commands[1],
-            [
-                "cargo",
-                "build",
-                "-p",
-                "ui-app",
-                "--target",
-                "wasm32-unknown-unknown",
-                "--no-default-features",
-                "--features",
-                "hydrate",
-            ],
+            captured, [["cargo", "build", "-p", "localref", "--release"]]
         )
-        self.assertEqual(
-            commands[2][-1],
-            str(
-                root
-                / "target"
-                / "wasm32-unknown-unknown"
-                / "debug"
-                / "ui_app.wasm"
-            ),
-        )
-        self.assertEqual(commands[3], ["cargo", "build", "-p", "localref"])
 
-    def test_release_build_commands_use_release_profile(self) -> None:
-        """Release builds should use release profile for both Rust builds."""
-        root = Path("repo")
+    def test_stage_app_extras_copies_builtins_and_cli(self) -> None:
+        """Staged bundles and the CLI land beside the published exe."""
+        suffix = build.exe_suffix()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # A staged built-in bundle under target/debug/builtin-plugins.
+            staging = root / "target" / "debug" / "builtin-plugins" / "bibtexer"
+            staging.mkdir(parents=True)
+            (staging / "plugin.toml").write_text('name = "bibtexer"\n')
+            (staging / f"bibtexer{suffix}").write_text("exe")
+            # The built CLI binary.
+            cli = root / "target" / "debug" / f"{build.CLI_STEM}{suffix}"
+            cli.write_text("cli")
+            # An existing publish directory (dotnet publish output).
+            dest = build.publish_dir(root, release=False, rid="win-x64")
+            dest.mkdir(parents=True)
 
-        commands = build.build_commands(root, release=True)
+            build.stage_app_extras(root, release=False, rid="win-x64")
 
-        self.assertIn("--release", commands[1])
-        self.assertEqual(
-            commands[2][-1],
-            str(
-                root
-                / "target"
-                / "wasm32-unknown-unknown"
-                / "release"
-                / "ui_app.wasm"
-            ),
-        )
-        self.assertEqual(commands[3], ["cargo", "build", "-p", "localref", "--release"])
+            self.assertTrue(
+                (dest / "builtin-plugins" / "bibtexer" / "plugin.toml").is_file()
+            )
+            self.assertTrue(
+                (dest / "builtin-plugins" / "bibtexer" / f"bibtexer{suffix}")
+                .is_file()
+            )
+            self.assertTrue((dest / f"{build.CLI_STEM}{suffix}").is_file())
 
-    def test_example_plugins_are_built_after_native_binary(self) -> None:
-        """Each example plugin manifest should get its own build command."""
-        root = Path(build.__file__).resolve().parent
+    def test_stage_app_extras_skips_missing_publish_dir(self) -> None:
+        """No publish dir means nothing is copied and no error is raised."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Build the staging inputs but omit the publish directory.
+            staging = root / "target" / "debug" / "builtin-plugins" / "bibtexer"
+            staging.mkdir(parents=True)
+            (staging / "plugin.toml").write_text('name = "bibtexer"\n')
 
-        commands = build.build_commands(root, release=False)
+            # Must not raise even though the publish dir is absent.
+            build.stage_app_extras(root, release=False, rid="win-x64")
 
-        plugin_manifests = sorted(root.glob("examples/plugins/*/Cargo.toml"))
-        self.assertTrue(plugin_manifests, "expected example plugins to exist")
-        expected = [
-            ["cargo", "build", "--manifest-path", str(manifest)]
-            for manifest in plugin_manifests
-        ]
-        self.assertEqual(commands[4:], expected)
-
-    def test_example_plugins_use_release_profile(self) -> None:
-        """Release builds should pass --release to each plugin build."""
-        root = Path(build.__file__).resolve().parent
-
-        commands = build.build_commands(root, release=True)
-
-        plugin_commands = commands[4:]
-        self.assertTrue(plugin_commands, "expected example plugin builds")
-        for command in plugin_commands:
-            self.assertEqual(command[:2], ["cargo", "build"])
-            self.assertIn("--release", command)
+            dest = build.publish_dir(root, release=False, rid="win-x64")
+            self.assertFalse(dest.exists())
 
     def test_stage_plugin_files_bundles_built_plugins(self) -> None:
         """Staging copies plugin.toml, ui.toml, and the built exe per plugin."""
@@ -102,7 +93,7 @@ class BuildScriptTests(TestCase):
             (target / f"bibtexer{suffix}").write_text("exe")
             (target / f"hooklog{suffix}").write_text("exe")
 
-            pairs = build.stage_plugin_files(root, release=False)
+            pairs, _versions = build.stage_plugin_files(root, release=False)
 
             staging = target / "builtin-plugins"
             dests = {dest for _, dest in pairs}
@@ -121,16 +112,64 @@ class BuildScriptTests(TestCase):
             self._make_plugin(root, "bibtexer", ui=True)
             (root / "target" / "release").mkdir(parents=True)
 
-            pairs = build.stage_plugin_files(root, release=True)
+            pairs, versions = build.stage_plugin_files(root, release=True)
 
             self.assertEqual(pairs, [])
+            self.assertEqual(versions, {})
+
+    def test_stage_injects_cargo_version_into_plugin_toml(self) -> None:
+        """The staged plugin.toml gains a version line read from Cargo.toml."""
+        suffix = build.exe_suffix()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_plugin(root, "s3sync", ui=False, version="1.2.3")
+            target = root / "target" / "debug"
+            target.mkdir(parents=True)
+            (target / f"s3sync{suffix}").write_text("exe")
+
+            build.stage_builtin_plugins(root, release=False)
+
+            staged = (
+                target / "builtin-plugins" / "s3sync" / "plugin.toml"
+            ).read_text()
+            self.assertIn('version = "1.2.3"', staged)
+            # The original identity content is preserved.
+            self.assertIn('name = "s3sync"', staged)
+
+    def test_stage_without_cargo_version_omits_version_line(self) -> None:
+        """A plugin whose Cargo.toml lacks a version stages no version line."""
+        suffix = build.exe_suffix()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # No Cargo.toml at all -> read_cargo_version returns None.
+            self._make_plugin(root, "hooklog", ui=False, version=None)
+            target = root / "target" / "debug"
+            target.mkdir(parents=True)
+            (target / f"hooklog{suffix}").write_text("exe")
+
+            build.stage_builtin_plugins(root, release=False)
+
+            staged = (
+                target / "builtin-plugins" / "hooklog" / "plugin.toml"
+            ).read_text()
+            self.assertNotIn("version", staged)
 
     @staticmethod
-    def _make_plugin(root: Path, name: str, ui: bool) -> None:
-        """Create a minimal example plugin source layout under root."""
+    def _make_plugin(
+        root: Path, name: str, ui: bool, version: str | None = None
+    ) -> None:
+        """Create a minimal example plugin source layout under root.
+
+        When `version` is given, a Cargo.toml carrying it is written alongside
+        plugin.toml so version-injection can be exercised.
+        """
         plugin_dir = root / "examples" / "plugins" / name
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "plugin.toml").write_text(f'name = "{name}"\n')
+        if version is not None:
+            (plugin_dir / "Cargo.toml").write_text(
+                f'[package]\nname = "{name}"\nversion = "{version}"\n'
+            )
         if ui:
             (plugin_dir / "ui.toml").write_text("[[actions]]\n")
 

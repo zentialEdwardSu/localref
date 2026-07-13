@@ -51,7 +51,10 @@ async fn run(action: &str, ctx: &ActionContext) -> RunOutput {
         }
         "export_ris" => export(ctx, "ris").await,
         "preview_export" => match export(ctx, "bibtex").await {
-            // Preview: return the text only (no filename), shown live.
+            // Strip the filename so the result is shown inline, never saved.
+            // The host only opens a save dialog when `filename` is set, so a
+            // bare `ok(text)` is the canonical "display, don't download" form —
+            // exactly what a preview wants (and what a run of this action gives).
             RunOutput { result: Some(text), .. } => RunOutput::ok(text),
             other => other,
         },

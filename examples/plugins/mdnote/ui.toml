@@ -1,0 +1,15 @@
+# Both actions bind to the active item, so the host offers them as context-menu
+# entries. Each ensures `note.md` exists (seeded with `# {item title}`) before
+# opening it in the system default Markdown editor.
+
+# Open just the note.
+[[actions]]
+id     = "open_note"
+label  = "Open Markdown note"
+target = "active"
+
+# Open the note alongside the item's main file.
+[[actions]]
+id     = "open_note_with_file"
+label  = "Open note + main file"
+target = "active"
