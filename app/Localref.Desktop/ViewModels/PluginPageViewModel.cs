@@ -21,7 +21,7 @@ namespace Localref.Desktop.ViewModels;
 /// </summary>
 public partial class PluginPageViewModel : ViewModelBase
 {
-    private readonly DaemonService _daemon;
+    private readonly IPluginActionRunner _pluginActions;
     private readonly string _plugin;
     private readonly UiPage _page;
     private readonly IReadOnlyList<string> _selectedIds;
@@ -57,13 +57,13 @@ public partial class PluginPageViewModel : ViewModelBase
     public event Func<UiConfirmation, string, Task<bool>>? ConfirmationRequested;
 
     public PluginPageViewModel(
-        DaemonService daemon,
+        IPluginActionRunner pluginActions,
         string plugin,
         UiPage page,
         IReadOnlyList<string>? selectedIds = null,
         string? activeId = null)
     {
-        _daemon = daemon;
+        _pluginActions = pluginActions;
         _plugin = plugin;
         _page = page;
         _selectedIds = selectedIds ?? Array.Empty<string>();
@@ -146,7 +146,7 @@ public partial class PluginPageViewModel : ViewModelBase
         {
             await Task.Delay(TimeSpan.FromMilliseconds(preview.debounceMs));
             var result = await Task.Run(() =>
-                _daemon.Handle.PreviewPluginAction(_plugin, preview.action, BuildForm()));
+                _pluginActions.PreviewPluginAction(_plugin, preview.action, BuildForm()));
             if (version != Volatile.Read(ref _previewVersion))
             {
                 return;
@@ -196,7 +196,7 @@ public partial class PluginPageViewModel : ViewModelBase
                 var display = Displays.FirstOrDefault(candidate => candidate.Id == property.Name);
                 if (display is null)
                 {
-                    continue;
+                    throw new JsonException($"Unknown display '{property.Name}'.");
                 }
                 switch (display)
                 {
@@ -273,7 +273,7 @@ public partial class PluginPageViewModel : ViewModelBase
         {
             // Blocks on the Rust side (spawns the plugin); keep it off the UI thread.
             result = await Task.Run(
-                () => _daemon.Handle.RunPluginAction(_plugin, action, form));
+                () => _pluginActions.RunPluginAction(_plugin, action, form));
         }
         catch (Exception ex)
         {

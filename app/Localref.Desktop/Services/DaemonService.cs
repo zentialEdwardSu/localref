@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using uniffi.localref_ffi;
 
@@ -13,7 +14,7 @@ namespace Localref.Desktop.Services;
 /// + CSC servers. Hold this in <c>App</c> and call <see cref="Stop"/> from the
 /// desktop lifetime's exit path so the servers shut down cleanly.
 /// </remarks>
-public sealed class DaemonService
+public sealed class DaemonService : IPluginActionRunner
 {
     private DaemonHandle? _handle;
 
@@ -64,4 +65,16 @@ public sealed class DaemonService
         _handle?.Shutdown();
         _handle = null;
     }
+
+    public PluginRunResult PreviewPluginAction(
+        string plugin,
+        string action,
+        Dictionary<string, string> form) =>
+        Handle.PreviewPluginAction(plugin, action, form);
+
+    public PluginRunResult RunPluginAction(
+        string plugin,
+        string action,
+        Dictionary<string, string> form) =>
+        Handle.RunPluginAction(plugin, action, form);
 }
