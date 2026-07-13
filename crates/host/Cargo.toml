@@ -21,7 +21,7 @@ tracing = { workspace = true }
 user-notify = "0.4.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_UI_Shell"] }
+windows-sys = { version = "0.61.2", features = ["Win32_UI_Shell", "Win32_Foundation"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

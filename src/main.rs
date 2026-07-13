@@ -71,6 +71,8 @@ fn run_serve(config: LocalrefConfig) -> std::io::Result<()> {
         localref_core::plugin_state::load_disabled(config.library_root())
             .unwrap_or_default();
     let disabled = Arc::new(std::sync::RwLock::new(disabled));
+    let registry =
+        Arc::new(localref_plugin::PluginProcessRegistry::new());
 
     let server_config = ServerConfig {
         rest_addr: config.rest_addr(),
@@ -86,6 +88,7 @@ fn run_serve(config: LocalrefConfig) -> std::io::Result<()> {
             plugins,
             config.rest_endpoint().to_string(),
             disabled,
+            registry,
         );
         println!("localref REST on http://{}", server_config.rest_addr);
         println!("localref CSC  on http://{}", server_config.csc_addr);

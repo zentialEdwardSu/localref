@@ -69,15 +69,40 @@ pub fn build_action_args(
     }
 }
 
+/// Resolve the subprocess timeout an action declares in the UI spec, matching a
+/// global `[[actions]]` entry first, then a `[[pages]]` entry whose `action`
+/// spawns it. Returns `None` when unset, so the caller applies the host default.
+#[must_use]
+pub fn action_timeout_secs(ui: Option<&PluginUiSpec>, action_name: &str) -> Option<u64> {
+    let ui = ui?;
+    ui.actions
+        .iter()
+        .find(|a| a.id == action_name)
+        .and_then(|a| a.timeout_secs)
+        .or_else(|| {
+            ui.pages
+                .iter()
+                .find(|p| p.action.as_deref() == Some(action_name))
+                .and_then(|p| p.timeout_secs)
+        })
+}
+
 /// What the host should do with a plugin action's [`RunOutput`].
 ///
 /// This is the framework-free decision the REST handler and the FFI layer share.
 /// The caller (Axum redirect, or Avalonia save dialog) performs the side effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RunOutcome {
-    /// The action succeeded with no downloadable result; nothing to save.
+    /// The action succeeded with nothing to show; the UI reports a plain "done".
     Done,
-    /// The action produced text to save under `filename` (already sanitized).
+    /// The action produced text to display inline (a `result` with no
+    /// `filename`): the UI shows it in place, no save dialog.
+    Inline {
+        /// The text content to display.
+        content: String,
+    },
+    /// The action produced a downloadable artifact: the plugin explicitly set a
+    /// `filename`, so the UI opens a save dialog and writes `content` there.
     Save {
         /// Suggested, filesystem-safe file name for a save dialog.
         filename: String,
@@ -93,40 +118,30 @@ pub enum RunOutcome {
 
 /// Classify a plugin [`RunOutput`] into the host-side [`RunOutcome`].
 ///
-/// A success envelope carrying `result` text becomes [`RunOutcome::Save`] with a
-/// safe filename (the plugin's suggested `filename`, else one derived from the
-/// action name). A success envelope with no `result` is [`RunOutcome::Done`]. An
-/// error envelope becomes [`RunOutcome::Error`].
+/// A save dialog opens *only* when the plugin explicitly sets a `filename` — the
+/// signal that the `result` is a downloadable artifact ([`RunOutcome::Save`]). A
+/// `result` without a `filename` is shown inline ([`RunOutcome::Inline`]); an
+/// `ok` envelope with no `result` is [`RunOutcome::Done`]; an error envelope is
+/// [`RunOutcome::Error`]. This keeps informational output (logs, summaries) from
+/// ever triggering a save prompt — a plugin must opt in to a file with `filename`.
 #[must_use]
-pub fn decide_run_outcome(
-    action_name: &str,
-    output: &RunOutput,
-) -> RunOutcome {
-    if output.status == "ok" {
-        return match output.result.as_deref() {
-            Some(result) => RunOutcome::Save {
-                filename: output.filename.as_deref().map_or_else(
-                    || default_download_filename(action_name),
-                    safe_download_filename,
-                ),
-                content: result.to_string(),
-            },
-            None => RunOutcome::Done,
+pub fn decide_run_outcome(output: &RunOutput) -> RunOutcome {
+    if output.status != "ok" {
+        return RunOutcome::Error {
+            message: output.message.as_deref().unwrap_or("plugin action failed").to_string(),
         };
     }
-    RunOutcome::Error {
-        message: output
-            .message
-            .as_deref()
-            .unwrap_or("plugin action failed")
-            .to_string(),
+    match (output.result.as_deref(), output.filename.as_deref()) {
+        // Explicit filename → downloadable artifact. An empty/whitespace name
+        // sanitizes to a safe default rather than producing an unnamed file.
+        (Some(result), Some(filename)) => RunOutcome::Save {
+            filename: safe_download_filename(filename),
+            content: result.to_string(),
+        },
+        // A filename with no result is a plugin bug; treat as nothing to save.
+        (Some(result), None) => RunOutcome::Inline { content: result.to_string() },
+        (None, _) => RunOutcome::Done,
     }
-}
-
-/// Build the fallback download filename from an action name.
-#[must_use]
-pub fn default_download_filename(action_name: &str) -> String {
-    format!("localref-{}.txt", safe_download_filename(action_name))
 }
 
 /// Reduce an arbitrary string to a filesystem-safe download filename.
@@ -165,6 +180,7 @@ mod tests {
                 label: "Export RIS".to_string(),
                 mount: UiMount::ContextMenu,
                 target: UiTarget::Selection,
+                timeout_secs: None,
             }],
             pages: vec![UiPage {
                 id: "active_form".to_string(),
@@ -186,6 +202,8 @@ mod tests {
                     enabled_if: None,
                 }],
                 display: Vec::new(),
+                submit: None,
+                timeout_secs: None,
             }],
         }
     }
@@ -298,10 +316,7 @@ mod tests {
 
     #[test]
     fn decide_run_outcome_error_status_reports_message() {
-        let outcome = decide_run_outcome(
-            "export_bibtex",
-            &RunOutput::error("no items selected"),
-        );
+        let outcome = decide_run_outcome(&RunOutput::error("no items selected"));
         assert_eq!(
             outcome,
             RunOutcome::Error { message: "no items selected".to_string() }
@@ -309,9 +324,9 @@ mod tests {
     }
 
     #[test]
-    fn decide_run_outcome_result_yields_save_with_safe_filename() {
+    fn decide_run_outcome_result_with_filename_yields_save() {
+        // An explicit filename is the opt-in for a downloadable artifact.
         let outcome = decide_run_outcome(
-            "export_bibtex",
             &RunOutput::ok("@article{demo}")
                 .content_type("text/x-bibtex")
                 .filename("localref-export.bib"),
@@ -326,15 +341,33 @@ mod tests {
     }
 
     #[test]
+    fn decide_run_outcome_result_without_filename_is_inline() {
+        // The key rule: `result` alone (no filename) is shown inline, never
+        // saved. This is what stops informational output from prompting a save.
+        let outcome = decide_run_outcome(&RunOutput::ok("12 items synced"));
+        assert_eq!(
+            outcome,
+            RunOutcome::Inline { content: "12 items synced".to_string() }
+        );
+    }
+
+    #[test]
+    fn decide_run_outcome_blank_filename_sanitizes_to_default() {
+        // A filename that sanitizes to empty still yields Save (opt-in stands),
+        // but with a safe fallback name rather than an unnamed file.
+        let outcome = decide_run_outcome(&RunOutput::ok("data").filename("///"));
+        assert_eq!(
+            outcome,
+            RunOutcome::Save {
+                filename: "localref-export.txt".to_string(),
+                content: "data".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn decide_run_outcome_ok_without_result_is_done() {
-        let output = RunOutput {
-            status: "ok".to_string(),
-            result: None,
-            content_type: None,
-            filename: None,
-            message: None,
-        };
-        let outcome = decide_run_outcome("noop", &output);
+        let outcome = decide_run_outcome(&RunOutput::done());
         assert_eq!(outcome, RunOutcome::Done);
     }
 }

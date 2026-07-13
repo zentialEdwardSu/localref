@@ -25,6 +25,7 @@ description = "Export citations in BibTeX and RIS formats"
 | `name`       | string | yes      | Machine-readable identifier used in routes and argv |
 | `executable` | string | no       | Path to the binary, relative to the plugin directory. Defaults to `name` |
 | `description`| string | no       | Human-readable description shown in the UI |
+| `version`    | string | no       | Plugin version shown in the Plugins manager. **Injected by `build.py` from the plugin's `Cargo.toml` `[package] version` at staging time** — not authored by hand. A bundle staged without the build script simply has no version (the UI shows `—`) |
 | `ui`         | string | no       | UI-spec filename override. Defaults to `ui.toml` |
 
 A plugin with no `ui.toml` (and no `ui` override that resolves to a file) is
@@ -178,14 +179,31 @@ text = ""
 | `id`   | string | yes      | Pane identifier; also the target name for Tier-2 preview |
 | `text` | string | yes      | Template text (may be empty for Tier-2 target panes) |
 
+Schema v2 may additionally declare host-known structured surfaces:
+
+```toml
+[[pages.display]]
+id = "versions"
+text = ""
+kind = "table"
+selection_field = "sequence"
+columns = [{ key = "sequence", label = "Version" }]
+```
+
+`kind` defaults to `text` for compatibility. Supported values are `text`,
+`status`, `table`, and `details`. Tables render schema-declared `columns` and
+copy the selected row's `selection_field` value into the matching form field;
+details uses `selection_of` to show values from the selected table row.
+
 **Tier-1 bindings** are computed in-browser with no plugin call. The host
 substitutes tokens in `text` before rendering:
 
 - `{selection.count}` — number of checked items
 - `{field.<name>}` — current value of the named form field
 
-**Tier-2 preview** is a debounced plugin call whose plain-text result is
-dropped into a named display pane. See below.
+**Tier-2 preview** is a debounced plugin call. Plain text is dropped into the
+named display pane; a structured payload can fill multiple schema-v2 panes.
+See below.
 
 #### Live preview
 
@@ -202,6 +220,11 @@ preview = { action = "preview_export", debounce_ms = 300, into = "preview_pane" 
 The preview action must return `{"status":"ok","result":"…"}`. The host strips
 the envelope and writes the text into the named pane. Preview results are
 text-only; `filename` is ignored for preview calls.
+
+For structured displays, return JSON in `result` and set `content_type` to
+`application/vnd.localref.plugin-ui+json;v=1`. The JSON is an object keyed by
+display id; table values are arrays of row objects. Unknown display ids are
+ignored, while malformed values surface a recoverable preview error in the host.
 
 ---
 
@@ -303,12 +326,27 @@ On error:
 | Field          | Notes |
 |----------------|-------|
 | `status`       | `"ok"` or `"error"` |
-| `result`       | Text content produced by the action (omitted on error) |
+| `result`       | Text produced by the action (omitted on error). Displayed inline unless `filename` is also set — see the note below |
 | `content_type` | MIME type of `result` (optional) |
-| `filename`     | Suggested save filename. When present the desktop host opens a save dialog and writes `result` to the chosen path |
+| `filename`     | Set this **only** to offer `result` as a download: when present, the desktop host opens a save dialog and writes `result` to the chosen path. A blank/unsafe name is sanitized to a safe default |
 | `message`      | Error description when `status` is `"error"` |
 
 All fields except `status` are optional and default to null when absent.
+
+> **`filename` is the opt-in for a save dialog.** The host classifies a success
+> envelope three ways:
+>
+> - `result` **and** `filename` → **save dialog** (a downloadable artifact, e.g. a `.bib` export).
+> - `result`, no `filename` → shown **inline** in the result pane.
+> - no `result` → plain **"done"**.
+>
+> So a save prompt never appears unless the plugin explicitly sets `filename`.
+> For informational output — progress, counts, a sync summary — prefer emitting
+> a bare `{"status":"ok"}` (no `result`) and delivering the text out-of-band via
+> `POST /api/plugins/log` and the status bar, so it lands in the log/status UI
+> rather than a transient result pane. In the Rust SDK that is
+> `RunOutput::done()`; use `RunOutput::ok(text)` for inline text and add
+> `.filename("…")` only when the user should download it.
 
 For preview calls the host reads only `result`; `filename` and `content_type`
 are ignored.
@@ -480,6 +518,37 @@ let shown = client.notify("Export complete", "Wrote 3 entries", NotifyKind::Succ
 Both calls work from any invocation mode (`run`, `hook`, `cron`) since every
 mode receives an `--endpoint`. Hooks and cron jobs are the natural place to use
 them — e.g. a nightly cron job logging its summary and notifying on completion.
+
+### Status-bar messages
+
+A plugin can push a short message into the desktop app's status bar with
+`POST /api/status`. Unlike a notification, this is an in-window message (no OS
+toast) that stays until the next status update or library action replaces it:
+
+```jsonc
+// POST <endpoint>/api/status
+{
+  "text": "Syncing 3/10…",
+  "kind": "info"   // info (default) | success | error
+}
+```
+
+- The `kind` colors the status-bar indicator dot (info → accent, success →
+  green, error → red).
+- Like notifications, this is a **desktop capability**: with no UI subscribed
+  (headless build) the message is dropped. The daemon still returns `204` when
+  the endpoint exists; the SDK helper reports availability as a boolean.
+- The text is mirrored into the unified log under `localref::status`.
+
+```rust
+use localref_plugin_sdk::{LocalrefClient, NotifyKind};
+
+let client = LocalrefClient::new(endpoint);
+client.set_status("Syncing 3/10…", NotifyKind::Info).await?;
+```
+
+This is the natural channel for **live progress** during a long foreground
+action, where a single terminal `RunOutput` can't report intermediate steps.
 
 ---
 

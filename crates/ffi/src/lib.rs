@@ -22,15 +22,18 @@ use localref_core::config::LocalrefConfig;
 use localref_core::storage::StorageDb;
 use localref_core::types::CategoryPath;
 use localref_host::plugin_host::{
-    RunOutcome, build_action_args, decide_run_outcome,
+    RunOutcome, action_timeout_secs, build_action_args, decide_run_outcome,
 };
-use localref_plugin::DiscoveredPlugin;
+use localref_plugin::{
+    DiscoveredPlugin, InvocationKind, InvocationTracking, PluginProcessRegistry,
+};
 use tokio::task::JoinHandle;
 
 pub use dto::{
     CategorySummary, DaemonEvent, DaemonStatus, ItemDocument,
     ItemFilesDocument, LogEntry, Metadata, MetadataDocument, PauseMode,
-    PluginUiSpec, ScheduledCall, SearchHit,
+    DisplayKind, PluginUiSpec, RunningInvocation, ScheduledCall, SearchHit,
+    StatusKind, UiConfirmation, UiDisplayColumn, UiSubmit,
 };
 pub use error::FfiError;
 
@@ -85,6 +88,8 @@ pub struct PluginDescriptor {
     pub name: String,
     /// Optional human-readable description.
     pub description: Option<String>,
+    /// Plugin version, injected from its `Cargo.toml` at build time.
+    pub version: Option<String>,
     /// Absolute plugin directory.
     pub dir: String,
     /// Whether the plugin is currently enabled.
@@ -136,6 +141,9 @@ struct HostRuntime {
     library_root: PathBuf,
     /// Directory scanned for plugins; re-read on `rescan_plugins`.
     plugins_dir: PathBuf,
+    /// Live plugin invocations; listed and cancelled from the UI, and killed
+    /// wholesale on shutdown so no child outlives the app.
+    plugin_registry: Arc<PluginProcessRegistry>,
     /// Owned runtime; kept alive for the process. Dropping it stops the servers.
     runtime: tokio::runtime::Runtime,
     /// Event-subscription tasks, aborted on shutdown / unsubscribe.
@@ -302,6 +310,25 @@ pub fn start_daemon(config: DaemonConfig) -> FfiResult<Arc<DaemonHandle>> {
         .map_err(|e| FfiError::Internal { msg: e.to_string() })?;
     let daemon = LocalrefDaemon::new(storage);
     let plugins_dir = PathBuf::from(&config.plugins_dir);
+    // First-run only: when the plugins directory holds no bundles yet, install
+    // the built-in plugins staged beside the app (matching `localref init`).
+    // Non-fatal — a missing or failed install must not stop the daemon booting.
+    if plugins_dir_is_empty(&plugins_dir) {
+        match localref_host::init::install_builtin_plugins(&plugins_dir, false)
+        {
+            Ok(installed) if !installed.is_empty() => tracing::info!(
+                target: "localref::ffi",
+                plugins = %installed.join(", "),
+                "installed built-in plugins on first run",
+            ),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(
+                target: "localref::ffi",
+                %error,
+                "failed to install built-in plugins",
+            ),
+        }
+    }
     let discovered = localref_plugin::discover_plugins(&plugins_dir);
     // Aggregate the indexed `extra` fields every discovered plugin declares, so
     // their values participate in search after the first rebuild.
@@ -313,6 +340,7 @@ pub fn start_daemon(config: DaemonConfig) -> FfiResult<Arc<DaemonHandle>> {
     let disabled = localref_core::plugin_state::load_disabled(&library_root)
         .unwrap_or_default();
     let disabled = Arc::new(RwLock::new(disabled));
+    let plugin_registry = Arc::new(PluginProcessRegistry::new());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -331,6 +359,11 @@ pub fn start_daemon(config: DaemonConfig) -> FfiResult<Arc<DaemonHandle>> {
         .map_err(|e| FfiError::Internal {
             msg: format!("could not bind API server ports: {e}"),
         })?;
+    // Clear the inherit flag immediately, before any plugin worker can spawn a
+    // child that would otherwise inherit these listening sockets and keep the
+    // port bound after the app exits. `serve_*_on` re-applies it defensively.
+    localref_host::server::deny_socket_inheritance(&rest_listener);
+    localref_host::server::deny_socket_inheritance(&csc_listener);
 
     // Start notify consumer, plugin workers, and both servers on the runtime.
     // The listeners are already bound above, so the only errors left here are
@@ -340,10 +373,11 @@ pub fn start_daemon(config: DaemonConfig) -> FfiResult<Arc<DaemonHandle>> {
         let plugins = plugins.clone();
         let disabled = disabled.clone();
         let endpoint = config.rest_endpoint.clone();
+        let registry = Arc::clone(&plugin_registry);
         drop(runtime.spawn(async move {
             localref_host::notify::start_notify_consumer();
             localref_host::scheduler::spawn_plugin_workers(
-                &daemon, plugins, endpoint, disabled,
+                &daemon, plugins, endpoint, disabled, registry,
             );
             let rest = localref_host::server::serve_rest_on(
                 rest_listener,
@@ -371,6 +405,7 @@ pub fn start_daemon(config: DaemonConfig) -> FfiResult<Arc<DaemonHandle>> {
             rest_endpoint: config.rest_endpoint,
             library_root,
             plugins_dir,
+            plugin_registry,
             runtime,
             subscriptions: Mutex::new(Vec::new()),
             _log_handle: log_handle,
@@ -382,6 +417,20 @@ pub fn start_daemon(config: DaemonConfig) -> FfiResult<Arc<DaemonHandle>> {
 fn category(path: &str) -> FfiResult<CategoryPath> {
     CategoryPath::new(path).ok_or_else(|| FfiError::InvalidInput {
         msg: "invalid category path".into(),
+    })
+}
+
+/// Return `true` when `plugins_dir` holds no installed plugin bundle.
+///
+/// A bundle is any immediate subdirectory containing a `plugin.toml` (the same
+/// shape `discover_plugins` and `init` expect). An absent or unreadable
+/// directory counts as empty, so the first-run install runs.
+fn plugins_dir_is_empty(plugins_dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(plugins_dir) else {
+        return true;
+    };
+    !entries.filter_map(Result::ok).any(|entry| {
+        entry.path().join("plugin.toml").is_file()
     })
 }
 
@@ -789,6 +838,12 @@ impl DaemonHandle {
             &self.inner.rest_endpoint,
             &form,
         );
+        let timeout = action_timeout_secs(plugin.ui.as_ref(), &action);
+        let tracking = InvocationTracking {
+            registry: Arc::clone(&self.inner.plugin_registry),
+            plugin: plugin.name().to_string(),
+            kind: InvocationKind::Action,
+        };
         let output = self
             .inner
             .runtime
@@ -796,17 +851,17 @@ impl DaemonHandle {
                 &plugin.executable,
                 &action,
                 &args,
+                timeout,
+                Some(tracking),
             ))
             .map_err(FfiError::from)?;
-        // Classify via the shared decision logic so behaviour matches the old
-        // REST path; the UI performs the save-dialog side effect itself.
-        let (result, filename) = match decide_run_outcome(&action, &output) {
-            RunOutcome::Save { filename, content } => {
-                (Some(content), Some(filename))
-            }
-            RunOutcome::Done | RunOutcome::Error { .. } => {
-                (output.result, None)
-            }
+        // Classify via the shared decision logic; the UI performs the side
+        // effect (save dialog for `Save`, inline display otherwise). A save
+        // dialog opens only when the plugin explicitly set `filename`.
+        let (result, filename) = match decide_run_outcome(&output) {
+            RunOutcome::Save { filename, content } => (Some(content), Some(filename)),
+            RunOutcome::Inline { content } => (Some(content), None),
+            RunOutcome::Done | RunOutcome::Error { .. } => (None, None),
         };
         Ok(PluginRunResult {
             status: output.status,
@@ -817,13 +872,14 @@ impl DaemonHandle {
         })
     }
 
-    /// Run a plugin preview action, returning just the preview text.
+    /// Run a plugin preview action, retaining its payload metadata so native
+    /// hosts can render either legacy text or structured schema-v2 data.
     pub fn preview_plugin_action(
         &self,
         plugin: String,
         action: String,
         form: std::collections::HashMap<String, String>,
-    ) -> FfiResult<String> {
+    ) -> FfiResult<PluginRunResult> {
         let plugin = self.find_plugin(&plugin)?;
         let form: BTreeMap<String, String> = form.into_iter().collect();
         let args = build_action_args(
@@ -832,6 +888,11 @@ impl DaemonHandle {
             &self.inner.rest_endpoint,
             &form,
         );
+        let tracking = InvocationTracking {
+            registry: Arc::clone(&self.inner.plugin_registry),
+            plugin: plugin.name().to_string(),
+            kind: InvocationKind::Preview,
+        };
         let output = self
             .inner
             .runtime
@@ -839,10 +900,19 @@ impl DaemonHandle {
                 &plugin.executable,
                 &action,
                 &args,
+                // Previews are debounced and interactive; keep the tight default.
+                None,
+                Some(tracking),
             ))
             .map_err(FfiError::from)?;
         if output.status == "ok" {
-            Ok(output.result.unwrap_or_default())
+            Ok(PluginRunResult {
+                status: output.status,
+                result: output.result,
+                filename: None,
+                content_type: output.content_type,
+                message: output.message,
+            })
         } else {
             Err(FfiError::Plugin {
                 msg: output.message.unwrap_or_else(|| "preview failed".into()),
@@ -886,6 +956,10 @@ impl DaemonHandle {
     /// The owned runtime is dropped when the last handle reference is released,
     /// which stops the REST/CSC servers. Call from the app's exit path.
     pub fn shutdown(&self) {
+        // Kill every in-flight plugin child first, so none outlives the app
+        // holding an inherited listening socket. Combined with the servers'
+        // non-inheritable sockets, this releases the REST/CSC ports at once.
+        self.inner.plugin_registry.cancel_all();
         let mut subs = self
             .inner
             .subscriptions
@@ -894,6 +968,29 @@ impl DaemonHandle {
         for handle in subs.drain(..) {
             handle.abort();
         }
+    }
+
+    // ---- running invocations ----------------------------------------------
+
+    /// List plugin invocations currently executing.
+    ///
+    /// Feeds the plugin manager's "Running" panel; each entry can be cancelled
+    /// via [`DaemonHandle::cancel_plugin_run`].
+    pub fn list_running_plugins(&self) -> Vec<RunningInvocation> {
+        self.inner
+            .plugin_registry
+            .list()
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
+    /// Cancel one running plugin invocation by id; returns whether it was found.
+    ///
+    /// Fires the run's cancel signal; the invocation returns a cancelled error
+    /// and its child process is killed (spawned with `kill_on_drop`).
+    pub fn cancel_plugin_run(&self, id: u64) -> bool {
+        self.inner.plugin_registry.cancel(id)
     }
 }
 
@@ -927,6 +1024,7 @@ impl DaemonHandle {
             .map(|plugin| PluginDescriptor {
                 name: plugin.name().to_string(),
                 description: plugin.manifest.description.clone(),
+                version: plugin.manifest.version.clone(),
                 dir: plugin.dir.display().to_string(),
                 enabled: !disabled.contains(plugin.name()),
                 ui: plugin.ui.clone().map(Into::into),

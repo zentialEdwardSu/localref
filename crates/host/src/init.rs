@@ -56,6 +56,31 @@ pub fn run_init(repo: Option<PathBuf>, force: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Install the staged built-in plugin bundles into `plugins_dir`.
+///
+/// Resolves the staging directory the same way `init` does
+/// ([`BUILTIN_PLUGINS_ENV`], else `<exe dir>/builtin-plugins`) and copies each
+/// bundle into `plugins_dir`. Existing bundles are skipped unless `force` is
+/// set. Returns the names of the plugins that were installed; an empty vec when
+/// nothing is staged or every bundle was already present.
+///
+/// Callers other than `init` (e.g. the desktop daemon boot) use this to reach
+/// the same behavior without the CLI's stdout reporting.
+///
+/// # Errors
+///
+/// Returns an error when the staging directory cannot be read or a plugin file
+/// cannot be copied.
+pub fn install_builtin_plugins(
+    plugins_dir: &Path,
+    force: bool,
+) -> Result<Vec<String>, String> {
+    match builtin_plugins_dir() {
+        Some(staging) => copy_plugins(&staging, plugins_dir, force),
+        None => Ok(Vec::new()),
+    }
+}
+
 /// Print a one-line summary of which built-in plugins were installed.
 fn report_installed(installed: &[String]) {
     if installed.is_empty() {
@@ -162,7 +187,7 @@ fn copy_dir(source: &Path, dest: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::copy_plugins;
+    use super::{BUILTIN_PLUGINS_ENV, copy_plugins, install_builtin_plugins};
     use std::fs;
     use std::path::Path;
 
@@ -239,5 +264,34 @@ mod tests {
             "name = \"bibtexer\"\n"
         );
         assert!(!existing.join("stale.txt").exists());
+    }
+
+    /// `install_builtin_plugins` resolves staging from `BUILTIN_PLUGINS_ENV`,
+    /// copies the bundles when it points at a real directory, and is a no-op
+    /// when it points nowhere. Both cases share the process-global env var, so
+    /// they run in one test to avoid racing other tests that read it.
+    #[test]
+    fn install_builtin_plugins_honors_env_staging() {
+        let temp = tempfile::tempdir().unwrap();
+        let staging = temp.path().join("staging");
+        let dest = temp.path().join("plugins");
+        fs::create_dir_all(&dest).unwrap();
+        stage_bundle(&staging, "bibtexer", "v1");
+
+        // Points at a real staging dir -> installs the bundle.
+        // SAFETY: single-threaded test; no other test reads this var.
+        unsafe { std::env::set_var(BUILTIN_PLUGINS_ENV, &staging) };
+        let installed = install_builtin_plugins(&dest, false).unwrap();
+        assert_eq!(installed, vec!["bibtexer"]);
+        assert!(dest.join("bibtexer").join("plugin.toml").is_file());
+
+        // Points at a nonexistent dir -> no-op, no error.
+        let missing = temp.path().join("nope");
+        // SAFETY: single-threaded test; no other test reads this var.
+        unsafe { std::env::set_var(BUILTIN_PLUGINS_ENV, &missing) };
+        assert!(install_builtin_plugins(&dest, false).unwrap().is_empty());
+
+        // SAFETY: single-threaded test; no other test reads this var.
+        unsafe { std::env::remove_var(BUILTIN_PLUGINS_ENV) };
     }
 }

@@ -1778,6 +1778,7 @@ dependencies = [
 name = "localref-ffi"
 version = "0.1.0"
 dependencies = [
+ "localref-client",
  "localref-core",
  "localref-host",
  "localref-plugin",
@@ -1839,10 +1840,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "localref-plugin-mdnote"
+version = "0.1.0"
+dependencies = [
+ "localref-core",
+ "localref-plugin-sdk",
+ "open",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "localref-plugin-s3sync"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "futures",
+ "http",
  "localref-core",
  "localref-plugin-sdk",
  "object_store",
@@ -2802,7 +2816,7 @@ dependencies = [
 [[package]]
 name = "rollforward"
 version = "0.1.0"
-source = "git+https://github.com/zentialEdwardSu/rollforward#a016a9476a686ed9ff259773fc6430c817e14b7b"
+source = "git+https://github.com/zentialEdwardSu/rollforward?rev=9483073f9847809a2c9b0360f4b51fefc0612794#9483073f9847809a2c9b0360f4b51fefc0612794"
 dependencies = [
  "blake3",
  "fastcdc",

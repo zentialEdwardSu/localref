@@ -467,6 +467,30 @@ impl LocalrefClient {
         Ok(status != reqwest::StatusCode::SERVICE_UNAVAILABLE)
     }
 
+    /// Push a status message to the desktop status bar.
+    ///
+    /// Best-effort like [`Self::notify`]: when the host has no UI subscribed
+    /// (headless build or no live window) the message is simply dropped. The
+    /// `kind` reuses [`NotifyKind`] and drives the status-bar indicator color.
+    /// `Ok(true)` means the request was accepted; `Ok(false)` means the
+    /// capability was unavailable (`503`).
+    ///
+    /// # Errors
+    /// Returns an error on transport failure or a non-success HTTP status
+    /// other than `503`.
+    pub async fn set_status(
+        &self,
+        text: &str,
+        kind: NotifyKind,
+    ) -> Result<bool, ClientError> {
+        let payload = serde_json::json!({
+            "text": text,
+            "kind": kind,
+        });
+        let status = self.post_unit("/api/status", &payload).await?;
+        Ok(status != reqwest::StatusCode::SERVICE_UNAVAILABLE)
+    }
+
     /// List all runtime-registered scheduled plugin calls.
     ///
     /// # Errors

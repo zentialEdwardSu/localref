@@ -17,8 +17,8 @@ use cron::Schedule;
 use localref_core::schedule::ScheduledCall;
 use localref_core::{DaemonEvent, LocalrefDaemon, PauseMode};
 use localref_plugin::{
-    ActionArgs, DiscoveredPlugin, HookArgs, invoke_action, invoke_cron,
-    invoke_hook,
+    ActionArgs, DiscoveredPlugin, HookArgs, InvocationKind, InvocationTracking,
+    PluginProcessRegistry, invoke_action, invoke_cron, invoke_hook,
 };
 use tokio::sync::broadcast::error::RecvError;
 
@@ -57,6 +57,7 @@ pub fn spawn_plugin_workers(
     plugins: SharedPlugins,
     endpoint: String,
     disabled: Disabled,
+    registry: Arc<PluginProcessRegistry>,
 ) {
     let snapshot = plugins_snapshot(&plugins);
     let hook_bindings: usize =
@@ -75,12 +76,14 @@ pub fn spawn_plugin_workers(
         Arc::clone(&plugins),
         endpoint.clone(),
         disabled.clone(),
+        Arc::clone(&registry),
     )));
     drop(tokio::spawn(run_cron_scheduler(
         daemon.clone(),
         plugins,
         endpoint,
         disabled,
+        registry,
     )));
 }
 
@@ -90,13 +93,16 @@ async fn run_hook_dispatcher(
     plugins: SharedPlugins,
     endpoint: String,
     disabled: Disabled,
+    registry: Arc<PluginProcessRegistry>,
 ) {
     loop {
         match rx.recv().await {
             Ok(event) => {
                 // Snapshot per event so a rescan swapping the list is picked up.
                 let snapshot = plugins_snapshot(&plugins);
-                dispatch_event(&snapshot, &endpoint, &event, &disabled)
+                dispatch_event(
+                    &snapshot, &endpoint, &event, &disabled, &registry,
+                )
             }
             Err(RecvError::Lagged(skipped)) => {
                 tracing::warn!(
@@ -116,6 +122,7 @@ fn dispatch_event(
     endpoint: &str,
     event: &DaemonEvent,
     disabled: &Disabled,
+    registry: &Arc<PluginProcessRegistry>,
 ) {
     let (item, category) = event_targets(event);
     for plugin in matching_plugins(plugins, event.event_name()) {
@@ -130,8 +137,15 @@ fn dispatch_event(
             item: item.clone(),
             category: category.clone(),
         };
+        let tracking = InvocationTracking {
+            registry: Arc::clone(registry),
+            plugin: name.clone(),
+            kind: InvocationKind::Hook,
+        };
         drop(tokio::spawn(async move {
-            match invoke_hook(&executable, &event_name, &args).await {
+            match invoke_hook(&executable, &event_name, &args, None, Some(tracking))
+                .await
+            {
                 Ok(output) => tracing::debug!(
                     target: "localref::hooks",
                     plugin = %name,
@@ -184,7 +198,8 @@ fn event_targets(event: &DaemonEvent) -> (Option<String>, Option<String>) {
         | DaemonEvent::RulesChanged
         | DaemonEvent::SchedulesChanged
         | DaemonEvent::DaemonPaused
-        | DaemonEvent::DaemonResumed => (None, None),
+        | DaemonEvent::DaemonResumed
+        | DaemonEvent::StatusMessage { .. } => (None, None),
     }
 }
 
@@ -196,6 +211,8 @@ enum JobKind {
         executable: PathBuf,
         /// Job id passed back as `cron <id>`.
         job_id: String,
+        /// Declared subprocess timeout in seconds, if any.
+        timeout_secs: Option<u64>,
     },
     /// A runtime-registered call: spawn the target plugin as `run <action>`.
     ScheduledCall {
@@ -232,6 +249,7 @@ fn collect_manifest_entries(
                     kind: JobKind::ManifestCron {
                         executable: plugin.executable.clone(),
                         job_id: job.id.clone(),
+                        timeout_secs: job.timeout_secs,
                     },
                 }),
                 Err(error) => tracing::warn!(
@@ -347,6 +365,7 @@ async fn run_cron_scheduler(
     plugins: SharedPlugins,
     endpoint: String,
     disabled: Disabled,
+    registry: Arc<PluginProcessRegistry>,
 ) {
     let mut events = daemon.subscribe();
     // Rebuilt from a fresh plugin snapshot on start and on every reload, so a
@@ -400,7 +419,7 @@ async fn run_cron_scheduler(
                     "scheduled job skipped; plugin is disabled",
                 );
             } else {
-                fire_entry(entry, &endpoint);
+                fire_entry(entry, &endpoint, &registry);
             }
             *next = entry
                 .schedule
@@ -412,15 +431,27 @@ async fn run_cron_scheduler(
 }
 
 /// Spawn one scheduled entry's invocation, fire-and-forget.
-fn fire_entry(entry: &ScheduleEntry, endpoint: &str) {
+fn fire_entry(
+    entry: &ScheduleEntry,
+    endpoint: &str,
+    registry: &Arc<PluginProcessRegistry>,
+) {
     let name = entry.plugin_name.clone();
     let endpoint = endpoint.to_string();
     match &entry.kind {
-        JobKind::ManifestCron { executable, job_id } => {
+        JobKind::ManifestCron { executable, job_id, timeout_secs } => {
             let executable = executable.clone();
             let job = job_id.clone();
+            let timeout = *timeout_secs;
+            let tracking = InvocationTracking {
+                registry: Arc::clone(registry),
+                plugin: name.clone(),
+                kind: InvocationKind::Cron,
+            };
             drop(tokio::spawn(async move {
-                match invoke_cron(&executable, &job, &endpoint).await {
+                match invoke_cron(&executable, &job, &endpoint, timeout, Some(tracking))
+                    .await
+                {
                     Ok(output) => tracing::debug!(
                         target: "localref::cron",
                         plugin = %name,
@@ -447,8 +478,15 @@ fn fire_entry(entry: &ScheduleEntry, endpoint: &str) {
                 active: None,
                 params: params.clone(),
             };
+            let tracking = InvocationTracking {
+                registry: Arc::clone(registry),
+                plugin: name.clone(),
+                kind: InvocationKind::Cron,
+            };
             drop(tokio::spawn(async move {
-                match invoke_action(&executable, &action, &args).await {
+                match invoke_action(&executable, &action, &args, None, Some(tracking))
+                    .await
+                {
                     Ok(output) => tracing::debug!(
                         target: "localref::cron",
                         plugin = %name,
@@ -494,6 +532,7 @@ mod tests {
                 name: name.to_string(),
                 executable: Some(name.to_string()),
                 description: None,
+                version: None,
                 ui: None,
                 hooks: hooks
                     .into_iter()
@@ -554,6 +593,7 @@ mod tests {
                 vec![CronJob {
                     id: "nightly".to_string(),
                     schedule: "0 0 3 * * *".to_string(),
+                    timeout_secs: None,
                 }],
             ),
             plugin(
@@ -562,6 +602,7 @@ mod tests {
                 vec![CronJob {
                     id: "broken".to_string(),
                     schedule: "not a cron expr".to_string(),
+                    timeout_secs: None,
                 }],
             ),
         ];
@@ -643,6 +684,7 @@ mod tests {
             vec![CronJob {
                 id: "nightly_sync".to_string(),
                 schedule: "0 0 3 * * *".to_string(),
+                timeout_secs: None,
             }],
         )];
         *shared.write().unwrap() = Arc::new(discovered);

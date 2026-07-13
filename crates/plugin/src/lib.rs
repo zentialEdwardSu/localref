@@ -17,14 +17,22 @@ pub mod discovery;
 pub mod error;
 pub mod invoke;
 pub mod manifest;
+pub mod registry;
 pub mod state;
 
 pub use discovery::{DiscoveredPlugin, discover_plugins};
 pub use error::PluginError;
-pub use invoke::{invoke_action, invoke_cron, invoke_hook};
+pub use invoke::{
+    DEFAULT_PLUGIN_TIMEOUT_SECS, InvocationTracking, invoke_action,
+    invoke_cron, invoke_hook,
+};
+pub use registry::{
+    InvocationKind, PluginProcessRegistry, RegistrationGuard, RunningInvocation,
+};
 pub use manifest::{
     CronJob, ExtraFieldDecl, FieldKind, HookBinding, HookEvent, PluginManifest,
-    PluginUiSpec, PreviewSpec, UiAction, UiDataRequirement, UiDisplay, UiField,
-    UiMount, UiPage, UiTarget,
+    DisplayKind, PluginUiSpec, PreviewSpec, UiAction, UiConfirmation,
+    UiDataRequirement, UiDisplay, UiDisplayColumn, UiField, UiMount, UiPage,
+    UiSubmit, UiTarget,
 };
 pub use state::{ActionArgs, HookArgs, RunOutput};

@@ -13,6 +13,11 @@ pub struct PluginManifest {
     /// Optional human-readable description.
     #[serde(default)]
     pub description: Option<String>,
+    /// Plugin version, injected from the plugin's `Cargo.toml` at build time.
+    ///
+    /// Absent for hand-authored bundles that were not staged by `build.py`.
+    #[serde(default)]
+    pub version: Option<String>,
     /// Optional UI-spec filename override (defaults to `ui.toml`).
     #[serde(default)]
     pub ui: Option<String>,
@@ -104,6 +109,10 @@ pub struct CronJob {
     pub id: String,
     /// Cron expression (6 fields: sec min hour day-of-month month day-of-week).
     pub schedule: String,
+    /// Optional subprocess timeout in seconds. Unattended cron syncs raise this
+    /// above the host default so a full run isn't cut short.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 impl PluginManifest {
@@ -152,6 +161,10 @@ pub struct UiAction {
     /// Which ids are passed to the spawned action.
     #[serde(default)]
     pub target: UiTarget,
+    /// Optional per-action subprocess timeout in seconds. Long-running actions
+    /// (e.g. a full-library sync) raise this above the host default.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 /// A declarative form page mounted at a UI slot.
@@ -185,6 +198,14 @@ pub struct UiPage {
     /// Live-updating readouts (Tier-1 bindings).
     #[serde(default)]
     pub display: Vec<UiDisplay>,
+    /// Optional submit presentation. When absent, hosts retain the legacy
+    /// generic "Run" button and execute [`Self::action`] directly.
+    #[serde(default)]
+    pub submit: Option<UiSubmit>,
+    /// Optional per-action subprocess timeout in seconds, applied when this
+    /// page's `action` is spawned. Raises the host default for slow submits.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 /// A single declarative form field.
@@ -220,6 +241,74 @@ pub struct UiDisplay {
     pub id: String,
     /// Template text with `{selection.count}` / `{field.<name>}` tokens.
     pub text: String,
+    /// Native surface selected by the host. `text` preserves the original
+    /// schema behavior for existing plugin bundles.
+    #[serde(default)]
+    pub kind: DisplayKind,
+    /// Optional display heading.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Empty-state copy for structured displays.
+    #[serde(default)]
+    pub empty_text: Option<String>,
+    /// Stable columns for a table or selected-row details surface.
+    #[serde(default)]
+    pub columns: Vec<UiDisplayColumn>,
+    /// Field populated by a selected table row's `key` value.
+    #[serde(default)]
+    pub selection_field: Option<String>,
+    /// Table display id whose selected row supplies a details surface.
+    #[serde(default)]
+    pub selection_of: Option<String>,
+}
+
+/// Fixed host-rendered display surfaces.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayKind {
+    /// The legacy text/readout pane.
+    #[default]
+    Text,
+    /// A selectable, schema-columned row table.
+    Table,
+    /// Key/value details for a selected table row.
+    Details,
+    /// A short informational, warning, or error message.
+    Status,
+}
+
+/// A stable data column supplied by a structured plugin preview.
+#[derive(Clone, Debug, Deserialize)]
+pub struct UiDisplayColumn {
+    /// Property key in each preview row.
+    pub key: String,
+    /// User-facing column or details label.
+    pub label: String,
+}
+
+/// Submit-button presentation and optional high-risk action confirmation.
+#[derive(Clone, Debug, Deserialize)]
+pub struct UiSubmit {
+    /// User-facing submit button label.
+    pub label: String,
+    /// Optional confirmation shown immediately before the action invocation.
+    #[serde(default)]
+    pub confirm: Option<UiConfirmation>,
+    /// Refresh the declared preview when the action succeeds.
+    #[serde(default)]
+    pub refresh_after_submit: bool,
+}
+
+/// Content rendered in a host-owned confirmation dialog.
+#[derive(Clone, Debug, Deserialize)]
+pub struct UiConfirmation {
+    /// Window title.
+    pub title: String,
+    /// Body template with `{field.<name>}` substitutions.
+    pub message: String,
+    /// Confirm button label.
+    #[serde(default)]
+    pub confirm_label: Option<String>,
 }
 
 /// Opt-in debounced live-preview callback (Tier-2).
@@ -323,6 +412,17 @@ mod tests {
         assert!(m.hooks.is_empty());
         assert!(m.cron.is_empty());
         assert!(m.extra_fields.is_empty());
+        // Version is injected at build time; a hand-authored manifest omits it.
+        assert_eq!(m.version, None);
+    }
+
+    #[test]
+    fn plugin_manifest_parses_injected_version() {
+        let m = PluginManifest::parse(
+            "name = \"s3sync\"\nversion = \"1.2.3\"\nexecutable = \"s3sync\"\n",
+        )
+        .expect("parse version");
+        assert_eq!(m.version.as_deref(), Some("1.2.3"));
     }
 
     #[test]
@@ -417,6 +517,37 @@ schedule = "0 0 3 * * *"
         )
         .expect("parse");
         assert_eq!(ui.actions[0].target, UiTarget::None);
+    }
+
+    #[test]
+    fn ui_spec_parses_structured_display_and_confirmation() {
+        let ui = PluginUiSpec::parse(
+            r#"
+[[pages]]
+id = "history"
+label = "History"
+route = "history"
+action = "rollback"
+
+[pages.submit]
+label = "Restore selected version"
+refresh_after_submit = true
+confirm = { title = "Restore?", message = "Restore {field.sequence}" }
+
+[[pages.display]]
+id = "versions"
+text = ""
+kind = "table"
+selection_field = "sequence"
+columns = [{ key = "sequence", label = "Version" }]
+"#,
+        )
+        .expect("parse schema v2");
+        let page = &ui.pages[0];
+        assert_eq!(page.display[0].kind, super::DisplayKind::Table);
+        assert_eq!(page.display[0].selection_field.as_deref(), Some("sequence"));
+        assert_eq!(page.display[0].columns[0].key, "sequence");
+        assert_eq!(page.submit.as_ref().map(|submit| submit.refresh_after_submit), Some(true));
     }
 
     #[test]

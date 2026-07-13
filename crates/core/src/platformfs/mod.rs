@@ -426,6 +426,23 @@ impl LibraryFs {
     }
 }
 
+/// Maximum length, in characters, of a sanitized path component.
+///
+/// NTFS caps a single component at 255 UTF-16 units and Windows' default
+/// `MAX_PATH` caps the whole path at 260. Item directory names and file names
+/// are both derived from the same (possibly very long) item title and sit on
+/// the same `libroot/All/<dir>/<file>` path, so each is trimmed well under the
+/// raw limits. The full, untruncated title is always kept in `metadata.toml`.
+const MAX_COMPONENT_CHARS: usize = 100;
+
+/// Longest tail that is preserved as a file extension when truncating. Longer
+/// "extensions" are treated as ordinary title text and truncated away.
+const MAX_EXTENSION_CHARS: usize = 8;
+
+/// Marker appended to a truncated component. Not a `.`, so the trailing-dot
+/// trim leaves it intact, and it signals to the reader that the name was cut.
+const TRUNCATION_MARKER: char = '…';
+
 /// Sanitize one filename/path component according to NTFS constraints.
 /// # Errors
 ///
@@ -488,7 +505,40 @@ pub fn sanitize_ntfs_component(value: &str) -> Result<String> {
         sanitized.push('_');
     }
 
-    Ok(sanitized)
+    Ok(cap_component_length(sanitized))
+}
+
+/// Trim an already-sanitized component to [`MAX_COMPONENT_CHARS`] characters,
+/// preserving a short trailing file extension and re-trimming trailing spaces
+/// and dots exposed by the cut.
+#[allow(clippy::single_call_fn)] // extracted to keep the sanitizer readable
+fn cap_component_length(sanitized: String) -> String {
+    if sanitized.chars().count() <= MAX_COMPONENT_CHARS {
+        return sanitized;
+    }
+
+    // Keep a genuine extension (short, no path separators or spaces) so a
+    // truncated "long title.pdf" stays a `.pdf`. `rsplit_once` ignores a
+    // leading dot, so dotfiles have no extension to preserve.
+    let extension = sanitized.rsplit_once('.').and_then(|(_, ext)| {
+        let is_extension = !ext.is_empty()
+            && ext.chars().count() <= MAX_EXTENSION_CHARS
+            && ext.chars().all(|ch| ch.is_ascii_alphanumeric());
+        is_extension.then_some(ext)
+    });
+    let suffix_chars = extension.map_or(0, |ext| ext.chars().count() + 1);
+    // Reserve room for the marker plus the preserved ".<ext>".
+    let stem_budget = MAX_COMPONENT_CHARS.saturating_sub(1 + suffix_chars);
+
+    let mut stem: String = sanitized.chars().take(stem_budget).collect();
+    while stem.ends_with([' ', '.']) {
+        stem.pop();
+    }
+    stem.push(TRUNCATION_MARKER);
+    match extension {
+        Some(ext) => format!("{stem}.{ext}"),
+        None => stem,
+    }
 }
 
 #[cfg(test)]
@@ -499,6 +549,46 @@ mod tests {
     fn sanitizes_ntfs_components() {
         assert_eq!(sanitize_ntfs_component("A:B?C. ").unwrap(), "A_B_C");
         assert_eq!(sanitize_ntfs_component("CON").unwrap(), "CON_");
+    }
+
+    #[test]
+    fn caps_long_directory_name_and_keeps_it_within_limit() {
+        let title = "Deep Learning ".repeat(40);
+        let out = sanitize_ntfs_component(&title).unwrap();
+
+        assert!(out.chars().count() <= MAX_COMPONENT_CHARS);
+        assert!(out.ends_with(TRUNCATION_MARKER));
+        assert!(out.starts_with("Deep Learning"));
+    }
+
+    #[test]
+    fn caps_long_filename_but_preserves_extension() {
+        let name = format!("{}.pdf", "A Very Long Paper Title ".repeat(20));
+        let out = sanitize_ntfs_component(&name).unwrap();
+
+        assert!(out.chars().count() <= MAX_COMPONENT_CHARS);
+        assert!(out.ends_with(".pdf"), "extension must survive truncation");
+        // Marker sits between the trimmed stem and the extension.
+        assert!(out.contains(TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn does_not_treat_a_long_dotted_tail_as_an_extension() {
+        // A trailing token longer than an extension is title text, not a type.
+        let name = format!("{}.supplementary", "Section ".repeat(30));
+        let out = sanitize_ntfs_component(&name).unwrap();
+
+        assert!(out.chars().count() <= MAX_COMPONENT_CHARS);
+        assert!(!out.ends_with(".supplementary"));
+        assert!(out.ends_with(TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn leaves_short_names_untouched() {
+        assert_eq!(
+            sanitize_ntfs_component("Short Title.pdf").unwrap(),
+            "Short Title.pdf"
+        );
     }
 
     #[test]

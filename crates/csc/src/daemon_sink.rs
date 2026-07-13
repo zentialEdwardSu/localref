@@ -109,7 +109,9 @@ impl ConnectorImportSink for DaemonConnectorSink {
                 outcome: None,
             });
         }
-        self.try_import_locked(&mut sessions)
+        self.try_import_locked(&mut sessions)?;
+        prune_completed_sessions(&mut sessions);
+        Ok(())
     }
 
     fn accept_attachment(
@@ -128,9 +130,16 @@ impl ConnectorImportSink for DaemonConnectorSink {
             .iter()
             .position(|session| session.session_id == attachment.session_id)
             .or_else(|| {
-                attachment
-                    .session_id
-                    .is_none()
+                // No session matched by id. Under the connector's normal
+                // saveItems -> saveAttachment ordering the attachment belongs
+                // to the most recently created session, so fall back to it when
+                // the upload either carries no session id or is known to belong
+                // to a parent item. Without this, a mismatched session id would
+                // strand a child attachment in a session that is never imported
+                // (see the orphan branch below), losing the bytes.
+                let can_fall_back = attachment.session_id.is_none()
+                    || attachment.parent_item_id.is_some();
+                can_fall_back
                     .then(|| sessions.len().checked_sub(1))
                     .flatten()
             });
@@ -202,6 +211,7 @@ impl ConnectorImportSink for DaemonConnectorSink {
             session.attachments.push(attachment);
             self.try_import_locked(&mut sessions)?;
         }
+        prune_completed_sessions(&mut sessions);
         Ok(())
     }
 
@@ -223,4 +233,36 @@ impl ConnectorImportSink for DaemonConnectorSink {
             })
             .map_err(|error| error.to_string())
     }
+}
+
+/// Maximum number of already-imported sessions retained for late attachments.
+///
+/// A connector save can upload several attachments after its item is imported,
+/// so a completed session must stay around to receive them. But the session Vec
+/// was never cleared, so it grew unbounded and each new save pushed the "most
+/// recent session" fallback further from any given attachment's real parent.
+/// Retaining a bounded window of the most recent completed sessions keeps late
+/// attachments working while stopping the Vec from growing without limit.
+const MAX_COMPLETED_SESSIONS: usize = 16;
+
+/// Drop the oldest imported sessions once more than [`MAX_COMPLETED_SESSIONS`]
+/// have completed, preserving order and every not-yet-imported session.
+fn prune_completed_sessions(sessions: &mut Vec<ConnectorSession>) {
+    let completed =
+        sessions.iter().filter(|session| session.outcome.is_some()).count();
+    let Some(mut to_drop) = completed.checked_sub(MAX_COMPLETED_SESSIONS)
+    else {
+        return;
+    };
+    if to_drop == 0 {
+        return;
+    }
+    sessions.retain(|session| {
+        if to_drop > 0 && session.outcome.is_some() {
+            to_drop -= 1;
+            false
+        } else {
+            true
+        }
+    });
 }

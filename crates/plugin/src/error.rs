@@ -11,6 +11,10 @@ pub enum PluginError {
     #[error("plugin timed out after 30 seconds")]
     Timeout,
 
+    /// Plugin execution was cancelled (by the user or on shutdown).
+    #[error("plugin invocation cancelled")]
+    Cancelled,
+
     /// Plugin returned an error status.
     #[error("plugin error: {0}")]
     Plugin(String),

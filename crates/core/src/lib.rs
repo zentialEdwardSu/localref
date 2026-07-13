@@ -248,6 +248,25 @@ pub struct DaemonStatus {
     pub paused_modes: Vec<PauseMode>,
 }
 
+/// Severity of a plugin-pushed status message shown in the desktop status bar.
+///
+/// Mirrors the notification severity used by `POST /api/notify`, but kept
+/// independent so `core` need not depend on the host's notification layer.
+#[cfg(feature = "server")]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum StatusKind {
+    /// Informational message.
+    #[default]
+    Info,
+    /// Success message.
+    Success,
+    /// Error message.
+    Error,
+}
+
 /// A library mutation that completed successfully, published to hook
 /// subscribers so the host can spawn plugins bound to the matching event.
 #[cfg(feature = "server")]
@@ -293,6 +312,16 @@ pub enum DaemonEvent {
     DaemonPaused,
     /// A daemon pause mode was disabled.
     DaemonResumed,
+    /// A plugin pushed a free-form status message for the desktop status bar.
+    ///
+    /// Carries no library target; it exists only to surface text (and a
+    /// severity) to the UI and is never matched by plugin hooks.
+    StatusMessage {
+        /// Message text to display.
+        text: String,
+        /// Severity driving the status-bar indicator color.
+        kind: StatusKind,
+    },
 }
 
 #[cfg(feature = "server")]
@@ -311,6 +340,7 @@ impl DaemonEvent {
             Self::SchedulesChanged => "schedules_changed",
             Self::DaemonPaused => "daemon_paused",
             Self::DaemonResumed => "daemon_resumed",
+            Self::StatusMessage { .. } => "status_message",
         }
     }
 }
@@ -378,6 +408,14 @@ impl LocalrefDaemon {
     /// Publish one completion event, ignoring the case of no live subscribers.
     fn emit_event(&self, event: DaemonEvent) {
         let _ = self.event_tx.send(event);
+    }
+
+    /// Publish a free-form status message to the desktop status bar.
+    ///
+    /// Used by plugins (via `POST /api/status`) to surface progress or outcome
+    /// text without an OS toast. Dropped silently when no UI is subscribed.
+    pub fn emit_status(&self, text: String, kind: StatusKind) {
+        self.emit_event(DaemonEvent::StatusMessage { text, kind });
     }
 
     /// Publish [`DaemonEvent::SchedulesChanged`] so the cron scheduler reloads
@@ -619,6 +657,7 @@ impl LocalrefDaemon {
                     .import_connector_item(import)
             })
             .and_then(|outcome| {
+                self.record_projected_categories(&outcome)?;
                 self.storage.rebuild_from_all()?;
                 record.indexed_items = Some(self.storage.list_items()?.len());
                 record.message =
@@ -841,6 +880,7 @@ impl LocalrefDaemon {
                     .create_metadata_for_all_directory(&item_dir)
             })
             .and_then(|outcome| {
+                self.record_projected_categories(&outcome)?;
                 self.storage.rebuild_from_all()?;
                 record.indexed_items = Some(self.storage.list_items()?.len());
                 record.message =
@@ -885,6 +925,7 @@ impl LocalrefDaemon {
                 ImportPipeline::new(&self.library_root).import_file(&file_path)
             })
             .and_then(|outcome| {
+                self.record_projected_categories(&outcome)?;
                 self.storage.rebuild_from_all()?;
                 record.indexed_items = Some(self.storage.list_items()?.len());
                 record.message =
@@ -1097,6 +1138,27 @@ impl LocalrefDaemon {
     /// Load the category junction manifest.
     fn load_manifest(&self) -> Result<CatManifest> {
         CatManifest::load(&self.library_root)
+    }
+
+    /// Record the junctions an import just projected in the manifest.
+    ///
+    /// The import pipeline writes categories to `metadata.toml` and creates the
+    /// `Cat/` junctions, but does not touch the manifest. Recording them here
+    /// closes that gap so a later reconcile can tell a daemon-projected junction
+    /// (whose category the user may later remove from metadata) from a hand-made
+    /// one to adopt.
+    fn record_projected_categories(
+        &self,
+        outcome: &ImportOutcome,
+    ) -> Result<()> {
+        if outcome.categories.is_empty() {
+            return Ok(());
+        }
+        let mut manifest = self.load_manifest()?;
+        for category in &outcome.categories {
+            manifest.insert(outcome.item_id.as_str(), category.as_str());
+        }
+        manifest.save(&self.library_root)
     }
 
     /// Create an empty category directory and rebuild category indexes.
@@ -1826,17 +1888,21 @@ impl LocalrefDaemon {
     /// Reconcile `Cat/` junctions against metadata membership and the manifest.
     ///
     /// `metadata.toml` is authoritative; the manifest records which junctions the
-    /// daemon has projected. Per `(item, category)` the classification is:
+    /// daemon has projected. Categories are added via metadata/UI/API or by a
+    /// hand-made junction; they are removed *only* via metadata/UI/API. Deleting
+    /// a junction in a file manager is not a removal. Per `(item, category)`:
     ///
     /// - metadata has it, junction present → in sync (ensure manifest records it)
-    /// - metadata has it, junction absent, manifest recorded it → the user
-    ///   deleted the junction: drop the category from metadata and tombstone it
-    /// - metadata has it, junction absent, manifest did not record it → not yet
-    ///   projected: create the junction and record it
-    /// - junction present, metadata lacks it, not tombstoned → a hand-made or
-    ///   pre-existing junction: adopt the category into metadata
-    /// - junction present, metadata lacks it but tombstoned → honor the removal:
+    /// - metadata has it, junction absent → (re)create the junction from
+    ///   metadata and record it (covers never-projected, a junction the user
+    ///   deleted by hand, and junctions lost to a library move)
+    /// - junction present, metadata lacks it, manifest recorded it → the daemon
+    ///   projected it before and metadata dropped it → the user removed the
+    ///   category via metadata/UI/API: remove the now-orphaned junction
+    /// - junction present, metadata lacks it, tombstoned → honor the removal:
     ///   remove the junction
+    /// - junction present, metadata lacks it, not in manifest nor tombstoned → a
+    ///   hand-made junction: adopt the category into metadata
     ///
     /// Returns the number of membership changes applied.
     fn reconcile_categories(&self) -> Result<usize> {
@@ -1867,45 +1933,14 @@ impl LocalrefDaemon {
         let disk_set: std::collections::BTreeSet<(String, String)> =
             on_disk.iter().cloned().collect();
 
-        // Detect a library relocation. `metadata.toml` and the manifest are
-        // plain files that survive a copy / backup / cloud-sync / restore, but
-        // the `Cat/` item-link junctions are NTFS reparse points that do NOT —
-        // so after a move every membership would look like "manifest recorded
-        // it, junction gone", i.e. a deliberate user deletion, and the
-        // destructive branch would strip the category from metadata AND
-        // tombstone it: silent, permanent loss of all membership on the first
-        // scan after a move. The manifest records the absolute root it was
-        // projected against; when that differs from the current root the tree
-        // was relocated, so we re-project from metadata rather than honoring the
-        // missing junctions as deletions (re-projection is recoverable — the
-        // user can delete again — a wipe+tombstone is not).
-        // A stable key for the current root: canonicalize when possible so
-        // equivalent spellings compare equal, falling back to the lossy path.
-        let current_root = self
-            .library_root
-            .canonicalize()
-            .unwrap_or_else(|_| self.library_root.clone())
-            .to_string_lossy()
-            .replace('\\', "/");
-        let relocated = manifest
-            .projected_root()
-            .is_some_and(|projected| projected != current_root);
-        if relocated {
-            tracing::warn!(
-                target: "localref::core",
-                "cat-manifest was projected against a different library root; \
-                 treating missing junctions as a relocation and re-projecting \
-                 from metadata instead of removing category membership",
-            );
-        }
-
         for item in &items {
             let entry_name = Path::new(&item.object_path)
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or(LocalrefError::MissingField("item directory name"))?;
 
-            // metadata-driven directions
+            // metadata-driven direction: metadata.toml is the source of truth,
+            // so every category it lists must have a live junction.
             for category in &item.categories {
                 let pair = (item.id.clone(), category.clone());
                 let category_path = CategoryPath::new(category.as_str())
@@ -1915,33 +1950,29 @@ impl LocalrefDaemon {
                     })?;
                 if disk_set.contains(&pair) {
                     manifest.insert(&item.id, category); // in sync
-                } else if manifest.contains(&item.id, category) && !relocated {
-                    // user deleted the junction → drop + tombstone
-                    let _ = self.edit_item_categories(
-                        &item.id,
-                        &[],
-                        &[category.as_str()],
-                        &[],
-                    )?;
-                    manifest.remove(&item.id, category);
-                    changes += 1;
-                    tracing::info!(
-                        event_kind = LogKind::CatLinkDeleted.as_str(),
-                        item_id = item.id,
-                        "category dropped after user removed junction: {category}",
-                    );
                 } else {
-                    // Not yet projected, or the whole junction tree was lost to
-                    // a relocation → (re)create the junction from metadata.
+                    // Metadata lists the category but no junction resolves to
+                    // this item. Metadata wins, so (re)project the junction
+                    // rather than dropping the category. This covers a category
+                    // not yet projected, a junction the user deleted in their
+                    // file manager (not a removal — removal is metadata/UI/API
+                    // only), and junctions lost to a copy/relocation (NTFS
+                    // reparse points do not survive a move, but metadata does).
                     let item_dir = self.library_root.join(&item.object_path);
                     let _ =
                         fs.create_category_link(&category_path, &item_dir)?;
                     manifest.insert(&item.id, category);
                     changes += 1;
+                    tracing::info!(
+                        event_kind = LogKind::CatLinkCreated.as_str(),
+                        item_id = item.id,
+                        "category junction (re)projected from metadata: {category}",
+                    );
                 }
             }
 
-            // junction-driven adoption: on disk but not in metadata
+            // junction-driven direction: a junction on disk that metadata does
+            // not list.
             let metadata_categories: std::collections::BTreeSet<&str> =
                 item.categories.iter().map(String::as_str).collect();
             let item_tombstones = tombstones.get(&item.id);
@@ -1958,14 +1989,24 @@ impl LocalrefDaemon {
                     })?;
                 let is_suppressed = item_tombstones
                     .is_some_and(|list| list.contains(disk_category));
-                if is_suppressed {
-                    // honor the removal: remove the stray junction
+                if manifest.contains(&item.id, disk_category) || is_suppressed {
+                    // The daemon projected this junction earlier and metadata no
+                    // longer lists it → the user removed the category via
+                    // metadata/UI/API. (Or the category is tombstoned.) Metadata
+                    // is truth: remove the now-orphaned junction.
                     let _ =
                         fs.remove_category_link(&category_path, entry_name)?;
                     manifest.remove(&item.id, disk_category);
                     changes += 1;
+                    tracing::info!(
+                        event_kind = LogKind::CatLinkDeleted.as_str(),
+                        item_id = item.id,
+                        "orphaned category junction removed to match metadata: {disk_category}",
+                    );
                 } else {
-                    // adopt hand-made / pre-existing junction into metadata
+                    // A hand-made junction the daemon never projected → adopt it
+                    // into metadata, so creating a junction by hand is a valid
+                    // way to add a category.
                     let _ = self.edit_item_categories(
                         &item.id,
                         &[disk_category.as_str()],
@@ -1983,9 +2024,6 @@ impl LocalrefDaemon {
             }
         }
 
-        // Record the root we just (re)projected against, so a later scan can
-        // recognise a relocation instead of destroying membership.
-        manifest.set_projected_root(current_root);
         manifest.save(&self.library_root)?;
         Ok(changes)
     }
@@ -2749,7 +2787,7 @@ fn metadata_from_import(
         abstract_note: import.item.abstract_note.clone(),
         doi: import.item.doi.clone(),
         uri: import.item.uri.clone(),
-        year: None,
+        year: year_from_zotero_date(&import.item.raw),
         venue: None,
         language: None,
         creators: import
@@ -2829,6 +2867,68 @@ fn json_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
             .filter(|text| !text.is_empty())
             .map(str::to_string)
     })
+}
+
+/// Extract a publication year from a Zotero connector item's raw JSON.
+///
+/// Zotero never normalizes the item date before sending it to the connector, so
+/// `raw["date"]` is a free-form string in whatever shape the translator
+/// produced: `"2021-03-15"`, `"2021-03-15 00:00:00"`, `"March 2021"`, `"2021"`,
+/// `"2021-3"`, or `"c. 2021"`. This mirrors the year half of Zotero's
+/// `strToDate` (`utilities/date.js`): find the first plausible four-digit run
+/// rather than assume a single fixed format. CSL-shaped payloads that carry the
+/// year in `issued.date-parts[0][0]` instead of `date` are handled as a
+/// fallback.
+///
+/// Returns `None` when no plausible year (1000–2100) is present.
+#[cfg(feature = "server")]
+#[allow(clippy::single_call_fn)] // extracted to keep metadata_from_import readable
+fn year_from_zotero_date(raw: &serde_json::Value) -> Option<i32> {
+    if let Some(year) =
+        json_string(raw, &["date"]).and_then(|date| year_from_str(&date))
+    {
+        return Some(year);
+    }
+    // CSL fallback: issued.date-parts[0][0] is an integer year.
+    raw.get("issued")
+        .and_then(|issued| issued.get("date-parts"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|parts| parts.first())
+        .and_then(serde_json::Value::as_array)
+        .and_then(|first| first.first())
+        .and_then(serde_json::Value::as_i64)
+        .filter(|year| (1000..=2100).contains(year))
+        .map(|year| year as i32)
+}
+
+/// Scan a free-form date string for the first plausible four-digit year.
+///
+/// A "plausible" year is a four-digit run in 1000–2100. Longer digit runs (e.g.
+/// a timestamp with no separators) are skipped so a spurious in-range slice is
+/// not lifted out of the middle of a longer number.
+#[cfg(feature = "server")]
+#[allow(clippy::single_call_fn)] // extracted to keep year_from_zotero_date readable
+fn year_from_str(text: &str) -> Option<i32> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !bytes[index].is_ascii_digit() {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index - start == 4
+            && let Ok(year) = text[start..index].parse::<i32>()
+            // Range Localref treats as a real year.
+            && (1000..=2100).contains(&year)
+        {
+            return Some(year);
+        }
+    }
+    None
 }
 
 /// Internal helper for metadata from all directory.
@@ -3083,4 +3183,55 @@ fn connector_item_id(import: &ConnectorImport) -> Result<ItemId> {
         ))?;
     ItemId::new(format!("lr:zotero:{source}"))
         .ok_or(LocalrefError::MissingField("item id"))
+}
+
+#[cfg(all(test, feature = "server"))]
+mod year_tests {
+    use super::year_from_zotero_date;
+    use serde_json::json;
+
+    /// Zotero sends the item date as a free-form string; the year must be
+    /// recovered from every shape a translator can emit, not just ISO dates.
+    /// This is the exact failure that left ~70% of connector imports with no
+    /// year, so each variant here is a format observed from real translators.
+    #[test]
+    fn parses_year_from_free_form_dates() {
+        let cases = [
+            ("2021-03-15", 2021),
+            ("2021-03-15 00:00:00", 2021),
+            ("March 2021", 2021),
+            ("2021", 2021),
+            ("2021-3", 2021),
+            ("c. 2021", 2021),
+            ("15/03/1998", 1998),
+            ("Spring 1999", 1999),
+        ];
+        for (date, expected) in cases {
+            assert_eq!(
+                year_from_zotero_date(&json!({ "date": date })),
+                Some(expected),
+                "date {date:?} should yield year {expected}",
+            );
+        }
+    }
+
+    /// CSL-shaped payloads carry the year in `issued.date-parts` instead of a
+    /// `date` string; the fallback keeps those imports from losing their year.
+    #[test]
+    fn parses_year_from_csl_issued_date_parts() {
+        let raw = json!({ "issued": { "date-parts": [[2019, 5, 1]] } });
+        assert_eq!(year_from_zotero_date(&raw), Some(2019));
+    }
+
+    /// A missing or year-less date must stay `None` rather than fabricate a
+    /// value, and an implausible run (e.g. a bare timestamp) must not be
+    /// mistaken for a year.
+    #[test]
+    fn returns_none_without_a_plausible_year() {
+        assert_eq!(year_from_zotero_date(&json!({})), None);
+        assert_eq!(year_from_zotero_date(&json!({ "date": "" })), None);
+        assert_eq!(year_from_zotero_date(&json!({ "date": "n.d." })), None);
+        assert_eq!(year_from_zotero_date(&json!({ "date": "99" })), None);
+        assert_eq!(year_from_zotero_date(&json!({ "date": "20210315" })), None);
+    }
 }

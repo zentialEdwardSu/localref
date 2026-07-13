@@ -10,8 +10,48 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use localref_core::LocalrefDaemon;
+use tokio::net::TcpListener;
 
 use crate::notify::notify_router;
+
+/// Clear the inherit flag on a bound listener's socket handle (Windows).
+///
+/// tokio's listeners come from mio, whose Windows socket creation does not set
+/// `WSA_FLAG_NO_HANDLE_INHERIT`, so the handle is inheritable. Plugin children
+/// are spawned with piped stdio (`bInheritHandles=TRUE`) and would otherwise
+/// inherit the daemon's REST/CSC listening sockets — a lingering child then
+/// keeps the port bound after the app exits. Clearing the flag here means a
+/// child can never inherit these sockets in the first place.
+///
+/// No-op on non-Windows platforms, where child processes do not inherit
+/// arbitrary fds the way piped stdio implies on Windows.
+pub fn deny_socket_inheritance(listener: &TcpListener) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        use windows_sys::Win32::Foundation::{
+            HANDLE_FLAG_INHERIT, SetHandleInformation,
+        };
+        let handle = listener.as_raw_socket() as isize as *mut std::ffi::c_void;
+        // SAFETY: `handle` is a live socket handle owned by `listener`, valid
+        // for the duration of this call. Clearing the inherit bit is a pure
+        // handle-metadata change with no aliasing concerns.
+        let ok = unsafe {
+            SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0)
+        };
+        if ok == 0 {
+            tracing::warn!(
+                target: "localref::server",
+                error = %std::io::Error::last_os_error(),
+                "could not clear socket inherit flag; a plugin child could pin this port",
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = listener;
+    }
+}
 
 /// Network + identity configuration needed to stand up the servers.
 #[derive(Clone, Copy, Debug)]
@@ -57,6 +97,7 @@ pub async fn serve_rest_on(
     listener: tokio::net::TcpListener,
     daemon: LocalrefDaemon,
 ) -> std::io::Result<()> {
+    deny_socket_inheritance(&listener);
     tracing::info!(
         target: "localref::rest",
         "listening on http://{}",
@@ -90,6 +131,7 @@ pub async fn serve_csc_on(
     listener: tokio::net::TcpListener,
     daemon: LocalrefDaemon,
 ) -> std::io::Result<()> {
+    deny_socket_inheritance(&listener);
     let sink = Arc::new(csc::DaemonConnectorSink::new(daemon));
     tracing::info!(
         target: "localref::csc",

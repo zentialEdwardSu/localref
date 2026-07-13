@@ -67,7 +67,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Query, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::header::{
     ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
     ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_EXPOSE_HEADERS, CONTENT_TYPE,
@@ -397,11 +397,15 @@ pub fn router(sink: Arc<dyn ConnectorImportSink>) -> Router {
         )
         .route(
             "/connector/saveAttachment",
-            post(save_attachment).options(preflight),
+            post(save_attachment)
+                .options(preflight)
+                .route_layer(DefaultBodyLimit::disable()),
         )
         .route(
             "/connector/saveStandaloneAttachment",
-            post(save_attachment).options(preflight),
+            post(save_attachment)
+                .options(preflight)
+                .route_layer(DefaultBodyLimit::disable()),
         )
         .route(
             "/connector/saveSingleFile",
@@ -460,10 +464,10 @@ pub async fn serve_on(
 /// short liveness string. This is the quickest way to prove the connector port
 /// is occupied by a compatible server.
 ///
-/// Localref behavior: Localref returns the same liveness body and records a
-/// method-call event for manual debugging.
-pub async fn ping_get(State(state): State<AppState>) -> Response {
-    record_method(&state, "GET", "/connector/ping");
+/// Localref behavior: Localref returns the same liveness body. Ping is polled
+/// frequently for liveness, so it is deliberately not recorded as a method-call
+/// event — doing so would flood the connector log with noise.
+pub async fn ping_get() -> Response {
     text_response(StatusCode::OK, "text/html", "Zotero is running")
 }
 
@@ -476,9 +480,9 @@ pub async fn ping_get(State(state): State<AppState>) -> Response {
 ///
 /// Localref behavior: the response enables direct attachment upload and
 /// disables features Localref does not yet support, such as tag autocomplete and
-/// Google Docs integration.
-pub async fn ping_post(State(state): State<AppState>) -> Response {
-    record_method(&state, "POST", "/connector/ping");
+/// Google Docs integration. Like `GET /connector/ping`, this liveness poll is
+/// deliberately not recorded as a method-call event to avoid log noise.
+pub async fn ping_post() -> Response {
     json_response(json!({
         "prefs": {
             "automaticSnapshots": false,

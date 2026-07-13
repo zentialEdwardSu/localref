@@ -22,15 +22,18 @@ use localref_core::model::{
 };
 use localref_core::{
     DaemonEvent as CoreDaemonEvent, DaemonStatus as CoreDaemonStatus,
-    PauseMode as CorePauseMode,
+    PauseMode as CorePauseMode, StatusKind as CoreStatusKind,
 };
 use localref_plugin::manifest::{
-    FieldKind as CoreFieldKind, PluginUiSpec as CorePluginUiSpec,
-    PreviewSpec as CorePreviewSpec, UiAction as CoreUiAction,
+    DisplayKind as CoreDisplayKind, FieldKind as CoreFieldKind,
+    PluginUiSpec as CorePluginUiSpec, PreviewSpec as CorePreviewSpec,
+    UiAction as CoreUiAction, UiConfirmation as CoreUiConfirmation,
     UiDataRequirement as CoreUiDataRequirement, UiDisplay as CoreUiDisplay,
-    UiField as CoreUiField, UiMount as CoreUiMount, UiPage as CoreUiPage,
+    UiDisplayColumn as CoreUiDisplayColumn, UiField as CoreUiField,
+    UiMount as CoreUiMount, UiPage as CoreUiPage, UiSubmit as CoreUiSubmit,
     UiTarget as CoreUiTarget,
 };
+use localref_plugin::RunningInvocation as CoreRunningInvocation;
 
 /// One indexed library item, as shown in the item list and detail views.
 #[derive(Debug, uniffi::Record)]
@@ -553,6 +556,25 @@ pub enum DaemonEvent {
     SchedulesChanged,
     DaemonPaused,
     DaemonResumed,
+    StatusMessage { text: String, kind: StatusKind },
+}
+
+/// Severity of a plugin-pushed status message, mirrored for the C# UI.
+#[derive(Debug, uniffi::Enum)]
+pub enum StatusKind {
+    Info,
+    Success,
+    Error,
+}
+
+impl From<CoreStatusKind> for StatusKind {
+    fn from(value: CoreStatusKind) -> Self {
+        match value {
+            CoreStatusKind::Info => StatusKind::Info,
+            CoreStatusKind::Success => StatusKind::Success,
+            CoreStatusKind::Error => StatusKind::Error,
+        }
+    }
 }
 
 impl From<CoreDaemonEvent> for DaemonEvent {
@@ -582,6 +604,9 @@ impl From<CoreDaemonEvent> for DaemonEvent {
             CoreDaemonEvent::SchedulesChanged => DaemonEvent::SchedulesChanged,
             CoreDaemonEvent::DaemonPaused => DaemonEvent::DaemonPaused,
             CoreDaemonEvent::DaemonResumed => DaemonEvent::DaemonResumed,
+            CoreDaemonEvent::StatusMessage { text, kind } => {
+                DaemonEvent::StatusMessage { text, kind: kind.into() }
+            }
         }
     }
 }
@@ -725,15 +750,99 @@ impl From<CoreUiField> for UiField {
 }
 
 /// A live-updating readout on a plugin page (Tier-1 binding target).
+#[derive(Debug, uniffi::Enum)]
+pub enum DisplayKind {
+    Text,
+    Table,
+    Details,
+    Status,
+}
+
+impl From<CoreDisplayKind> for DisplayKind {
+    fn from(value: CoreDisplayKind) -> Self {
+        match value {
+            CoreDisplayKind::Text => Self::Text,
+            CoreDisplayKind::Table => Self::Table,
+            CoreDisplayKind::Details => Self::Details,
+            CoreDisplayKind::Status => Self::Status,
+        }
+    }
+}
+
+/// A schema-stable column supplied by a structured preview row.
+#[derive(Debug, uniffi::Record)]
+pub struct UiDisplayColumn {
+    pub key: String,
+    pub label: String,
+}
+
+impl From<CoreUiDisplayColumn> for UiDisplayColumn {
+    fn from(value: CoreUiDisplayColumn) -> Self {
+        Self { key: value.key, label: value.label }
+    }
+}
+
+/// A host-owned confirmation rendered before a plugin action executes.
+#[derive(Debug, uniffi::Record)]
+pub struct UiConfirmation {
+    pub title: String,
+    pub message: String,
+    pub confirm_label: Option<String>,
+}
+
+impl From<CoreUiConfirmation> for UiConfirmation {
+    fn from(value: CoreUiConfirmation) -> Self {
+        Self {
+            title: value.title,
+            message: value.message,
+            confirm_label: value.confirm_label,
+        }
+    }
+}
+
+/// Submit-button presentation for a plugin page.
+#[derive(Debug, uniffi::Record)]
+pub struct UiSubmit {
+    pub label: String,
+    pub confirm: Option<UiConfirmation>,
+    pub refresh_after_submit: bool,
+}
+
+impl From<CoreUiSubmit> for UiSubmit {
+    fn from(value: CoreUiSubmit) -> Self {
+        Self {
+            label: value.label,
+            confirm: value.confirm.map(Into::into),
+            refresh_after_submit: value.refresh_after_submit,
+        }
+    }
+}
+
+/// A live-updating readout on a plugin page (Tier-1 binding target).
 #[derive(Debug, uniffi::Record)]
 pub struct UiDisplay {
     pub id: String,
     pub text: String,
+    pub kind: DisplayKind,
+    pub title: Option<String>,
+    pub empty_text: Option<String>,
+    pub columns: Vec<UiDisplayColumn>,
+    pub selection_field: Option<String>,
+    pub selection_of: Option<String>,
 }
 
 impl From<CoreUiDisplay> for UiDisplay {
     fn from(value: CoreUiDisplay) -> Self {
-        Self { id: value.id, text: value.text }
+        Self {
+            id: value.id,
+            text: value.text,
+            kind: value.kind.into(),
+            title: value.title,
+            empty_text: value.empty_text,
+            columns: value.columns.into_iter().map(Into::into).collect(),
+            selection_field: value.selection_field,
+            selection_of: value.selection_of,
+        }
     }
 }
 
@@ -768,6 +877,7 @@ pub struct UiPage {
     pub preview: Option<PreviewSpec>,
     pub fields: Vec<UiField>,
     pub display: Vec<UiDisplay>,
+    pub submit: Option<UiSubmit>,
 }
 
 impl From<CoreUiPage> for UiPage {
@@ -783,6 +893,7 @@ impl From<CoreUiPage> for UiPage {
             preview: value.preview.map(Into::into),
             fields: value.fields.into_iter().map(Into::into).collect(),
             display: value.display.into_iter().map(Into::into).collect(),
+            submit: value.submit.map(Into::into),
         }
     }
 }
@@ -799,6 +910,33 @@ impl From<CorePluginUiSpec> for PluginUiSpec {
         Self {
             actions: value.actions.into_iter().map(Into::into).collect(),
             pages: value.pages.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// One plugin invocation currently executing, for the "Running" panel.
+#[derive(Debug, uniffi::Record)]
+pub struct RunningInvocation {
+    /// Registry id; pass to `cancel_plugin_run`.
+    pub id: u64,
+    /// Plugin name.
+    pub plugin: String,
+    /// Action / hook event / cron job id being run.
+    pub action: String,
+    /// Entry-point kind: `action`, `preview`, `hook`, or `cron`.
+    pub kind: String,
+    /// Unix-epoch milliseconds when the run started.
+    pub started_at_ms: u64,
+}
+
+impl From<CoreRunningInvocation> for RunningInvocation {
+    fn from(value: CoreRunningInvocation) -> Self {
+        Self {
+            id: value.id,
+            plugin: value.plugin,
+            action: value.action,
+            kind: value.kind.as_str().to_string(),
+            started_at_ms: value.started_at_ms,
         }
     }
 }

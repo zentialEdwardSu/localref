@@ -46,12 +46,30 @@ pub struct RunOutput {
 }
 
 impl RunOutput {
-    /// Successful result with the given text.
+    /// Successful result carrying `result` text. Shown **inline** by the desktop
+    /// host; a save dialog opens only if you also call [`RunOutput::filename`] to
+    /// mark the text as a downloadable artifact. For status/progress output that
+    /// belongs in the log rather than a result pane, prefer [`RunOutput::done`].
     #[must_use]
     pub fn ok(result: impl Into<String>) -> Self {
         Self {
             status: "ok".to_string(),
             result: Some(result.into()),
+            content_type: None,
+            filename: None,
+            message: None,
+        }
+    }
+
+    /// Success with no result payload: the UI shows a plain "done" and nothing
+    /// is displayed or saved. Use this for actions whose output is delivered
+    /// out-of-band via the daemon log or status bar. Use [`RunOutput::ok`] for
+    /// inline text, and add [`RunOutput::filename`] only for a real download.
+    #[must_use]
+    pub fn done() -> Self {
+        Self {
+            status: "ok".to_string(),
+            result: None,
             content_type: None,
             filename: None,
             message: None,
@@ -95,6 +113,17 @@ mod tests {
         assert_eq!(out.status, "ok");
         assert_eq!(out.result.as_deref(), Some("hello"));
         assert_eq!(out.filename.as_deref(), Some("x.bib"));
+        assert!(out.message.is_none());
+    }
+
+    #[test]
+    fn run_output_done_is_ok_with_no_result() {
+        // `done` must be a success envelope carrying no `result`, so the host
+        // classifies it as Done (no save dialog) rather than Save.
+        let out = RunOutput::done();
+        assert_eq!(out.status, "ok");
+        assert!(out.result.is_none());
+        assert!(out.filename.is_none());
         assert!(out.message.is_none());
     }
 

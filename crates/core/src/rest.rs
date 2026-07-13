@@ -12,7 +12,7 @@ use crate::model::Metadata;
 use crate::rest_files;
 use crate::storage::StorageDb;
 use crate::types::CategoryPath;
-use crate::{LocalrefDaemon, PauseMode};
+use crate::{LocalrefDaemon, PauseMode, StatusKind};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
@@ -114,6 +114,16 @@ pub struct PluginLogRequest {
     pub path: Option<String>,
 }
 
+/// Request body for a plugin-pushed desktop status-bar message.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct StatusRequest {
+    /// Message text to show in the status bar.
+    pub text: String,
+    /// Severity driving the status-bar indicator color; defaults to `info`.
+    #[serde(default)]
+    pub kind: StatusKind,
+}
+
 /// Build the user-facing Localref API router.
 pub fn router(storage: StorageDb) -> Router {
     router_with_daemon(LocalrefDaemon::new(storage))
@@ -153,6 +163,7 @@ pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
         .route("/api/import/cat-folder", post(normalize_cat_folder))
         .route("/api/search", get(search))
         .route("/api/plugins/log", post(plugin_log))
+        .route("/api/status", post(set_status))
         .route("/api/schedules", get(list_schedules).post(create_schedule))
         .route("/api/schedules/{id}", delete(delete_schedule))
         .with_state(ApiState { daemon })
@@ -218,6 +229,25 @@ pub async fn plugin_log(Json(request): Json<PluginLogRequest>) -> Response {
         request.item_id.as_deref(),
         request.path.as_deref(),
     );
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Push a plugin status message to the desktop status bar.
+///
+/// Publishes a [`DaemonEvent::StatusMessage`](crate::DaemonEvent) so the
+/// subscribed UI updates its status bar, and mirrors the text to the unified
+/// log so it is also visible there. Always returns `204 No Content`.
+pub async fn set_status(
+    State(state): State<ApiState>,
+    Json(request): Json<StatusRequest>,
+) -> Response {
+    tracing::info!(
+        target: "localref::status",
+        kind = ?request.kind,
+        "{}",
+        request.text,
+    );
+    state.daemon.emit_status(request.text, request.kind);
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -1441,6 +1471,30 @@ title = "Distinct"
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
+    #[tokio::test]
+    async fn set_status_returns_no_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = router_for_library(temp.path()).unwrap();
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/status")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "text": "syncing", "kind": "error" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
     async fn request_json_body(
         app: &Router,
         method: &str,
@@ -1482,10 +1536,11 @@ title = "Distinct"
     }
 
     #[test]
-    fn deleting_a_junction_then_scanning_drops_category_and_tombstones() {
-        // (a) A user removing a category by deleting its Cat/ junction is
-        // honored on the next scan: the category leaves metadata and a
-        // tombstone is written so it will not be re-filed.
+    fn deleting_a_junction_then_scanning_reprojects_it_from_metadata() {
+        // metadata.toml is the source of truth: deleting a Cat/ junction in a
+        // file manager is NOT a removal. The next scan re-projects the junction
+        // from metadata; the category stays and no tombstone is written.
+        // (Removal is metadata/UI/API only.)
         let temp = tempfile::tempdir().unwrap();
         let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
         write_item(temp.path(), "lr:test:drop", "Paper");
@@ -1502,24 +1557,93 @@ title = "Distinct"
         );
 
         // Simulate the user deleting the junction in their file manager.
-        std::fs::remove_dir(temp.path().join("Cat").join("Inbox").join("Paper"))
-            .unwrap();
+        let junction = temp.path().join("Cat").join("Inbox").join("Paper");
+        std::fs::remove_dir(&junction).unwrap();
         daemon.scan_all().unwrap();
 
         let item = daemon.get_item("lr:test:drop").unwrap().unwrap();
+        assert_eq!(
+            item.categories,
+            vec!["Inbox"],
+            "a deleted junction must be re-projected, not treated as a removal",
+        );
         assert!(
-            item.categories.is_empty(),
-            "deleting the junction must drop the category from metadata",
+            junction.exists(),
+            "the junction must be re-created from metadata",
         );
         let metadata = std::fs::read_to_string(
             temp.path().join("All").join("Paper").join("metadata.toml"),
         )
         .unwrap();
         let parsed = Metadata::from_toml_str(&metadata).unwrap();
+        assert!(
+            parsed.state.removed_categories.is_empty(),
+            "re-projection must not write a spurious tombstone",
+        );
+    }
+
+    #[test]
+    fn editing_metadata_to_drop_a_category_removes_the_junction() {
+        // Removal happens through metadata: when a projected category is dropped
+        // from metadata.toml, the next scan removes the now-orphaned junction.
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        write_item(temp.path(), "lr:test:edit", "Paper");
+        daemon.scan_all().unwrap();
+        daemon
+            .add_item_category(
+                "lr:test:edit",
+                CategoryPath::new("Inbox").unwrap(),
+            )
+            .unwrap();
+        let junction = temp.path().join("Cat").join("Inbox").join("Paper");
+        assert!(junction.exists(), "precondition: junction projected");
+
+        // The user edits metadata.toml directly, removing the category line.
+        std::fs::write(
+            temp.path().join("All").join("Paper").join("metadata.toml"),
+            "id = \"lr:test:edit\"\ntype = \"document\"\ntitle = \"Paper\"\n",
+        )
+        .unwrap();
+        daemon.scan_all().unwrap();
+
+        let item = daemon.get_item("lr:test:edit").unwrap().unwrap();
+        assert!(
+            item.categories.is_empty(),
+            "the category must stay removed after a direct metadata edit",
+        );
+        assert!(
+            !junction.exists(),
+            "the orphaned junction must be removed to match metadata",
+        );
+    }
+
+    #[test]
+    fn category_in_metadata_without_a_junction_is_projected_on_scan() {
+        // The reported bug: a category present in metadata.toml but with no Cat/
+        // junction must NOT be shown as uncategorized. A scan projects the
+        // junction and the item keeps its category.
+        let temp = tempfile::tempdir().unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        let item_dir = write_item(temp.path(), "lr:test:meta", "Paper");
+        std::fs::write(
+            item_dir.join("metadata.toml"),
+            "id = \"lr:test:meta\"\ntype = \"document\"\ntitle = \"Paper\"\n\
+             categories = [\"Wireless/RIS\"]\n",
+        )
+        .unwrap();
+
+        daemon.scan_all().unwrap();
+
+        let item = daemon.get_item("lr:test:meta").unwrap().unwrap();
         assert_eq!(
-            parsed.state.removed_categories,
-            vec!["Inbox".to_string()],
-            "a tombstone must record the deliberate removal",
+            item.categories,
+            vec!["Wireless/RIS"],
+            "a category in metadata must survive a scan, not become uncategorized",
+        );
+        assert!(
+            temp.path().join("Cat").join("Wireless").join("RIS").join("Paper").exists(),
+            "the junction must be projected from metadata",
         );
     }
 

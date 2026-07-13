@@ -4,7 +4,7 @@
 //! relies on.
 
 use localref_core::types::{ConnectorImport, ConnectorItem};
-use localref_core::{DaemonEvent, LocalrefDaemon, PauseMode};
+use localref_core::{DaemonEvent, LocalrefDaemon, PauseMode, StatusKind};
 use serde_json::json;
 
 fn connector_import(id: &str, title: &str) -> ConnectorImport {
@@ -126,6 +126,31 @@ fn event_name_matches_wire_names() {
     );
     assert_eq!(DaemonEvent::DaemonPaused.event_name(), "daemon_paused");
     assert_eq!(DaemonEvent::DaemonResumed.event_name(), "daemon_resumed");
+    assert_eq!(
+        DaemonEvent::StatusMessage {
+            text: String::new(),
+            kind: StatusKind::Info,
+        }
+        .event_name(),
+        "status_message",
+    );
+}
+
+#[test]
+fn emit_status_publishes_status_message() {
+    let temp = tempfile::tempdir().unwrap();
+    let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+    let mut rx = daemon.subscribe();
+
+    daemon.emit_status("syncing 3/10".to_string(), StatusKind::Success);
+
+    assert_eq!(
+        rx.try_recv().expect("emit_status emits an event"),
+        DaemonEvent::StatusMessage {
+            text: "syncing 3/10".to_string(),
+            kind: StatusKind::Success,
+        },
+    );
 }
 
 #[test]
