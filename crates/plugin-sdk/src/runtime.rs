@@ -98,10 +98,10 @@ pub fn parse_args(
                     }
                     "--active" => active = args.next(),
                     "--param" => {
-                        if let Some(kv) = args.next() {
-                            if let Some((k, v)) = kv.split_once('=') {
-                                params.insert(k.to_string(), v.to_string());
-                            }
+                        if let Some(kv) = args.next()
+                            && let Some((k, v)) = kv.split_once('=')
+                        {
+                            params.insert(k.to_string(), v.to_string());
                         }
                     }
                     _ => {}

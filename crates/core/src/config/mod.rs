@@ -5,6 +5,7 @@
 //! `~/.localref/config.toml`. Missing files are created with documented
 //! defaults; malformed files or invalid values fail loudly.
 
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -41,7 +42,7 @@ pub struct LocalrefConfig {
     desktop_start_hidden: bool,
     /// Stored desktop quiet start.
     desktop_quiet_start: bool,
-    /// Stored desktop DataGrid column visibility.
+    /// Stored desktop `DataGrid` column visibility.
     desktop_visible_columns: Vec<String>,
     /// Stored desktop detail panel width in logical pixels.
     desktop_detail_width: u32,
@@ -88,7 +89,7 @@ struct DesktopConfigFile {
     start_hidden: Option<bool>,
     /// Stored quiet start.
     quiet_start: Option<bool>,
-    /// Stored visible optional DataGrid columns.
+    /// Stored visible optional `DataGrid` columns.
     visible_columns: Option<Vec<String>>,
     /// Stored detail panel width in logical pixels.
     detail_width: Option<u32>,
@@ -176,6 +177,10 @@ impl LocalrefConfig {
     }
 
     /// Change the workspace display name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `name` is empty after trimming.
     pub fn set_workspace_name(
         &mut self,
         name: impl Into<String>,
@@ -189,6 +194,10 @@ impl LocalrefConfig {
     }
 
     /// Backward-compatible alias for callers that still use repository naming.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `name` is empty after trimming.
     pub fn set_repo_name(
         &mut self,
         name: impl Into<String>,
@@ -197,12 +206,20 @@ impl LocalrefConfig {
     }
 
     /// Change the REST bind address after validating it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `value` is not a socket address.
     pub fn set_rest_addr(&mut self, value: &str) -> Result<(), String> {
         self.rest_addr = parse_addr(value, "rest.addr")?;
         Ok(())
     }
 
     /// Change the public REST endpoint used by plugins.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the endpoint does not use HTTP or HTTPS.
     pub fn set_rest_endpoint(
         &mut self,
         value: impl Into<String>,
@@ -217,6 +234,10 @@ impl LocalrefConfig {
     }
 
     /// Change the Zotero Connector-compatible bind address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `value` is not a socket address.
     pub fn set_csc_addr(&mut self, value: &str) -> Result<(), String> {
         self.csc_addr = parse_addr(value, "csc.addr")?;
         Ok(())
@@ -286,16 +307,17 @@ impl LocalrefConfig {
         self.desktop_quiet_start = value;
     }
 
-    /// Return the optional DataGrid columns visible in the desktop library.
+    /// Return the optional `DataGrid` columns visible in the desktop library.
     #[must_use]
     pub fn desktop_visible_columns(&self) -> &[String] {
         &self.desktop_visible_columns
     }
 
-    /// Replace the optional DataGrid columns visible in the desktop library.
-    pub fn set_desktop_visible_columns(&mut self, columns: Vec<String>) {
+    /// Replace the optional `DataGrid` columns visible in the desktop library.
+    pub fn set_desktop_visible_columns(&mut self, mut columns: Vec<String>) {
         const KNOWN_COLUMNS: [&str; 5] =
             ["Author", "Venue", "Year", "Type", "Categories"];
+        columns.retain(|column| KNOWN_COLUMNS.contains(&column.as_str()));
         self.desktop_visible_columns = KNOWN_COLUMNS
             .into_iter()
             .filter(|known| columns.iter().any(|column| column == known))
@@ -408,7 +430,8 @@ fn escape_toml_basic(value: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             c if c.is_control() => {
-                out.push_str(&format!("\\u{:04X}", c as u32));
+                write!(&mut out, "\\u{:04X}", c as u32)
+                    .expect("writing to a String cannot fail");
             }
             c => out.push(c),
         }

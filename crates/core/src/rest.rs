@@ -1818,7 +1818,7 @@ query = 'title:RIS'
     #[test]
     fn only_declared_indexed_extra_fields_are_searchable() {
         let temp = tempfile::tempdir().unwrap();
-        let mut daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
         write_item(temp.path(), "lr:test:idx", "Paper");
         // Declare bibtexer.cite_key indexed; rating.note is not declared.
         daemon
@@ -1843,7 +1843,7 @@ query = 'title:RIS'
         // (c) The extra index is rebuildable purely from metadata.toml — set a
         // value, wipe/rebuild, and it is still searchable.
         let temp = tempfile::tempdir().unwrap();
-        let mut daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
+        let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
         write_item(temp.path(), "lr:test:reidx", "Paper");
         daemon
             .set_indexed_extra_fields(

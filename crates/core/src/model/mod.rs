@@ -419,6 +419,11 @@ impl Metadata {
     /// # Errors
     ///
     /// Returns an error when the text is not valid TOML.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `toml_edit` table invariant established in this method is
+    /// violated internally.
     pub fn apply_category_edits(
         text: &str,
         add: &[&str],

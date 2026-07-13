@@ -18,6 +18,7 @@ use localref_core::model::{
     CategorySummary, ItemFilesDocument, MetadataDocument, SearchHit,
 };
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 /// Daemon queue and pause status (mirrors `/api/daemon/status`).
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -110,7 +111,9 @@ pub enum NotifyKind {
 /// Async REST client bound to one daemon endpoint.
 #[derive(Clone, Debug)]
 pub struct LocalrefClient {
+    /// REST endpoint without a trailing slash.
     endpoint: String,
+    /// HTTP transport used for daemon requests.
     http: reqwest::Client,
 }
 impl LocalrefClient {
@@ -229,11 +232,19 @@ impl LocalrefClient {
     }
 
     /// Return all indexed item documents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or rejects the request.
     pub async fn list_items(&self) -> Result<Vec<ItemDocument>, ClientError> {
         self.get_json("/api/items").await
     }
 
     /// Return one item document by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or rejects the request.
     pub async fn get_item(
         &self,
         item_id: &str,
@@ -242,6 +253,10 @@ impl LocalrefClient {
     }
 
     /// Return the files present in one item directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or rejects the request.
     pub async fn item_files(
         &self,
         item_id: &str,
@@ -255,6 +270,10 @@ impl LocalrefClient {
     ///
     /// `path` is a local filesystem path the daemon can read (absolute, or
     /// relative to the library root). Returns the reindexed item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot add the file or rejects the request.
     pub async fn add_file(
         &self,
         item_id: &str,
@@ -268,6 +287,10 @@ impl LocalrefClient {
     }
 
     /// Return the full metadata document for one item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or rejects the request.
     pub async fn get_metadata(
         &self,
         item_id: &str,
@@ -280,6 +303,10 @@ impl LocalrefClient {
     }
 
     /// Return category paths derived from `Cat/`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or rejects the request.
     pub async fn categories_tree(
         &self,
     ) -> Result<Vec<CategorySummary>, ClientError> {
@@ -287,6 +314,10 @@ impl LocalrefClient {
     }
 
     /// Add one item to one category.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot update the category or rejects the request.
     pub async fn add_item_category(
         &self,
         item_id: &str,
@@ -304,6 +335,10 @@ impl LocalrefClient {
     /// Pass `None` for `value` to remove the key. Returns the reindexed item.
     /// This is how a plugin persists its own per-item data; declaring the field
     /// as indexed in `plugin.toml` makes the value searchable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot update the item or rejects the request.
     pub async fn set_item_extra(
         &self,
         item_id: &str,
@@ -329,6 +364,10 @@ impl LocalrefClient {
     /// a thin convenience over [`set_item_extra`](Self::set_item_extra) writing
     /// the reserved `ui.bar_color` extra, which the desktop app renders as a
     /// colored bar on the item's row (e.g. to flag a sync conflict).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot update the item or rejects the request.
     pub async fn set_bar_color(
         &self,
         item_id: &str,
@@ -338,6 +377,10 @@ impl LocalrefClient {
     }
 
     /// Search indexed items by term.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or rejects the request.
     pub async fn search(
         &self,
         term: &str,
@@ -346,11 +389,19 @@ impl LocalrefClient {
     }
 
     /// Return daemon queue and pause status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or rejects the request.
     pub async fn daemon_status(&self) -> Result<DaemonStatus, ClientError> {
         self.get_json("/api/daemon/status").await
     }
 
     /// Pause one daemon mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot change the pause mode or rejects the request.
     pub async fn pause(
         &self,
         mode: &str,
@@ -363,6 +414,10 @@ impl LocalrefClient {
     }
 
     /// Resume one daemon mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot change the pause mode or rejects the request.
     pub async fn resume(
         &self,
         mode: &str,
@@ -375,11 +430,19 @@ impl LocalrefClient {
     }
 
     /// Request a daemon scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot start the scan or rejects the request.
     pub async fn scan(&self) -> Result<serde_json::Value, ClientError> {
         self.post_json("/api/daemon/scan", &serde_json::Value::Null).await
     }
 
     /// Recent log entries from the ring buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or rejects the request.
     pub async fn events(
         &self,
     ) -> Result<Vec<localref_core::logging::LogEntry>, ClientError> {
@@ -387,6 +450,10 @@ impl LocalrefClient {
     }
 
     /// Aggregate dashboard counts (items, categories, recent events).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any dashboard request fails.
     pub async fn dashboard_snapshot(
         &self,
     ) -> Result<DashboardSnapshot, ClientError> {
@@ -540,7 +607,8 @@ fn encode_segment(value: &str) -> String {
         {
             out.push(byte as char);
         } else {
-            out.push_str(&format!("%{byte:02X}"));
+            write!(&mut out, "%{byte:02X}")
+                .expect("writing to a String cannot fail");
         }
     }
     out
