@@ -497,16 +497,17 @@ impl Metadata {
 
         match value {
             Some(value) => {
-                let ns = extra
-                    .entry(namespace)
-                    .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+                let ns = extra.entry(namespace).or_insert(
+                    toml_edit::Item::Table(toml_edit::Table::new()),
+                );
                 if let Some(ns) = ns.as_table_mut() {
                     ns.insert(key, toml_edit::value(value));
                 }
             }
             None => {
-                if let Some(ns) =
-                    extra.get_mut(namespace).and_then(toml_edit::Item::as_table_mut)
+                if let Some(ns) = extra
+                    .get_mut(namespace)
+                    .and_then(toml_edit::Item::as_table_mut)
                 {
                     let _ = ns.remove(key);
                     if ns.is_empty() {
@@ -654,9 +655,13 @@ source = "manual"
         assert!(parsed.state.removed_categories.is_empty());
 
         // Remove it: dropped from categories, recorded as a tombstone.
-        let removed =
-            Metadata::apply_category_edits(&added, &[], &["Wireless/RIS"], &[])
-                .unwrap();
+        let removed = Metadata::apply_category_edits(
+            &added,
+            &[],
+            &["Wireless/RIS"],
+            &[],
+        )
+        .unwrap();
         let parsed = Metadata::from_toml_str(&removed).unwrap();
         assert!(parsed.categories.is_empty());
         assert_eq!(

@@ -24,6 +24,7 @@ use localref_core::{
     DaemonEvent as CoreDaemonEvent, DaemonStatus as CoreDaemonStatus,
     PauseMode as CorePauseMode, StatusKind as CoreStatusKind,
 };
+use localref_plugin::RunningInvocation as CoreRunningInvocation;
 use localref_plugin::manifest::{
     DisplayKind as CoreDisplayKind, FieldKind as CoreFieldKind,
     PluginUiSpec as CorePluginUiSpec, PreviewSpec as CorePreviewSpec,
@@ -33,7 +34,6 @@ use localref_plugin::manifest::{
     UiMount as CoreUiMount, UiPage as CoreUiPage, UiSubmit as CoreUiSubmit,
     UiTarget as CoreUiTarget,
 };
-use localref_plugin::RunningInvocation as CoreRunningInvocation;
 
 /// One indexed library item, as shown in the item list and detail views.
 #[derive(Debug, uniffi::Record)]
@@ -89,9 +89,7 @@ fn nested_map_to_ffi(
 ) -> HashMap<String, HashMap<String, String>> {
     value
         .into_iter()
-        .map(|(namespace, fields)| {
-            (namespace, fields.into_iter().collect())
-        })
+        .map(|(namespace, fields)| (namespace, fields.into_iter().collect()))
         .collect()
 }
 
@@ -104,9 +102,7 @@ fn nested_map_from_ffi(
 > {
     value
         .into_iter()
-        .map(|(namespace, fields)| {
-            (namespace, fields.into_iter().collect())
-        })
+        .map(|(namespace, fields)| (namespace, fields.into_iter().collect()))
         .collect()
 }
 

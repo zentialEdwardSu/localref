@@ -241,8 +241,7 @@ mod tests {
     #[test]
     fn cancel_all_clears_and_signals_every_entry() {
         let registry = Arc::new(PluginProcessRegistry::new());
-        let (mut rx1, _g1) =
-            registry.register("a", "x", InvocationKind::Cron);
+        let (mut rx1, _g1) = registry.register("a", "x", InvocationKind::Cron);
         let (mut rx2, _g2) =
             registry.register("b", "y", InvocationKind::Preview);
 

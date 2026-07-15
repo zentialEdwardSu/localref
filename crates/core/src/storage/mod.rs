@@ -212,11 +212,7 @@ impl StorageDb {
             .into_iter()
             .filter(|item| {
                 item_matches(item, &needle)
-                    || indexed_extra_matches(
-                        item,
-                        &needle,
-                        &indexed,
-                    )
+                    || indexed_extra_matches(item, &needle, &indexed)
             })
             .map(|item| SearchHit {
                 id: item.id,
@@ -388,10 +384,7 @@ pub fn scan_cat_memberships(
     let item_paths: Vec<_> = items
         .iter()
         .map(|(id, object_path)| {
-            (
-                id.clone(),
-                library_root.join(object_path).canonicalize().ok(),
-            )
+            (id.clone(), library_root.join(object_path).canonicalize().ok())
         })
         .collect();
 

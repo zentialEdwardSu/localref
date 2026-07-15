@@ -11,10 +11,7 @@ use localref_core::LocalrefDaemon;
 use localref_core::types::{ConnectorAttachment, ConnectorItem};
 use serde_json::json;
 
-fn import_request(
-    session_id: &str,
-    item_id: &str,
-) -> ConnectorImportRequest {
+fn import_request(session_id: &str, item_id: &str) -> ConnectorImportRequest {
     ConnectorImportRequest {
         session_id: Some(session_id.to_string()),
         uri: None,

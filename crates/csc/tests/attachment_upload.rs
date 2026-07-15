@@ -36,10 +36,8 @@ async fn accepts_attachment_larger_than_default_body_limit() {
     let sink = Arc::new(MemoryImportSink::default());
     let app = router(sink.clone());
 
-    let response = app
-        .oneshot(save_attachment_request(LARGE_BODY_LEN))
-        .await
-        .unwrap();
+    let response =
+        app.oneshot(save_attachment_request(LARGE_BODY_LEN)).await.unwrap();
 
     assert_eq!(
         response.status(),

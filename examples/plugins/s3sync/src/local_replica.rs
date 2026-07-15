@@ -277,7 +277,9 @@ impl LocalReplica for LocalrefReplica {
                 LocalMutation::CreateCopy { data, .. } => {
                     let path = self.path_for(&key)?;
                     if path.exists() {
-                        if std::fs::read(&path).is_ok_and(|existing| existing == data) {
+                        if std::fs::read(&path)
+                            .is_ok_and(|existing| existing == data)
+                        {
                             LocalApplyResult {
                                 key: key.clone(),
                                 status: ApplyStatus::Applied,
@@ -289,7 +291,9 @@ impl LocalReplica for LocalrefReplica {
                                 key: key.clone(),
                                 status: ApplyStatus::PreconditionFailed,
                                 version_token: None,
-                                error: Some("copy target already exists".into()),
+                                error: Some(
+                                    "copy target already exists".into(),
+                                ),
                             }
                         }
                     } else {

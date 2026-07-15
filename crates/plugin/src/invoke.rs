@@ -393,7 +393,8 @@ mod tests {
         };
         let run = tokio::spawn(async move {
             // Generous timeout so the *cancel* path (not timeout) is exercised.
-            spawn_and_parse(&exe, &args, Some(120), Some(tracking), "act").await
+            spawn_and_parse(&exe, &args, Some(120), Some(tracking), "act")
+                .await
         });
 
         // Wait until the invocation registers, then cancel it by id.
@@ -415,8 +416,7 @@ mod tests {
     #[tokio::test]
     async fn timeout_returns_timeout_error() {
         let (exe, args) = sleeper();
-        let result =
-            spawn_and_parse(&exe, &args, Some(1), None, "act").await;
+        let result = spawn_and_parse(&exe, &args, Some(1), None, "act").await;
         assert!(matches!(result, Err(PluginError::Timeout)));
     }
 }

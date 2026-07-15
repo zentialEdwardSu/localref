@@ -26,13 +26,14 @@ pub use invoke::{
     DEFAULT_PLUGIN_TIMEOUT_SECS, InvocationTracking, invoke_action,
     invoke_cron, invoke_hook,
 };
-pub use registry::{
-    InvocationKind, PluginProcessRegistry, RegistrationGuard, RunningInvocation,
-};
 pub use manifest::{
-    CronJob, ExtraFieldDecl, FieldKind, HookBinding, HookEvent, PluginManifest,
-    DisplayKind, PluginUiSpec, PreviewSpec, UiAction, UiConfirmation,
+    CronJob, DisplayKind, ExtraFieldDecl, FieldKind, HookBinding, HookEvent,
+    PluginManifest, PluginUiSpec, PreviewSpec, UiAction, UiConfirmation,
     UiDataRequirement, UiDisplay, UiDisplayColumn, UiField, UiMount, UiPage,
     UiSubmit, UiTarget,
+};
+pub use registry::{
+    InvocationKind, PluginProcessRegistry, RegistrationGuard,
+    RunningInvocation,
 };
 pub use state::{ActionArgs, HookArgs, RunOutput};

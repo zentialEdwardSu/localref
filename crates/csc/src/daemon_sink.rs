@@ -139,9 +139,7 @@ impl ConnectorImportSink for DaemonConnectorSink {
                 // (see the orphan branch below), losing the bytes.
                 let can_fall_back = attachment.session_id.is_none()
                     || attachment.parent_item_id.is_some();
-                can_fall_back
-                    .then(|| sessions.len().checked_sub(1))
-                    .flatten()
+                can_fall_back.then(|| sessions.len().checked_sub(1)).flatten()
             });
         let Some(session_index) = session_index else {
             if attachment.parent_item_id.is_none() {

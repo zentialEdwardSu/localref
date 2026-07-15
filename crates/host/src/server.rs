@@ -32,13 +32,13 @@ pub fn deny_socket_inheritance(listener: &TcpListener) {
         use windows_sys::Win32::Foundation::{
             HANDLE_FLAG_INHERIT, SetHandleInformation,
         };
-        let handle = listener.as_raw_socket() as isize as *mut std::ffi::c_void;
+        let handle =
+            listener.as_raw_socket() as isize as *mut std::ffi::c_void;
         // SAFETY: `handle` is a live socket handle owned by `listener`, valid
         // for the duration of this call. Clearing the inherit bit is a pure
         // handle-metadata change with no aliasing concerns.
-        let ok = unsafe {
-            SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0)
-        };
+        let ok =
+            unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
         if ok == 0 {
             tracing::warn!(
                 target: "localref::server",

@@ -129,7 +129,10 @@ mod tests {
     #[test]
     fn load_missing_file_is_empty() {
         let temp = tempfile::tempdir().unwrap();
-        assert_eq!(CatManifest::load(temp.path()).unwrap(), CatManifest::default());
+        assert_eq!(
+            CatManifest::load(temp.path()).unwrap(),
+            CatManifest::default()
+        );
     }
 
     #[test]

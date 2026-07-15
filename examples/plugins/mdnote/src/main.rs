@@ -26,7 +26,9 @@ const NOTE_NAME: &str = "note.md";
 #[tokio::main]
 async fn main() {
     let Some(invocation) = parse_args(std::env::args().skip(1)) else {
-        emit(&RunOutput::error("usage: mdnote run <action> --endpoint … --active …"));
+        emit(&RunOutput::error(
+            "usage: mdnote run <action> --endpoint … --active …",
+        ));
         return;
     };
     match invocation {
@@ -99,7 +101,8 @@ fn ensure_note(note_path: &Path, title: &str) -> Result<bool, String> {
     if let Some(parent) = note_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    std::fs::write(note_path, format!("# {title}\n")).map_err(|e| e.to_string())?;
+    std::fs::write(note_path, format!("# {title}\n"))
+        .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
