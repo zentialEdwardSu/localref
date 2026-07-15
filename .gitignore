@@ -11,6 +11,7 @@ cargo-lock/
 # Editor/IDE-specific files
 # VS Code
 .vscode/
+.claude/
 # JetBrains IDEs (RustRover, CLion, etc.)
 __pycache__/
 .venv/
