@@ -88,10 +88,9 @@ public partial class PluginsWindowViewModel : ViewModelBase
                     message => StatusText = message));
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Transient read failures (e.g. during shutdown) are ignored; the
-            // next tick recovers.
+            ExceptionService.Current.Report(ex, "Refresh running plugins", ExceptionSource.FFI);
         }
     }
 
@@ -108,6 +107,7 @@ public partial class PluginsWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Load plugins", ExceptionSource.FFI);
             StatusText = $"Could not load plugins: {ex.Message}";
         }
     }
@@ -130,6 +130,7 @@ public partial class PluginsWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Rescan plugins", ExceptionSource.FFI);
             StatusText = $"Could not scan for plugins: {ex.Message}";
         }
     }
@@ -207,6 +208,7 @@ public partial class PluginsWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Register plugin schedule", ExceptionSource.FFI);
             StatusText = $"Could not register schedule: {ex.Message}";
         }
     }
@@ -225,6 +227,7 @@ public partial class PluginsWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Remove plugin schedule", ExceptionSource.FFI);
             StatusText = $"Could not remove schedule: {ex.Message}";
         }
     }

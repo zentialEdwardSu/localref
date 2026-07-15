@@ -17,6 +17,8 @@ namespace Localref.Desktop.Views;
 /// </summary>
 public partial class PluginPageView : UserControl
 {
+    private PluginPageViewModel? _viewModel;
+
     public PluginPageView()
     {
         InitializeComponent();
@@ -27,7 +29,13 @@ public partial class PluginPageView : UserControl
 
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
-        if (DataContext is PluginPageViewModel vm)
+        if (_viewModel is not null)
+        {
+            _viewModel.SaveRequested -= SaveAsync;
+            _viewModel.ConfirmationRequested -= ConfirmAsync;
+        }
+        _viewModel = DataContext as PluginPageViewModel;
+        if (_viewModel is { } vm)
         {
             vm.SaveRequested += SaveAsync;
             vm.ConfirmationRequested += ConfirmAsync;

@@ -67,6 +67,7 @@ public partial class PluginActionViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, $"Run plugin action {_plugin}/{_action.id}", ExceptionSource.FFI);
             _reportStatus($"Could not run {Label}: {ex.Message}");
         }
     }

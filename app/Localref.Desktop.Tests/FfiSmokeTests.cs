@@ -36,7 +36,9 @@ public class FfiSmokeTests
             restAddr: $"127.0.0.1:{restPort}",
             cscAddr: $"127.0.0.1:{FreePort()}",
             restEndpoint: $"http://127.0.0.1:{restPort}",
-            pluginsDir: plugins);
+            pluginsDir: plugins,
+            logMaxFileBytes: 10 * 1024 * 1024,
+            logBackupCount: 2);
 
         var handle = LocalrefFfiMethods.StartDaemon(config);
         try

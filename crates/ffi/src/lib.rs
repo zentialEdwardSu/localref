@@ -25,15 +25,20 @@ use localref_host::plugin_host::{
     RunOutcome, action_timeout_secs, build_action_args, decide_run_outcome,
 };
 use localref_plugin::{
-    DiscoveredPlugin, InvocationKind, InvocationTracking, PluginProcessRegistry,
+    DiscoveredPlugin, InvocationKind, InvocationTracking,
+    PluginProcessRegistry,
 };
 use tokio::task::JoinHandle;
 
+use localref_host::health::{
+    RuntimeHealthState as HostRuntimeHealthState, RuntimeHealthTracker,
+};
+
 pub use dto::{
-    CategorySummary, DaemonEvent, DaemonStatus, ItemDocument,
+    CategorySummary, DaemonEvent, DaemonStatus, DisplayKind, ItemDocument,
     ItemFilesDocument, LogEntry, Metadata, MetadataDocument, PauseMode,
-    DisplayKind, PluginUiSpec, RunningInvocation, ScheduledCall, SearchHit,
-    StatusKind, UiConfirmation, UiDisplayColumn, UiSubmit,
+    PluginUiSpec, RunningInvocation, ScheduledCall, SearchHit, StatusKind,
+    UiConfirmation, UiDisplayColumn, UiSubmit,
 };
 pub use error::FfiError;
 
@@ -55,6 +60,10 @@ pub struct DaemonConfig {
     pub rest_endpoint: String,
     /// Directory scanned for plugin bundles.
     pub plugins_dir: String,
+    /// Maximum size of each daemon JSONL log file.
+    pub log_max_file_bytes: u64,
+    /// Number of rotated daemon log files retained.
+    pub log_backup_count: u32,
 }
 
 /// User-editable application settings persisted in Localref's config.toml.
@@ -121,6 +130,22 @@ pub struct PluginRunResult {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum RuntimeHealthState {
+    Healthy,
+    Degraded,
+    Fatal,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct RuntimeHealth {
+    pub state: RuntimeHealthState,
+    pub component: String,
+    pub message: String,
+    pub occurrence_count: u64,
+    pub generation: u64,
+}
+
 /// Foreign (C#) listener invoked on each daemon event.
 ///
 /// Called from a Tokio worker thread, so the C# implementation must marshal to
@@ -146,6 +171,8 @@ struct HostRuntime {
     plugin_registry: Arc<PluginProcessRegistry>,
     /// Owned runtime; kept alive for the process. Dropping it stops the servers.
     runtime: tokio::runtime::Runtime,
+    /// Health shared by the server and restartable background workers.
+    health: RuntimeHealthTracker,
     /// Event-subscription tasks, aborted on shutdown / unsubscribe.
     subscriptions: Mutex<Vec<JoinHandle<()>>>,
     /// Logging guard; keeps the file appender worker alive. `None` when a
@@ -192,6 +219,8 @@ pub fn load_config() -> FfiResult<DaemonConfig> {
         csc_addr: config.csc_addr().to_string(),
         rest_endpoint: config.rest_endpoint().to_string(),
         plugins_dir: config.plugins_dir().display().to_string(),
+        log_max_file_bytes: config.log_max_file_bytes(),
+        log_backup_count: config.log_backup_count(),
     })
 }
 
@@ -304,7 +333,12 @@ pub fn start_daemon(config: DaemonConfig) -> FfiResult<Arc<DaemonHandle>> {
     // Install the tracing subscriber + global log ring buffer so the UI's
     // logs pane (via `events()`) has something to read. Idempotent: returns
     // `None` if a subscriber is already installed in this process.
-    let log_handle = localref_core::logging::init(&library_root, false);
+    let log_handle = localref_core::logging::init(
+        &library_root,
+        false,
+        config.log_max_file_bytes,
+        config.log_backup_count,
+    );
 
     let storage = StorageDb::open(&library_root)
         .map_err(|e| FfiError::Internal { msg: e.to_string() })?;
@@ -346,6 +380,7 @@ pub fn start_daemon(config: DaemonConfig) -> FfiResult<Arc<DaemonHandle>> {
         .enable_all()
         .build()
         .map_err(|e| FfiError::Internal { msg: e.to_string() })?;
+    let health = RuntimeHealthTracker::default();
 
     // Bind both server ports up front, on the runtime, so a port-in-use error
     // (e.g. a second Localref instance) surfaces here as an `FfiError` the C#
@@ -374,25 +409,39 @@ pub fn start_daemon(config: DaemonConfig) -> FfiResult<Arc<DaemonHandle>> {
         let disabled = disabled.clone();
         let endpoint = config.rest_endpoint.clone();
         let registry = Arc::clone(&plugin_registry);
+        let server_health = health.clone();
         drop(runtime.spawn(async move {
-            localref_host::notify::start_notify_consumer();
-            localref_host::scheduler::spawn_plugin_workers(
-                &daemon, plugins, endpoint, disabled, registry,
-            );
-            let rest = localref_host::server::serve_rest_on(
-                rest_listener,
-                daemon.clone(),
-            );
-            let csc = localref_host::server::serve_csc_on(
-                csc_listener,
-                daemon,
-            );
-            if let Err(error) = tokio::try_join!(rest, csc) {
-                tracing::error!(
-                    target: "localref::ffi",
-                    %error,
-                    "localref API servers stopped",
+            let worker_health = server_health.clone();
+            let server_task = tokio::spawn(async move {
+                localref_host::notify::start_notify_consumer();
+                localref_host::scheduler::spawn_plugin_workers(
+                    &daemon, plugins, endpoint, disabled, registry, worker_health,
                 );
+                let rest = localref_host::server::serve_rest_on(rest_listener, daemon.clone());
+                let csc = localref_host::server::serve_csc_on(csc_listener, daemon);
+                tokio::pin!(rest);
+                tokio::pin!(csc);
+                tokio::select! {
+                    result = &mut rest => result
+                        .map_err(|error| format!("REST server failed: {error}"))
+                        .and_then(|()| Err("REST server stopped unexpectedly".to_string())),
+                    result = &mut csc => result
+                        .map_err(|error| format!("CSC server failed: {error}"))
+                        .and_then(|()| Err("CSC server stopped unexpectedly".to_string())),
+                }
+            });
+            match server_task.await {
+                Ok(Ok(())) => {
+                    server_health.fatal("api-servers", "API servers stopped unexpectedly", 1);
+                }
+                Ok(Err(error)) => {
+                    tracing::error!(target: "localref::ffi", %error, "localref API servers stopped");
+                    server_health.fatal("api-servers", error, 1);
+                }
+                Err(error) => {
+                    tracing::error!(target: "localref::ffi", %error, "localref API server task panicked");
+                    server_health.fatal("api-servers", format!("API server panic: {error}"), 1);
+                }
             }
         }));
     }
@@ -407,6 +456,7 @@ pub fn start_daemon(config: DaemonConfig) -> FfiResult<Arc<DaemonHandle>> {
             plugins_dir,
             plugin_registry,
             runtime,
+            health,
             subscriptions: Mutex::new(Vec::new()),
             _log_handle: log_handle,
         }),
@@ -429,9 +479,9 @@ fn plugins_dir_is_empty(plugins_dir: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(plugins_dir) else {
         return true;
     };
-    !entries.filter_map(Result::ok).any(|entry| {
-        entry.path().join("plugin.toml").is_file()
-    })
+    !entries
+        .filter_map(Result::ok)
+        .any(|entry| entry.path().join("plugin.toml").is_file())
 }
 
 /// Aggregate the `"namespace.key"` extra fields every plugin declares indexed.
@@ -456,6 +506,24 @@ impl DaemonHandle {
     /// Current daemon queue status.
     pub fn status(&self) -> DaemonStatus {
         self.inner.daemon.status().into()
+    }
+
+    /// Health of the Tokio workers and API servers owned by this handle.
+    pub fn runtime_health(&self) -> RuntimeHealth {
+        let health = self.inner.health.snapshot();
+        RuntimeHealth {
+            state: match health.state {
+                HostRuntimeHealthState::Healthy => RuntimeHealthState::Healthy,
+                HostRuntimeHealthState::Degraded => {
+                    RuntimeHealthState::Degraded
+                }
+                HostRuntimeHealthState::Fatal => RuntimeHealthState::Fatal,
+            },
+            component: health.component,
+            message: health.message,
+            occurrence_count: health.occurrence_count,
+            generation: health.generation,
+        }
     }
 
     /// Pause one daemon mode.
@@ -747,7 +815,17 @@ impl DaemonHandle {
         let handle = self.inner.runtime.spawn(async move {
             loop {
                 match rx.recv().await {
-                    Ok(event) => listener.on_event(event.into()),
+                    Ok(event) => {
+                        let callback = std::panic::catch_unwind(
+                            std::panic::AssertUnwindSafe(|| listener.on_event(event.into())),
+                        );
+                        if callback.is_err() {
+                            tracing::error!(
+                                target: "localref::ffi",
+                                "daemon event callback panicked; subscription remains active",
+                            );
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(
                         _,
                     )) => {}
@@ -859,7 +937,9 @@ impl DaemonHandle {
         // effect (save dialog for `Save`, inline display otherwise). A save
         // dialog opens only when the plugin explicitly set `filename`.
         let (result, filename) = match decide_run_outcome(&output) {
-            RunOutcome::Save { filename, content } => (Some(content), Some(filename)),
+            RunOutcome::Save { filename, content } => {
+                (Some(content), Some(filename))
+            }
             RunOutcome::Inline { content } => (Some(content), None),
             RunOutcome::Done | RunOutcome::Error { .. } => (None, None),
         };
@@ -977,12 +1057,7 @@ impl DaemonHandle {
     /// Feeds the plugin manager's "Running" panel; each entry can be cancelled
     /// via [`DaemonHandle::cancel_plugin_run`].
     pub fn list_running_plugins(&self) -> Vec<RunningInvocation> {
-        self.inner
-            .plugin_registry
-            .list()
-            .into_iter()
-            .map(Into::into)
-            .collect()
+        self.inner.plugin_registry.list().into_iter().map(Into::into).collect()
     }
 
     /// Cancel one running plugin invocation by id; returns whether it was found.

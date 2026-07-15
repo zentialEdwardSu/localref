@@ -51,6 +51,7 @@ public sealed partial class RunningInvocationViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, $"Cancel plugin invocation: {Plugin}", ExceptionSource.FFI);
             _reportStatus($"Could not cancel {Plugin}: {ex.Message}");
         }
     }

@@ -6,7 +6,8 @@
 //! fire-and-forget when a matching event arrives, and spawns cron plugins on a
 //! crontab-like schedule. Neither path can block or fail a daemon action.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -17,10 +18,13 @@ use cron::Schedule;
 use localref_core::schedule::ScheduledCall;
 use localref_core::{DaemonEvent, LocalrefDaemon, PauseMode};
 use localref_plugin::{
-    ActionArgs, DiscoveredPlugin, HookArgs, InvocationKind, InvocationTracking,
-    PluginProcessRegistry, invoke_action, invoke_cron, invoke_hook,
+    ActionArgs, DiscoveredPlugin, HookArgs, InvocationKind,
+    InvocationTracking, PluginProcessRegistry, invoke_action, invoke_cron,
+    invoke_hook,
 };
 use tokio::sync::broadcast::error::RecvError;
+
+use crate::health::RuntimeHealthTracker;
 
 /// Shared set of disabled plugin names, kept in sync with the UI server.
 type Disabled = Arc<RwLock<BTreeSet<String>>>;
@@ -58,33 +62,146 @@ pub fn spawn_plugin_workers(
     endpoint: String,
     disabled: Disabled,
     registry: Arc<PluginProcessRegistry>,
+    health: RuntimeHealthTracker,
 ) {
     let snapshot = plugins_snapshot(&plugins);
     let hook_bindings: usize =
         snapshot.iter().map(|p| p.manifest.hooks.len()).sum();
-    let cron_jobs: usize = snapshot.iter().map(|p| p.manifest.cron.len()).sum();
+    let cron_jobs: usize =
+        snapshot.iter().map(|p| p.manifest.cron.len()).sum();
     tracing::info!(
         target: "localref::plugins",
         hook_bindings,
         cron_jobs,
         "starting plugin workers",
     );
-    let rx = daemon.subscribe();
-    // Detach both workers; they run for the process lifetime.
-    drop(tokio::spawn(run_hook_dispatcher(
-        rx,
+    drop(tokio::spawn(supervise_hook_dispatcher(
+        daemon.clone(),
         Arc::clone(&plugins),
         endpoint.clone(),
         disabled.clone(),
         Arc::clone(&registry),
+        health.clone(),
     )));
-    drop(tokio::spawn(run_cron_scheduler(
+    drop(tokio::spawn(supervise_cron_scheduler(
         daemon.clone(),
         plugins,
         endpoint,
         disabled,
         registry,
+        health,
     )));
+}
+
+async fn supervise_hook_dispatcher(
+    daemon: LocalrefDaemon,
+    plugins: SharedPlugins,
+    endpoint: String,
+    disabled: Disabled,
+    registry: Arc<PluginProcessRegistry>,
+    health: RuntimeHealthTracker,
+) {
+    let mut failures = VecDeque::new();
+    loop {
+        let worker = tokio::spawn(run_hook_dispatcher(
+            daemon.subscribe(),
+            Arc::clone(&plugins),
+            endpoint.clone(),
+            disabled.clone(),
+            Arc::clone(&registry),
+        ));
+        match worker.await {
+            Ok(()) => return,
+            Err(error) => {
+                let Some(delay) = register_worker_failure(
+                    &health,
+                    "hook-dispatcher",
+                    &error,
+                    &mut failures,
+                ) else {
+                    return;
+                };
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+}
+
+async fn supervise_cron_scheduler(
+    daemon: LocalrefDaemon,
+    plugins: SharedPlugins,
+    endpoint: String,
+    disabled: Disabled,
+    registry: Arc<PluginProcessRegistry>,
+    health: RuntimeHealthTracker,
+) {
+    let mut failures = VecDeque::new();
+    loop {
+        let worker = tokio::spawn(run_cron_scheduler(
+            daemon.clone(),
+            Arc::clone(&plugins),
+            endpoint.clone(),
+            disabled.clone(),
+            Arc::clone(&registry),
+        ));
+        match worker.await {
+            Ok(()) => return,
+            Err(error) => {
+                let Some(delay) = register_worker_failure(
+                    &health,
+                    "cron-scheduler",
+                    &error,
+                    &mut failures,
+                ) else {
+                    return;
+                };
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+}
+
+fn register_worker_failure(
+    health: &RuntimeHealthTracker,
+    component: &str,
+    error: &tokio::task::JoinError,
+    failures: &mut VecDeque<std::time::Instant>,
+) -> Option<Duration> {
+    let now = std::time::Instant::now();
+    while failures.front().is_some_and(|failure| {
+        now.duration_since(*failure) > Duration::from_secs(300)
+    }) {
+        let _ = failures.pop_front();
+    }
+    failures.push_back(now);
+    let count = u64::try_from(failures.len()).unwrap_or(u64::MAX);
+    let message = format!("worker terminated unexpectedly: {error}");
+    let Some(delay) = worker_restart_delay(failures.len()) else {
+        tracing::error!(target: "localref::runtime", component, count, %error, "worker entered fatal crash loop");
+        health.fatal(component, message, count);
+        return None;
+    };
+    health.degraded(component, message, count);
+    tracing::warn!(target: "localref::runtime", component, count, delay = delay.as_secs(), %error, "restarting failed worker");
+    Some(delay)
+}
+
+fn worker_restart_delay(failure_count: usize) -> Option<Duration> {
+    [1, 5, 30]
+        .get(failure_count.checked_sub(1)?)
+        .copied()
+        .map(Duration::from_secs)
+}
+
+fn spawn_isolated<F>(component: &'static str, future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    drop(tokio::spawn(async move {
+        if let Err(error) = tokio::spawn(future).await {
+            tracing::error!(target: "localref::runtime", component, %error, "isolated plugin task panicked");
+        }
+    }));
 }
 
 /// Consume daemon events and fan each one out to plugins bound to it.
@@ -142,9 +259,15 @@ fn dispatch_event(
             plugin: name.clone(),
             kind: InvocationKind::Hook,
         };
-        drop(tokio::spawn(async move {
-            match invoke_hook(&executable, &event_name, &args, None, Some(tracking))
-                .await
+        spawn_isolated("plugin-hook", async move {
+            match invoke_hook(
+                &executable,
+                &event_name,
+                &args,
+                None,
+                Some(tracking),
+            )
+            .await
             {
                 Ok(output) => tracing::debug!(
                     target: "localref::hooks",
@@ -161,7 +284,7 @@ fn dispatch_event(
                     "hook failed",
                 ),
             }
-        }));
+        });
     }
 }
 
@@ -370,8 +493,7 @@ async fn run_cron_scheduler(
     let mut events = daemon.subscribe();
     // Rebuilt from a fresh plugin snapshot on start and on every reload, so a
     // rescan's added/removed manifest cron jobs are re-registered.
-    let mut schedule =
-        next_fire_times(reload_schedule(&daemon, &plugins));
+    let mut schedule = next_fire_times(reload_schedule(&daemon, &plugins));
 
     loop {
         // Wait for either the soonest job to be due or a reload signal. With no
@@ -448,9 +570,15 @@ fn fire_entry(
                 plugin: name.clone(),
                 kind: InvocationKind::Cron,
             };
-            drop(tokio::spawn(async move {
-                match invoke_cron(&executable, &job, &endpoint, timeout, Some(tracking))
-                    .await
+            spawn_isolated("plugin-cron", async move {
+                match invoke_cron(
+                    &executable,
+                    &job,
+                    &endpoint,
+                    timeout,
+                    Some(tracking),
+                )
+                .await
                 {
                     Ok(output) => tracing::debug!(
                         target: "localref::cron",
@@ -467,7 +595,7 @@ fn fire_entry(
                         "cron job failed",
                     ),
                 }
-            }));
+            });
         }
         JobKind::ScheduledCall { executable, action, params } => {
             let executable = executable.clone();
@@ -483,9 +611,15 @@ fn fire_entry(
                 plugin: name.clone(),
                 kind: InvocationKind::Cron,
             };
-            drop(tokio::spawn(async move {
-                match invoke_action(&executable, &action, &args, None, Some(tracking))
-                    .await
+            spawn_isolated("plugin-scheduled-action", async move {
+                match invoke_action(
+                    &executable,
+                    &action,
+                    &args,
+                    None,
+                    Some(tracking),
+                )
+                .await
                 {
                     Ok(output) => tracing::debug!(
                         target: "localref::cron",
@@ -502,7 +636,7 @@ fn fire_entry(
                         "scheduled call failed",
                     ),
                 }
-            }));
+            });
         }
     }
 }
@@ -511,7 +645,7 @@ fn fire_entry(
 mod tests {
     use super::{
         JobKind, collect_manifest_entries, collect_scheduled_call_entries,
-        event_targets, matching_plugins,
+        event_targets, matching_plugins, spawn_isolated, worker_restart_delay,
     };
     use localref_core::DaemonEvent;
     use localref_core::schedule::ScheduledCall;
@@ -520,6 +654,27 @@ mod tests {
     };
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::time::Duration;
+
+    #[test]
+    fn worker_restart_policy_uses_bounded_backoff() {
+        assert_eq!(worker_restart_delay(1), Some(Duration::from_secs(1)));
+        assert_eq!(worker_restart_delay(2), Some(Duration::from_secs(5)));
+        assert_eq!(worker_restart_delay(3), Some(Duration::from_secs(30)));
+        assert_eq!(worker_restart_delay(4), None);
+    }
+
+    #[tokio::test]
+    async fn isolated_plugin_panic_does_not_kill_runtime() {
+        spawn_isolated("test-plugin", async {
+            panic!("injected plugin panic")
+        });
+        tokio::task::yield_now().await;
+
+        let next_task = tokio::spawn(async { 42_u8 }).await;
+
+        assert_eq!(next_task.expect("runtime still executes tasks"), 42);
+    }
 
     fn plugin(
         name: &str,
@@ -674,7 +829,8 @@ mod tests {
         let daemon = LocalrefDaemon::for_library(temp.path()).unwrap();
 
         // Start empty: no plugins, so no manifest cron entries.
-        let shared: SharedPlugins = Arc::new(RwLock::new(Arc::new(Vec::new())));
+        let shared: SharedPlugins =
+            Arc::new(RwLock::new(Arc::new(Vec::new())));
         assert!(reload_schedule(&daemon, &shared).is_empty());
 
         // Simulate a rescan discovering a plugin with a manifest cron job.

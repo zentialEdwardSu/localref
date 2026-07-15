@@ -54,6 +54,7 @@ public partial class SettingsWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Load settings", ExceptionSource.FFI);
             StatusText = $"Could not load settings: {ex.Message}";
         }
     }
@@ -77,6 +78,7 @@ public partial class SettingsWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Save settings", ExceptionSource.FFI);
             StatusText = $"Could not save settings: {ex.Message}";
         }
     }
@@ -91,6 +93,7 @@ public partial class SettingsWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Add Start menu shortcut", ExceptionSource.Command);
             StatusText = $"Could not add Localref to the Start menu: {ex.Message}";
         }
     }
@@ -113,6 +116,7 @@ public partial class SettingsWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Send test notification", ExceptionSource.Task);
             StatusText = $"Could not send test notification: {ex.Message}";
         }
     }

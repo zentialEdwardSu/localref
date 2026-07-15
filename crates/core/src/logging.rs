@@ -6,8 +6,9 @@
 //! an in-memory ring buffer so the REST API and web UI can surface recent entries
 //! without reading the file.
 
-use std::io::Write;
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::{self, BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
@@ -21,6 +22,129 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 /// Global ring buffer initialized by [`init`].
 static GLOBAL_BUFFER: OnceLock<LogRingBuffer> = OnceLock::new();
+
+/// Append-only writer that rotates the active log before it exceeds its size
+/// limit. Backups are named `localref.jsonl.1`, `localref.jsonl.2`, etc.
+#[derive(Debug)]
+struct SizeLimitedLogWriter {
+    /// Active JSONL path.
+    path: PathBuf,
+    /// Buffered active file; temporarily absent while rotating on Windows.
+    file: Option<BufWriter<File>>,
+    /// Bytes currently stored in the active file.
+    current_len: u64,
+    /// Maximum bytes allowed before starting a new active file.
+    max_bytes: u64,
+    /// Number of numbered backup files to retain.
+    backup_count: usize,
+}
+
+impl SizeLimitedLogWriter {
+    /// Open an append-only writer, rotating an already-full file first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the directory, file, or rotation cannot be
+    /// created or updated.
+    #[allow(clippy::single_call_fn)]
+    fn new(
+        path: PathBuf,
+        max_bytes: u64,
+        backup_count: usize,
+    ) -> io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if path.metadata().is_ok_and(|metadata| metadata.len() >= max_bytes) {
+            rotate_files(&path, backup_count)?;
+        }
+        let file = File::options().create(true).append(true).open(&path)?;
+        let current_len = file.metadata()?.len();
+        Ok(Self {
+            path,
+            file: Some(BufWriter::new(file)),
+            current_len,
+            max_bytes,
+            backup_count,
+        })
+    }
+
+    /// Flush and close the active file, rotate backups, and open a fresh file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when flushing, renaming, or reopening fails.
+    fn rotate(&mut self) -> io::Result<()> {
+        if let Some(mut file) = self.file.take() {
+            file.flush()?;
+        }
+        rotate_files(&self.path, self.backup_count)?;
+        let file =
+            File::options().create(true).append(true).open(&self.path)?;
+        self.file = Some(BufWriter::new(file));
+        self.current_len = 0;
+        Ok(())
+    }
+}
+
+impl Write for SizeLimitedLogWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let incoming = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if self.current_len > 0
+            && self.current_len.saturating_add(incoming) > self.max_bytes
+        {
+            self.rotate()?;
+        }
+        self.file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("log file is not open"))?
+            .write_all(bytes)?;
+        self.current_len = self.current_len.saturating_add(incoming);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("log file is not open"))?
+            .flush()
+    }
+}
+
+/// Shift numbered backups and move the active path to backup number one.
+///
+/// # Errors
+///
+/// Returns an I/O error when a retained file cannot be removed or renamed.
+fn rotate_files(path: &Path, backup_count: usize) -> io::Result<()> {
+    if backup_count == 0 {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    let oldest = rotated_path(path, backup_count);
+    if oldest.exists() {
+        fs::remove_file(oldest)?;
+    }
+    for index in (1..backup_count).rev() {
+        let source = rotated_path(path, index);
+        if source.exists() {
+            fs::rename(source, rotated_path(path, index + 1))?;
+        }
+    }
+    if path.exists() {
+        fs::rename(path, rotated_path(path, 1))?;
+    }
+    Ok(())
+}
+
+/// Return the numbered backup path for `path` and `index`.
+fn rotated_path(path: &Path, index: usize) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".{index}"));
+    PathBuf::from(name)
+}
 
 /// Return a reference to the global ring buffer, if initialized.
 pub fn global_buffer() -> Option<&'static LogRingBuffer> {
@@ -248,10 +372,11 @@ where
         };
 
         // Write JSON line to the file.
-        if let Ok(json_line) = serde_json::to_string(&entry) {
+        if let Ok(mut json_line) = serde_json::to_string(&entry) {
+            json_line.push('\n');
             let mut writer =
                 self.writer.lock().expect("log writer mutex poisoned");
-            let _ = writeln!(writer, "{json_line}");
+            let _ = writer.write_all(json_line.as_bytes());
             let _ = writer.flush();
         }
 
@@ -273,11 +398,18 @@ where
 /// The default filter level is `info`. Set the `LOCALREF_LOG` environment
 /// variable to override (e.g. `LOCALREF_LOG=debug` or
 /// `LOCALREF_LOG=warn,localref_core=debug`).
+/// On-disk file size and backup retention come from the `[logging]` section of
+/// the Localref configuration file.
 ///
 /// Returns `None` when a global subscriber is already installed in this
 /// process (e.g. a second `start_daemon` call in the same test binary); the
 /// existing ring buffer keeps serving `events()`, so this is not an error.
-pub fn init(library_root: impl Into<PathBuf>, quiet: bool) -> Option<LogHandle> {
+pub fn init(
+    library_root: impl Into<PathBuf>,
+    quiet: bool,
+    max_file_bytes: u64,
+    backup_count: u32,
+) -> Option<LogHandle> {
     // Idempotent: the tracing subscriber is a process-global singleton and
     // installing it twice panics. If it is already set, reuse it.
     if GLOBAL_BUFFER.get().is_some() {
@@ -287,9 +419,13 @@ pub fn init(library_root: impl Into<PathBuf>, quiet: bool) -> Option<LogHandle> 
     let library_root: PathBuf = library_root.into();
     let log_dir = library_root.join(".localref").join("logs");
 
-    // Non-blocking file appender (dedicated background thread).
-    let file_appender =
-        tracing_appender::rolling::never(&log_dir, "localref.jsonl");
+    // Non-blocking, size-limited file appender (dedicated background thread).
+    let file_appender = SizeLimitedLogWriter::new(
+        log_dir.join("localref.jsonl"),
+        max_file_bytes,
+        usize::try_from(backup_count).ok()?,
+    )
+    .ok()?;
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     // In-memory ring buffer holding the last 2000 entries.
@@ -452,6 +588,30 @@ mod tests {
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].id, 3);
         assert_eq!(entries[2].id, 5);
+    }
+
+    #[test]
+    fn size_limited_writer_rotates_and_bounds_retained_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("localref.jsonl");
+        let mut writer =
+            SizeLimitedLogWriter::new(path.clone(), 10, 2).unwrap();
+
+        writer.write_all(b"first\n").unwrap();
+        writer.write_all(b"second\n").unwrap();
+        writer.write_all(b"third\n").unwrap();
+        writer.flush().unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "third\n");
+        assert_eq!(
+            fs::read_to_string(rotated_path(&path, 1)).unwrap(),
+            "second\n"
+        );
+        assert_eq!(
+            fs::read_to_string(rotated_path(&path, 2)).unwrap(),
+            "first\n"
+        );
+        assert!(!rotated_path(&path, 3).exists());
     }
 
     #[test]

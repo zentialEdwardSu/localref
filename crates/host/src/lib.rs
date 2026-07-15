@@ -7,6 +7,7 @@
 //! desktop notifications. The production entry points are the `localref-cli`
 //! diagnostics binary and the `localref-ffi` cdylib consumed by the Avalonia app.
 
+pub mod health;
 pub mod init;
 pub mod notify;
 pub mod plugin_host;

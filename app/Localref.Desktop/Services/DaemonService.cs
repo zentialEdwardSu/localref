@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using uniffi.localref_ffi;
 
 namespace Localref.Desktop.Services;
@@ -17,6 +20,8 @@ namespace Localref.Desktop.Services;
 public sealed class DaemonService : IPluginActionRunner
 {
     private DaemonHandle? _handle;
+    private CancellationTokenSource? _healthCancellation;
+    private Task? _healthMonitor;
 
     /// <summary>The live daemon handle. Throws if accessed before <see cref="Start"/>.</summary>
     public DaemonHandle Handle =>
@@ -33,6 +38,8 @@ public sealed class DaemonService : IPluginActionRunner
     public string RestEndpoint { get; private set; } = "";
     public string RepoName { get; private set; } = "Localref";
     public string LibraryRoot { get; private set; } = "";
+    public string DaemonLogPath => Path.Combine(
+        LibraryRoot, ".localref", "logs", "localref.jsonl");
 
     /// <summary>
     /// Boot the daemon using the shared on-disk configuration.
@@ -57,13 +64,70 @@ public sealed class DaemonService : IPluginActionRunner
         RepoName = settings.repoName;
         LibraryRoot = config.libraryRoot;
         _handle = LocalrefFfiMethods.StartDaemon(config);
+        _healthCancellation = new CancellationTokenSource();
+        _healthMonitor = MonitorRuntimeHealthAsync(_handle, _healthCancellation.Token);
+        ExceptionService.Current.Observe(
+            _healthMonitor,
+            "Monitor Rust runtime health",
+            ExceptionSource.RustRuntime);
     }
 
     /// <summary>Stop subscriptions/servers. Safe to call more than once.</summary>
     public void Stop()
     {
-        _handle?.Shutdown();
-        _handle = null;
+        var cancellation = Interlocked.Exchange(ref _healthCancellation, null);
+        cancellation?.Cancel();
+        var monitor = Interlocked.Exchange(ref _healthMonitor, null);
+        if (monitor is not null)
+        {
+            try { monitor.Wait(TimeSpan.FromSeconds(2)); }
+            catch (AggregateException ex) when (ex.InnerExceptions.All(
+                inner => inner is OperationCanceledException)) { }
+            catch (Exception ex)
+            {
+                ExceptionService.Current.Report(
+                    ex, "Stop Rust runtime health monitor", ExceptionSource.RustRuntime);
+            }
+        }
+        cancellation?.Dispose();
+
+        var handle = Interlocked.Exchange(ref _handle, null);
+        if (handle is null) return;
+        try
+        {
+            handle.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            ExceptionService.Current.Report(ex, "Shutdown Rust daemon", ExceptionSource.FFI);
+        }
+        finally
+        {
+            try { handle.Dispose(); }
+            catch (Exception ex)
+            {
+                ExceptionService.Current.Report(ex, "Dispose Rust daemon", ExceptionSource.FFI);
+            }
+        }
+    }
+
+    private static async Task MonitorRuntimeHealthAsync(
+        DaemonHandle handle,
+        CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var health = handle.RuntimeHealth();
+            if (health.state == RuntimeHealthState.Fatal)
+            {
+                ExceptionService.Current.Report(
+                    new InvalidOperationException($"{health.component}: {health.message}"),
+                    "Rust runtime reported fatal health",
+                    ExceptionSource.RustRuntime);
+                return;
+            }
+        }
     }
 
     public PluginRunResult PreviewPluginAction(

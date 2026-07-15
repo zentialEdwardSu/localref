@@ -47,6 +47,7 @@ public static partial class WindowsNotificationIdentity
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Register Windows notification identity", ExceptionSource.Startup);
             RegistrationError = ex.Message;
         }
     }

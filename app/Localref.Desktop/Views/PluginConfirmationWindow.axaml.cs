@@ -12,14 +12,17 @@ public partial class PluginConfirmationWindow : Window
 
     public PluginConfirmationWindow(string title, string message, string confirmLabel)
     {
+        DialogTitle = title;
+        DialogMessage = message;
+        ConfirmLabel = confirmLabel;
+        DataContext = this;
         InitializeComponent();
         Title = title;
-        TitleText.Text = title;
-        MessageText.Text = message;
-        ConfirmButton.Content = confirmLabel;
     }
 
-    private void InitializeComponent() => Avalonia.Markup.Xaml.AvaloniaXamlLoader.Load(this);
+    public string DialogTitle { get; }
+    public string DialogMessage { get; }
+    public string ConfirmLabel { get; }
 
     private void OnCancelClick(object? sender, RoutedEventArgs e) => Close(false);
 

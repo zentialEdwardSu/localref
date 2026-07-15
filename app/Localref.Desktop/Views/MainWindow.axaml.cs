@@ -138,8 +138,9 @@ public partial class MainWindow : Window
             SetColumnVisibilityWithoutSaving("Categories", settings.categoriesVisible);
             WorkspaceGrid.ColumnDefinitions[2].Width = new GridLength(settings.detailWidth);
         }
-        catch
+        catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Load desktop UI preferences", ExceptionSource.FFI);
             // Defaults from XAML remain usable when preferences cannot be read.
         }
     }
@@ -169,8 +170,9 @@ public partial class MainWindow : Window
                 categoriesVisible: IsColumnVisible("Categories"),
                 detailWidth: (uint)Math.Round(WorkspaceGrid.ColumnDefinitions[2].ActualWidth)));
         }
-        catch
+        catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Save desktop UI preferences", ExceptionSource.FFI);
             // A preference write must not interrupt library interaction.
         }
     }
@@ -270,7 +272,7 @@ public partial class MainWindow : Window
 
     private void RestoreLibrarySelection()
     {
-        Dispatcher.UIThread.Post(() =>
+        Dispatcher.UIThread.Post(() => ExceptionService.Current.Run("Restore library selection", () =>
         {
             if (ViewModel is not { } viewModel) return;
             _restoringSelection = true;
@@ -291,7 +293,7 @@ public partial class MainWindow : Window
                 _restoringSelection = false;
                 UpdateSelectionCheckboxes();
             }
-        });
+        }, ExceptionSource.UI));
     }
 
     private void OnLibraryDoubleTapped(object? sender, TappedEventArgs e)
@@ -403,14 +405,18 @@ public partial class MainWindow : Window
 
         if (_logsWindow is not null)
         {
+            ExceptionService.Current.Observe(
+                viewModel.RefreshDaemonLog(),
+                "Refresh daemon log window",
+                ExceptionSource.UI);
             _logsWindow.Activate();
             return;
         }
 
-        // Reuse the main view model: its Logs collection is already refreshed
-        // on every daemon event, so the window updates live without opening a
-        // second FFI event subscription (there is no unsubscribe path yet).
-        viewModel.Refresh();
+        ExceptionService.Current.Observe(
+            viewModel.RefreshDaemonLog(),
+            "Open daemon log window",
+            ExceptionSource.UI);
         _logsWindow = new LogsWindow
         {
             DataContext = viewModel,
@@ -495,7 +501,13 @@ public partial class MainWindow : Window
         _rowContextMenu.Items.Add(delete);
     }
 
-    private async void OnDeleteItemsClick(object? sender, RoutedEventArgs e)
+    private async void OnDeleteItemsClick(object? sender, RoutedEventArgs e) =>
+        await ExceptionService.Current.RunAsync(
+            "Delete selected references",
+            DeleteSelectedItemsAsync,
+            ExceptionSource.UI);
+
+    private async Task DeleteSelectedItemsAsync()
     {
         if (ViewModel is not { DaemonService: { } daemon } viewModel)
         {
@@ -541,6 +553,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Delete selected references", ExceptionSource.Command);
             viewModel.Refresh();
             viewModel.StatusText = $"Deleted {deleted} of {items.Length} references: {ex.Message}";
         }
@@ -562,6 +575,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Load plugin tools", ExceptionSource.FFI);
             ViewModel.StatusText = $"Could not load plugin tools: {ex.Message}";
             yield break;
         }
@@ -625,21 +639,24 @@ public partial class MainWindow : Window
         var item = new MenuItem { Header = $"{plugin.name}: {action.label}" };
         item.Click += async (_, _) =>
         {
-            var actionViewModel = new PluginActionViewModel(
-                daemon,
-                plugin.name,
-                action,
-                selectedIds,
-                activeId,
-                message =>
-                {
-                    if (ViewModel is { } viewModel)
+            await ExceptionService.Current.RunAsync($"Run plugin action {plugin.name}/{action.id}", async () =>
+            {
+                var actionViewModel = new PluginActionViewModel(
+                    daemon,
+                    plugin.name,
+                    action,
+                    selectedIds,
+                    activeId,
+                    message =>
                     {
-                        viewModel.StatusText = message;
-                    }
-                },
-                SavePluginResultAsync);
-            await actionViewModel.Run();
+                        if (ViewModel is { } viewModel)
+                        {
+                            viewModel.StatusText = message;
+                        }
+                    },
+                    SavePluginResultAsync);
+                await actionViewModel.Run();
+            }, ExceptionSource.UI);
         };
         return item;
     }
@@ -659,10 +676,20 @@ public partial class MainWindow : Window
         UiPage page,
         IReadOnlyList<string> selectedIds,
         string? activeId,
-        string contextSummary)
+        string contextSummary,
+        bool isImport = false)
     {
         if (ViewModel?.DaemonService is not { } daemon)
         {
+            return;
+        }
+        if (!RequirementsAvailable(page, selectedIds, activeId, isImport) ||
+            !TargetAvailable(page.target, selectedIds, activeId))
+        {
+            ViewModel.StatusText = page.target == UiTarget.Selection ||
+                page.requires.Contains(UiDataRequirement.Selection)
+                ? "Select at least one reference before opening this plugin page."
+                : "Select an active reference before opening this plugin page.";
             return;
         }
 
@@ -700,13 +727,14 @@ public partial class MainWindow : Window
                     if (RequirementsAvailable(page, [itemId], itemId, isImport: true) &&
                         TargetAvailable(page.target, [itemId], itemId))
                     {
-                        OpenPluginPage(plugin, page, [itemId], itemId, "Imported reference");
+                        OpenPluginPage(plugin, page, [itemId], itemId, "Imported reference", isImport: true);
                     }
                 }
             }
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Open import plugin tools", ExceptionSource.FFI);
             ViewModel.StatusText = $"Could not open import plugin tools: {ex.Message}";
         }
     }
@@ -784,21 +812,24 @@ public partial class MainWindow : Window
 
     private async void OnAddFileClick(object? sender, RoutedEventArgs e)
     {
-        if (ViewModel is not { HasSelection: true } viewModel)
+        await ExceptionService.Current.RunAsync("Choose files to add", async () =>
         {
-            return;
-        }
+            if (ViewModel is not { HasSelection: true } viewModel)
+            {
+                return;
+            }
 
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-        {
-            Title = "Add a file to this reference",
-            AllowMultiple = true,
-        });
-        var paths = files.Select(file => file.TryGetLocalPath()).OfType<string>().ToArray();
-        if (paths.Length > 0)
-        {
-            viewModel.AddFiles(paths);
-        }
+            var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "Add a file to this reference",
+                AllowMultiple = true,
+            });
+            var paths = files.Select(file => file.TryGetLocalPath()).OfType<string>().ToArray();
+            if (paths.Length > 0)
+            {
+                viewModel.AddFiles(paths);
+            }
+        }, ExceptionSource.UI);
     }
 
     private void OnFilesDragOver(object? sender, DragEventArgs e)

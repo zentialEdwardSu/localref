@@ -4,6 +4,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 using Localref.Desktop.Services;
 using Localref.Desktop.ViewModels;
 using Localref.Desktop.Views;
@@ -17,6 +18,7 @@ public partial class App : Application
 
     private Window? _mainWindow;
     private bool _isShuttingDown;
+    private IClassicDesktopStyleApplicationLifetime? _desktop;
 
     public override void Initialize()
     {
@@ -27,7 +29,12 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            _desktop = desktop;
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            ExceptionService.Current.RestartRequested += OnRestartRequested;
+            ExceptionService.Current.RecoverableException += OnRecoverableException;
+            Dispatcher.UIThread.UnhandledException += (_, args) =>
+                ExceptionService.Current.HandleDispatcherException(args);
             WindowsNotificationIdentity.Register();
 
             try
@@ -40,12 +47,22 @@ public partial class App : Application
                 // crash before any UI exists.
                 Daemon.Start();
                 desktop.ShutdownRequested += (_, _) => _isShuttingDown = true;
-                desktop.Exit += (_, _) => Daemon.Stop();
+                desktop.Exit += (_, _) =>
+                {
+                    ExceptionService.Current.RestartRequested -= OnRestartRequested;
+                    ExceptionService.Current.RecoverableException -= OnRecoverableException;
+                    Daemon.Stop();
+                };
 
+                var viewModel = new MainWindowViewModel(Daemon);
                 _mainWindow = new MainWindow
                 {
-                    DataContext = new MainWindowViewModel(Daemon),
+                    DataContext = viewModel,
                 };
+                if (ProcessSupervisor.ConsumeRecoveryMarker())
+                {
+                    viewModel.StatusText = "Localref 已从异常中恢复，可查看日志";
+                }
                 _mainWindow.Closing += OnMainWindowClosing;
 
                 if (!ShouldStartHidden(desktop))
@@ -55,7 +72,20 @@ public partial class App : Application
             }
             catch (Exception ex)
             {
-                ShowStartupError(desktop, ex);
+                var decision = ExceptionService.Current.Report(
+                    ex, "Start desktop daemon", ExceptionSource.Startup);
+                if (decision == ExceptionDecision.Restart)
+                {
+                    ExceptionService.Current.RequestRestart(
+                        $"Desktop startup failed: {ex.Message}",
+                        ex is uniffi.localref_ffi.PanicException
+                            ? ExceptionService.RustFailureExitCode
+                            : ExceptionService.ManagedFailureExitCode);
+                }
+                else
+                {
+                    ShowStartupError(desktop, ex);
+                }
             }
         }
 
@@ -99,7 +129,10 @@ public partial class App : Application
     private void OnTrayScan(object? sender, EventArgs e)
     {
         try { Daemon.Handle.ScanAll(); }
-        catch (Exception) { /* surfaced in the log pane on next refresh */ }
+        catch (Exception ex)
+        {
+            ExceptionService.Current.Report(ex, "Tray scan", ExceptionSource.Command);
+        }
     }
 
     private void OnTrayQuit(object? sender, EventArgs e)
@@ -133,8 +166,9 @@ public partial class App : Application
         {
             return uniffi.localref_ffi.LocalrefFfiMethods.LoadAppSettings().startHidden;
         }
-        catch
+        catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Read hidden-start setting", ExceptionSource.Startup);
             return false;
         }
     }
@@ -152,5 +186,50 @@ public partial class App : Application
         _mainWindow.Show();
         _mainWindow.WindowState = WindowState.Normal;
         _mainWindow.Activate();
+    }
+
+    private void OnRecoverableException(ExceptionRecord record)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_mainWindow?.DataContext is MainWindowViewModel viewModel)
+            {
+                viewModel.StatusText = $"当前操作已终止，Localref 可继续使用：{record.Message}";
+            }
+        });
+    }
+
+    private void OnRestartRequested(RestartRequest request)
+    {
+        void ShutdownForRestart()
+        {
+            if (_desktop is null || _isShuttingDown) return;
+            _isShuttingDown = true;
+            try
+            {
+                Daemon.Stop();
+                _desktop.Shutdown(request.ExitCode);
+            }
+            catch (Exception ex)
+            {
+                ExceptionService.Current.EmergencyReport(
+                    ex, "Controlled restart shutdown", ExceptionSource.AppDomain, true);
+                Environment.Exit(request.ExitCode);
+            }
+        }
+
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            ShutdownForRestart();
+            return;
+        }
+
+        try { Dispatcher.UIThread.Post(ShutdownForRestart); }
+        catch (Exception ex)
+        {
+            ExceptionService.Current.EmergencyReport(
+                ex, "Queue controlled restart", ExceptionSource.AppDomain, true);
+            Environment.Exit(request.ExitCode);
+        }
     }
 }

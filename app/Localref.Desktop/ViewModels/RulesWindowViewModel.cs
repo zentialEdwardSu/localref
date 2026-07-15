@@ -46,6 +46,7 @@ public partial class RulesWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Load rules", ExceptionSource.FFI);
             StatusText = $"Could not load rules: {ex.Message}";
         }
     }
@@ -67,6 +68,7 @@ public partial class RulesWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Save rules", ExceptionSource.FFI);
             StatusText = $"Rules are invalid: {ex.Message}";
         }
     }

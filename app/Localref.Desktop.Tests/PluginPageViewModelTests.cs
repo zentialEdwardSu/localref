@@ -123,13 +123,71 @@ public sealed class PluginPageViewModelTests
         Assert.Equal("43", vm.Displays.Single().Rows.Single().Values["sequence"]);
     }
 
+    [Fact]
+    public async Task SelectionPageWithoutSelection_DoesNotCallPlugin()
+    {
+        var actions = new FakePluginActions();
+        var page = Page(
+            target: UiTarget.Selection,
+            requirements: [UiDataRequirement.Selection],
+            preview: new PreviewSpec("preview", 0, "output"),
+            displays: [Display("output", DisplayKind.Text)]);
+
+        var vm = new PluginPageViewModel(actions, "bibtexer", page);
+        await vm.Run();
+
+        Assert.False(vm.CanRun);
+        Assert.Equal(0, actions.PreviewCalls);
+        Assert.Equal(0, actions.RunCalls);
+        Assert.Contains("Select at least one reference", vm.ResultText);
+        Assert.Contains("Select at least one reference", vm.Displays.Single().ErrorText);
+    }
+
+    [Fact]
+    public async Task SelectionPageWithSelection_ForwardsSelectionToPreview()
+    {
+        var actions = new FakePluginActions();
+        var page = Page(
+            target: UiTarget.Selection,
+            requirements: [UiDataRequirement.Selection],
+            preview: new PreviewSpec("preview_export", 0, "preview_pane"),
+            displays: [Display("preview_pane", DisplayKind.Text)]);
+
+        _ = new PluginPageViewModel(
+            actions,
+            "bibtexer",
+            page,
+            ["lr:zotero:selected-item"]);
+        await Eventually(() => actions.PreviewCalls == 1);
+
+        Assert.Equal("lr:zotero:selected-item", actions.LastPreviewForm?["selected"]);
+    }
+
+    [Fact]
+    public async Task ConfirmationFailure_IsContainedAndDoesNotRunPlugin()
+    {
+        var actions = new FakePluginActions();
+        var page = Page(
+            action: "restore",
+            submit: new UiSubmit("Restore", new UiConfirmation("Confirm", "Continue?", "Restore"), false));
+        var vm = new PluginPageViewModel(actions, "s3sync", page);
+        vm.ConfirmationRequested += (_, _) =>
+            Task.FromException<bool>(new NullReferenceException("confirmation failed"));
+
+        await vm.Run();
+
+        Assert.Equal(0, actions.RunCalls);
+    }
+
     private static UiPage Page(
         string? action = "restore",
+        UiTarget target = UiTarget.None,
+        UiDataRequirement[]? requirements = null,
         PreviewSpec? preview = null,
         UiField[]? fields = null,
         UiDisplay[]? displays = null,
         UiSubmit? submit = null) =>
-        new("page", "Page", UiMount.DetailTab, "/page", action, UiTarget.None, [], preview,
+        new("page", "Page", UiMount.DetailTab, "/page", action, target, requirements ?? [], preview,
             fields ?? [], displays ?? [], submit);
 
     private static UiField Field(string name, bool required = false, string? defaultValue = null) =>
@@ -166,6 +224,7 @@ public sealed class PluginPageViewModelTests
         public PluginRunResult PreviewResult { get; init; } = Ok();
         public int PreviewCalls { get; private set; }
         public int RunCalls { get; private set; }
+        public Dictionary<string, string>? LastPreviewForm { get; private set; }
 
         public PluginRunResult PreviewPluginAction(
             string plugin,
@@ -173,6 +232,7 @@ public sealed class PluginPageViewModelTests
             Dictionary<string, string> form)
         {
             PreviewCalls++;
+            LastPreviewForm = new Dictionary<string, string>(form);
             return PreviewResult;
         }
 

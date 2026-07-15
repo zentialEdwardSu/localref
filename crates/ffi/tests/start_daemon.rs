@@ -1,11 +1,13 @@
 //! Integration test: boot the daemon over the FFI entry point and exercise the
 //! read path, mirroring the smoke test the Avalonia app performs on launch.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
 use localref_client::{LocalrefClient, NotifyKind};
 use localref_ffi::{
-    DaemonConfig, DaemonEvent, DaemonEventListener, StatusKind, start_daemon,
+    DaemonConfig, DaemonEvent, DaemonEventListener, RuntimeHealthState,
+    StatusKind, start_daemon,
 };
 
 /// Serializes the tests in this binary. `start_daemon` installs built-in
@@ -34,6 +36,8 @@ fn start_daemon_boots_and_serves_reads() {
         csc_addr: format!("127.0.0.1:{csc_port}"),
         rest_endpoint: format!("http://127.0.0.1:{rest_port}"),
         plugins_dir: plugins_dir.display().to_string(),
+        log_max_file_bytes: 10 * 1024 * 1024,
+        log_backup_count: 2,
     };
 
     let handle = start_daemon(config).expect("daemon boots");
@@ -44,8 +48,16 @@ fn start_daemon_boots_and_serves_reads() {
     let status = handle.status();
     assert!(!status.running);
     assert!(handle.list_plugins().is_empty());
+    let health = handle.runtime_health();
+    assert!(matches!(health.state, RuntimeHealthState::Healthy));
+    assert_eq!(health.occurrence_count, 0);
 
     handle.shutdown();
+    drop(handle);
+    let _rest_listener = std::net::TcpListener::bind(("127.0.0.1", rest_port))
+        .expect("REST port is released when the handle is dropped");
+    let _csc_listener = std::net::TcpListener::bind(("127.0.0.1", csc_port))
+        .expect("CSC port is released when the handle is dropped");
 }
 
 #[test]
@@ -63,6 +75,8 @@ fn rescan_plugins_discovers_a_plugin_deployed_after_boot() {
         csc_addr: format!("127.0.0.1:{csc_port}"),
         rest_endpoint: format!("http://127.0.0.1:{rest_port}"),
         plugins_dir: plugins_dir.display().to_string(),
+        log_max_file_bytes: 10 * 1024 * 1024,
+        log_backup_count: 2,
     };
 
     let handle = start_daemon(config).expect("daemon boots");
@@ -121,6 +135,8 @@ fn plugin_status_post_reaches_the_event_listener() {
         csc_addr: format!("127.0.0.1:{csc_port}"),
         rest_endpoint: endpoint.clone(),
         plugins_dir: plugins_dir.display().to_string(),
+        log_max_file_bytes: 10 * 1024 * 1024,
+        log_backup_count: 2,
     };
 
     let handle = start_daemon(config).expect("daemon boots");
@@ -158,6 +174,74 @@ fn plugin_status_post_reaches_the_event_listener() {
     handle.shutdown();
 }
 
+struct PanicOnceListener {
+    calls: AtomicUsize,
+    tx: mpsc::Sender<DaemonEvent>,
+}
+
+impl DaemonEventListener for PanicOnceListener {
+    fn on_event(&self, event: DaemonEvent) {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("injected callback panic");
+        }
+        let _ = self.tx.send(event);
+    }
+}
+
+#[test]
+fn callback_panic_does_not_end_subscription_loop() {
+    let _guard = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let plugins_dir = temp.path().join("plugins");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    let rest_port = free_port();
+    let csc_port = free_port();
+    let endpoint = format!("http://127.0.0.1:{rest_port}");
+    let handle = start_daemon(DaemonConfig {
+        library_root: temp.path().display().to_string(),
+        rest_addr: format!("127.0.0.1:{rest_port}"),
+        csc_addr: format!("127.0.0.1:{csc_port}"),
+        rest_endpoint: endpoint.clone(),
+        plugins_dir: plugins_dir.display().to_string(),
+        log_max_file_bytes: 10 * 1024 * 1024,
+        log_backup_count: 2,
+    })
+    .expect("daemon boots");
+    let (tx, rx) = mpsc::channel();
+    let _subscription = handle.subscribe_events(Box::new(PanicOnceListener {
+        calls: AtomicUsize::new(0),
+        tx,
+    }));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        let client = LocalrefClient::new(endpoint);
+        assert!(
+            client
+                .set_status("first", NotifyKind::Info)
+                .await
+                .expect("first callback")
+        );
+        assert!(
+            client
+                .set_status("second", NotifyKind::Info)
+                .await
+                .expect("second callback")
+        );
+    });
+
+    let event = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("listener remains subscribed after panic");
+    assert!(
+        matches!(event, DaemonEvent::StatusMessage { text, .. } if text == "second")
+    );
+    handle.shutdown();
+}
+
 /// Stage one built-in bundle under `dir` (manifest + matching executable).
 fn stage_builtin(dir: &std::path::Path, name: &str) {
     let bundle = dir.join(name);
@@ -167,11 +251,8 @@ fn stage_builtin(dir: &std::path::Path, name: &str) {
         format!("name = \"{name}\"\nexecutable = \"{name}\"\n"),
     )
     .unwrap();
-    let exe = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
+    let exe =
+        if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
     std::fs::write(bundle.join(exe), b"").unwrap();
 }
 
@@ -198,6 +279,8 @@ fn start_daemon_installs_builtin_plugins_on_first_run_only() {
             csc_addr: format!("127.0.0.1:{csc_port}"),
             rest_endpoint: format!("http://127.0.0.1:{rest_port}"),
             plugins_dir: plugins_dir.display().to_string(),
+            log_max_file_bytes: 10 * 1024 * 1024,
+            log_backup_count: 2,
         }
     };
 

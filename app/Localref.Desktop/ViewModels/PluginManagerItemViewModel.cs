@@ -55,6 +55,7 @@ public sealed partial class PluginManagerItemViewModel : ViewModelBase
             }
             catch (Exception ex)
             {
+                ExceptionService.Current.Report(ex, $"Set plugin enabled: {Name}", ExceptionSource.FFI);
                 SetProperty(ref _isEnabled, previous);
                 _reportStatus($"Could not update {Name}: {ex.Message}");
             }
@@ -75,6 +76,7 @@ public sealed partial class PluginManagerItemViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, $"Open plugin folder: {Name}", ExceptionSource.FFI);
             _reportStatus($"Could not open {Name} folder: {ex.Message}");
         }
     }

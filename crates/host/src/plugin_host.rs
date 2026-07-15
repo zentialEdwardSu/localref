@@ -42,6 +42,16 @@ pub fn build_action_args(
                     .find(|p| p.action.as_deref() == Some(action_name))
                     .map(|p| p.target)
             })
+            .or_else(|| {
+                ui.pages
+                    .iter()
+                    .find(|p| {
+                        p.preview.as_ref().is_some_and(|preview| {
+                            preview.action == action_name
+                        })
+                    })
+                    .map(|p| p.target)
+            })
             .unwrap_or(UiTarget::None)
     });
 
@@ -73,7 +83,10 @@ pub fn build_action_args(
 /// global `[[actions]]` entry first, then a `[[pages]]` entry whose `action`
 /// spawns it. Returns `None` when unset, so the caller applies the host default.
 #[must_use]
-pub fn action_timeout_secs(ui: Option<&PluginUiSpec>, action_name: &str) -> Option<u64> {
+pub fn action_timeout_secs(
+    ui: Option<&PluginUiSpec>,
+    action_name: &str,
+) -> Option<u64> {
     let ui = ui?;
     ui.actions
         .iter()
@@ -82,7 +95,12 @@ pub fn action_timeout_secs(ui: Option<&PluginUiSpec>, action_name: &str) -> Opti
         .or_else(|| {
             ui.pages
                 .iter()
-                .find(|p| p.action.as_deref() == Some(action_name))
+                .find(|p| {
+                    p.action.as_deref() == Some(action_name)
+                        || p.preview.as_ref().is_some_and(|preview| {
+                            preview.action == action_name
+                        })
+                })
                 .and_then(|p| p.timeout_secs)
         })
 }
@@ -128,7 +146,11 @@ pub enum RunOutcome {
 pub fn decide_run_outcome(output: &RunOutput) -> RunOutcome {
     if output.status != "ok" {
         return RunOutcome::Error {
-            message: output.message.as_deref().unwrap_or("plugin action failed").to_string(),
+            message: output
+                .message
+                .as_deref()
+                .unwrap_or("plugin action failed")
+                .to_string(),
         };
     }
     match (output.result.as_deref(), output.filename.as_deref()) {
@@ -139,7 +161,9 @@ pub fn decide_run_outcome(output: &RunOutput) -> RunOutcome {
             content: result.to_string(),
         },
         // A filename with no result is a plugin bug; treat as nothing to save.
-        (Some(result), None) => RunOutcome::Inline { content: result.to_string() },
+        (Some(result), None) => {
+            RunOutcome::Inline { content: result.to_string() }
+        }
         (None, _) => RunOutcome::Done,
     }
 }
@@ -167,8 +191,8 @@ mod tests {
     use super::{RunOutcome, build_action_args, decide_run_outcome};
     use localref_plugin::RunOutput;
     use localref_plugin::manifest::{
-        FieldKind, PluginUiSpec, UiAction as SpecAction, UiField, UiMount,
-        UiPage, UiTarget,
+        FieldKind, PluginUiSpec, PreviewSpec, UiAction as SpecAction, UiField,
+        UiMount, UiPage, UiTarget,
     };
     use std::collections::BTreeMap;
 
@@ -190,7 +214,11 @@ mod tests {
                 action: Some("export_active".to_string()),
                 target: UiTarget::Active,
                 requires: Vec::new(),
-                preview: None,
+                preview: Some(PreviewSpec {
+                    action: "preview_active".to_string(),
+                    debounce_ms: 0,
+                    into: "preview".to_string(),
+                }),
                 fields: vec![UiField {
                     name: "format".to_string(),
                     label: "Format".to_string(),
@@ -315,8 +343,46 @@ mod tests {
     }
 
     #[test]
+    fn build_action_args_page_preview_fallback_resolves_target() {
+        let ui = arg_test_ui();
+        let args = build_action_args(
+            Some(&ui),
+            "preview_active",
+            "",
+            &form(&[("active", "lr:zotero:one"), ("selected", "a,b")]),
+        );
+
+        assert_eq!(args.active.as_deref(), Some("lr:zotero:one"));
+        assert!(args.selected.is_empty());
+    }
+
+    #[test]
+    fn build_action_args_selection_preview_preserves_selected_ids() {
+        let mut ui = arg_test_ui();
+        ui.pages[0].target = UiTarget::Selection;
+        ui.pages[0].preview = Some(PreviewSpec {
+            action: "preview_export".to_string(),
+            debounce_ms: 300,
+            into: "preview_pane".to_string(),
+        });
+        let args = build_action_args(
+            Some(&ui),
+            "preview_export",
+            "",
+            &form(&[("selected", "lr:zotero:one,lr:zotero:two")]),
+        );
+
+        assert_eq!(
+            args.selected,
+            vec!["lr:zotero:one".to_string(), "lr:zotero:two".to_string()]
+        );
+        assert!(args.active.is_none());
+    }
+
+    #[test]
     fn decide_run_outcome_error_status_reports_message() {
-        let outcome = decide_run_outcome(&RunOutput::error("no items selected"));
+        let outcome =
+            decide_run_outcome(&RunOutput::error("no items selected"));
         assert_eq!(
             outcome,
             RunOutcome::Error { message: "no items selected".to_string() }
@@ -355,7 +421,8 @@ mod tests {
     fn decide_run_outcome_blank_filename_sanitizes_to_default() {
         // A filename that sanitizes to empty still yields Save (opt-in stands),
         // but with a safe fallback name rather than an unnamed file.
-        let outcome = decide_run_outcome(&RunOutput::ok("data").filename("///"));
+        let outcome =
+            decide_run_outcome(&RunOutput::ok("data").filename("///"));
         assert_eq!(
             outcome,
             RunOutcome::Save {

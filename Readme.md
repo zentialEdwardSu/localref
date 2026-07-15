@@ -37,11 +37,21 @@ endpoint = "http://127.0.0.1:24817"
 
 [csc]
 addr = "127.0.0.1:23119"
+
+[logging]
+# Maximum size of each JSONL file. The default is 10 MiB.
+max_file_bytes = 10485760
+# Number of rotated files (`localref.jsonl.1`, `.2`, ...) to retain (0-10).
+backup_count = 2
 ```
 
 `rest.addr` is used by the REST server. `rest.endpoint` is used by desktop
 clients such as the simple UI and tray. There is no separate UI command:
 `localref ui` opens the Simple UI in the same executable.
+
+Daemon logs are written under `<library_root>/.localref/logs/`. A new file is
+started before `max_file_bytes` would be exceeded; `backup_count = 0` keeps only
+the active log. Logging changes take effect after restarting Localref.
 
 ## Automatic Classification Rules
 

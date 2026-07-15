@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -33,7 +34,6 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         AllCategoriesFilter,
         UncategorizedFilter,
     };
-    public ObservableCollection<string> Logs { get; } = new();
     public ObservableCollection<ItemFileViewModel> Files { get; } = new();
     public ObservableCollection<string> AssignedCategories { get; } = new();
     public ObservableCollection<string> AvailableCategories { get; } = new();
@@ -66,6 +66,15 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
 
     [ObservableProperty]
     private string _statusText = "Ready";
+
+    [ObservableProperty]
+    private string _daemonLogText = "";
+
+    [ObservableProperty]
+    private string _daemonLogPath = "Daemon log is not available.";
+
+    [ObservableProperty]
+    private string _daemonLogStatusText = "Open the log window to load the on-disk JSONL file.";
 
     [ObservableProperty]
     private IBrush _statusBrush = ResolveStatusBrush("Brush.Success");
@@ -173,8 +182,6 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
             };
 
             Replace(Items, Sort(documents).Select(item => new LibraryItemViewModel(item)));
-            Replace(Logs, _daemon.Handle.Events().Select(FormatLog));
-
             var active = Items.FirstOrDefault(item => item.Id == activeId) ?? Items.FirstOrDefault();
             Replace(SelectedItems, Items.Where(item => selectedIds.Contains(item.Id)));
             if (SelectedItems.Count == 0 && active is not null)
@@ -194,6 +201,7 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Refresh library", ExceptionSource.FFI);
             StatusText = $"Could not refresh: {ex.Message}";
         }
         finally
@@ -205,6 +213,33 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
     partial void OnQueryChanged(string value) => Refresh();
     partial void OnCategoryFilterChanged(string value) => Refresh();
 
+    [RelayCommand]
+    public async Task RefreshDaemonLog()
+    {
+        if (_daemon is null)
+        {
+            return;
+        }
+
+        DaemonLogPath = _daemon.DaemonLogPath;
+        try
+        {
+            var log = await DaemonLogReader.ReadAsync(DaemonLogPath);
+            DaemonLogText = log?.DisplayText ?? "";
+            DaemonLogStatusText = log is null
+                ? "The daemon log file has not been created yet."
+                : $"Loaded {log.EntryCount:N0} entries ({FormatBytes(log.SourceBytes)})" +
+                  (log.InvalidLineCount > 0 ? $" · {log.InvalidLineCount:N0} unparsed" : "") +
+                  $" · {DateTime.Now:T}";
+        }
+        catch (Exception ex)
+        {
+            ExceptionService.Current.Report(
+                ex, "Read daemon log file", ExceptionSource.Task);
+            DaemonLogStatusText = $"Could not read daemon log: {ex.Message}";
+        }
+    }
+
     partial void OnSelectedItemChanged(LibraryItemViewModel? value)
     {
         LoadInspector(value);
@@ -214,6 +249,13 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         AddSelectedCategoryCommand.NotifyCanExecuteChanged();
         RemoveSelectedCategoryCommand.NotifyCanExecuteChanged();
     }
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1024 * 1024 => $"{bytes / (1024d * 1024d):N1} MiB",
+        >= 1024 => $"{bytes / 1024d:N1} KiB",
+        _ => $"{bytes:N0} B",
+    };
 
     public void SetSelectedItems(IEnumerable<LibraryItemViewModel> items)
     {
@@ -272,6 +314,7 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Scan library", ExceptionSource.Command);
             StatusText = $"Scan failed: {ex.Message}";
         }
     }
@@ -283,7 +326,11 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
     {
         if (_daemon is null || SelectedItem is null) return;
         try { _ = _daemon.Handle.OpenItemFolder(SelectedItem.Id); }
-        catch (Exception ex) { StatusText = $"Could not open folder: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            ExceptionService.Current.Report(ex, "Open reference folder", ExceptionSource.Command);
+            StatusText = $"Could not open folder: {ex.Message}";
+        }
     }
 
     [RelayCommand(CanExecute = nameof(CanUseSelection))]
@@ -305,6 +352,7 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Open main file", ExceptionSource.Command);
             StatusText = $"Could not open main file: {ex.Message}";
         }
     }
@@ -316,7 +364,11 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
     {
         if (_daemon is null || SelectedItem is null || SelectedFile is null) return;
         try { _ = _daemon.Handle.OpenItemFile(SelectedItem.Id, SelectedFile.Path); }
-        catch (Exception ex) { StatusText = $"Could not open file: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            ExceptionService.Current.Report(ex, "Open reference file", ExceptionSource.Command);
+            StatusText = $"Could not open file: {ex.Message}";
+        }
     }
 
     public void AddFile(string path)
@@ -335,6 +387,7 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
             }
             catch (Exception ex)
             {
+                ExceptionService.Current.Report(ex, "Add file to reference", ExceptionSource.FFI);
                 StatusText = $"Could not add {System.IO.Path.GetFileName(path)}: {ex.Message}";
             }
         }
@@ -366,6 +419,7 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Set main file", ExceptionSource.FFI);
             StatusText = $"Could not update main file: {ex.Message}";
             LoadMetadata();
             LoadFiles();
@@ -408,6 +462,7 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Save metadata", ExceptionSource.FFI);
             StatusText = $"Could not save metadata: {ex.Message}";
             LoadMetadata();
         }
@@ -436,6 +491,7 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Create category", ExceptionSource.FFI);
             StatusText = $"Could not create category: {ex.Message}";
         }
     }
@@ -458,6 +514,7 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Assign category", ExceptionSource.FFI);
             StatusText = $"Could not add category: {ex.Message}";
         }
     }
@@ -478,11 +535,13 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, "Remove category", ExceptionSource.FFI);
             StatusText = $"Could not remove category: {ex.Message}";
         }
     }
 
     public void OnEvent(DaemonEvent @event) => Dispatcher.UIThread.Post(() =>
+        ExceptionService.Current.Run("Process daemon event", () =>
     {
         // This callback is registered with the Rust daemon and can be posted
         // during app teardown, after DaemonService.Stop() has disposed the
@@ -511,7 +570,7 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
         {
             ItemImported?.Invoke(imported.itemId);
         }
-    });
+    }, ExceptionSource.UI));
 
     /// <summary>
     /// Resolve a named design-system brush from application resources, falling
@@ -653,8 +712,6 @@ public partial class MainWindowViewModel : ViewModelBase, DaemonEventListener
     }
 
     private static string? NullIfBlank(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-    private static string FormatLog(LogEntry entry) => $"{entry.ts}  {entry.level,-5} {entry.message}";
-
     private static void Replace<T>(ObservableCollection<T> target, IEnumerable<T> source)
     {
         target.Clear();

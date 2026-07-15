@@ -41,8 +41,32 @@ public partial class PluginPageViewModel : ViewModelBase
 
     public string RunLabel => _page.submit?.label ?? "Run";
 
-    public bool CanRun => HasAction && Fields.All(candidate =>
+    public bool CanRun => HasAction && ContextError is null && Fields.All(candidate =>
         !candidate.Required || !string.IsNullOrWhiteSpace(candidate.Value));
+
+    private string? ContextError
+    {
+        get
+        {
+            if ((_page.target == UiTarget.Selection ||
+                 _page.requires.Contains(UiDataRequirement.Selection)) &&
+                _selectedIds.Count == 0)
+            {
+                return "Select at least one reference before running this plugin page.";
+            }
+            if ((_page.target == UiTarget.Active || _page.requires.Any(requirement => requirement is
+                    UiDataRequirement.ActiveItem or
+                    UiDataRequirement.ItemMetadata or
+                    UiDataRequirement.ItemFiles or
+                    UiDataRequirement.ItemCategories or
+                    UiDataRequirement.ImportedItem)) &&
+                string.IsNullOrWhiteSpace(_activeId))
+            {
+                return "Select an active reference before running this plugin page.";
+            }
+            return null;
+        }
+    }
 
     [ObservableProperty]
     private string _resultText = "";
@@ -80,7 +104,21 @@ public partial class PluginPageViewModel : ViewModelBase
             viewModel.SelectionChanged += OnDisplaySelectionChanged;
             Displays.Add(viewModel);
         }
-        _ = RefreshPreview();
+        if (ContextError is { } contextError)
+        {
+            ResultText = contextError;
+            if (_page.preview is { } preview)
+            {
+                SetPreviewError(preview.into, contextError);
+            }
+        }
+        else
+        {
+            ExceptionService.Current.Observe(
+                RefreshPreview(),
+                $"Initial plugin preview {_plugin}",
+                ExceptionSource.FFI);
+        }
     }
 
     private int _previewVersion;
@@ -90,7 +128,10 @@ public partial class PluginPageViewModel : ViewModelBase
         if (e.PropertyName == nameof(PluginFieldViewModel.Value))
         {
             OnPropertyChanged(nameof(CanRun));
-            _ = RefreshPreview();
+            ExceptionService.Current.Observe(
+                RefreshPreview(),
+                $"Refresh plugin preview {_plugin}",
+                ExceptionSource.FFI);
         }
     }
 
@@ -135,6 +176,14 @@ public partial class PluginPageViewModel : ViewModelBase
     [RelayCommand]
     public async Task RefreshPreview()
     {
+        if (ContextError is { } contextError)
+        {
+            if (_page.preview is { } blockedPreview)
+            {
+                SetPreviewError(blockedPreview.into, contextError);
+            }
+            return;
+        }
         if (_page.preview is not { } preview)
         {
             ApplyTierOneDisplays();
@@ -160,6 +209,7 @@ public partial class PluginPageViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, $"Preview plugin page {_plugin}", ExceptionSource.FFI);
             if (version == Volatile.Read(ref _previewVersion))
             {
                 SetPreviewError(preview.into, ex.Message);
@@ -217,6 +267,7 @@ public partial class PluginPageViewModel : ViewModelBase
         }
         catch (JsonException ex)
         {
+            ExceptionService.Current.Report(ex, $"Parse plugin preview {_plugin}", ExceptionSource.FFI);
             SetPreviewError(target, $"Invalid plugin preview: {ex.Message}");
         }
     }
@@ -249,10 +300,20 @@ public partial class PluginPageViewModel : ViewModelBase
 
     /// <summary>Run the page's action, then save or display the result.</summary>
     [RelayCommand]
-    public async Task Run()
+    public Task Run() => ExceptionService.Current.RunAsync(
+        $"Run plugin page {_plugin}",
+        RunCore,
+        ExceptionSource.UI);
+
+    private async Task RunCore()
     {
         if (_page.action is not { } action)
         {
+            return;
+        }
+        if (ContextError is { } contextError)
+        {
+            ResultText = contextError;
             return;
         }
         if (!CanRun)
@@ -277,6 +338,7 @@ public partial class PluginPageViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            ExceptionService.Current.Report(ex, $"Run plugin page action {_plugin}/{action}", ExceptionSource.FFI);
             ResultText = $"error: {ex.Message}";
             return;
         }

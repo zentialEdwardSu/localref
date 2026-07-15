@@ -26,6 +26,8 @@ fn main() -> std::io::Result<()> {
     let _log_handle = localref_core::logging::init(
         config.library_root(),
         config.desktop_quiet_start(),
+        config.log_max_file_bytes(),
+        config.log_backup_count(),
     );
     match cli.command.unwrap_or(AppCommand::Serve) {
         AppCommand::Serve => run_serve(config),
@@ -71,8 +73,7 @@ fn run_serve(config: LocalrefConfig) -> std::io::Result<()> {
         localref_core::plugin_state::load_disabled(config.library_root())
             .unwrap_or_default();
     let disabled = Arc::new(std::sync::RwLock::new(disabled));
-    let registry =
-        Arc::new(localref_plugin::PluginProcessRegistry::new());
+    let registry = Arc::new(localref_plugin::PluginProcessRegistry::new());
 
     let server_config = ServerConfig {
         rest_addr: config.rest_addr(),
@@ -89,6 +90,7 @@ fn run_serve(config: LocalrefConfig) -> std::io::Result<()> {
             config.rest_endpoint().to_string(),
             disabled,
             registry,
+            localref_host::health::RuntimeHealthTracker::default(),
         );
         println!("localref REST on http://{}", server_config.rest_addr);
         println!("localref CSC  on http://{}", server_config.csc_addr);

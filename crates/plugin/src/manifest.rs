@@ -240,6 +240,10 @@ pub struct UiDisplay {
     /// Display id (also the Tier-2 target pane name).
     pub id: String,
     /// Template text with `{selection.count}` / `{field.<name>}` tokens.
+    ///
+    /// Structured displays (`table` and `details`) render columns rather than
+    /// a text template, so their `ui.toml` entries intentionally omit this.
+    #[serde(default)]
     pub text: String,
     /// Native surface selected by the host. `text` preserves the original
     /// schema behavior for existing plugin bundles.
@@ -545,9 +549,44 @@ columns = [{ key = "sequence", label = "Version" }]
         .expect("parse schema v2");
         let page = &ui.pages[0];
         assert_eq!(page.display[0].kind, super::DisplayKind::Table);
-        assert_eq!(page.display[0].selection_field.as_deref(), Some("sequence"));
+        assert_eq!(
+            page.display[0].selection_field.as_deref(),
+            Some("sequence")
+        );
         assert_eq!(page.display[0].columns[0].key, "sequence");
-        assert_eq!(page.submit.as_ref().map(|submit| submit.refresh_after_submit), Some(true));
+        assert_eq!(
+            page.submit.as_ref().map(|submit| submit.refresh_after_submit),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn structured_displays_do_not_require_a_text_template() {
+        let ui = PluginUiSpec::parse(
+            r#"
+[[pages]]
+id = "conflicts"
+label = "Conflicts"
+route = "conflicts"
+
+[[pages.display]]
+id = "blocked_files"
+kind = "table"
+columns = [{ key = "file", label = "File" }]
+
+[[pages.display]]
+id = "selected_file"
+kind = "details"
+selection_of = "blocked_files"
+columns = [{ key = "file", label = "File" }]
+"#,
+        )
+        .expect("structured displays without text must parse");
+
+        assert_eq!(ui.pages[0].display.len(), 2);
+        assert!(
+            ui.pages[0].display.iter().all(|display| display.text.is_empty())
+        );
     }
 
     #[test]

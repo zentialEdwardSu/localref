@@ -23,6 +23,12 @@ pub const DEFAULT_REST_ADDR: &str = "127.0.0.1:24817";
 /// Default user-facing REST endpoint used by desktop clients.
 pub const DEFAULT_REST_ENDPOINT: &str = "http://127.0.0.1:24817";
 
+/// Default maximum size of each daemon log file (10 MiB).
+pub const DEFAULT_LOG_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Default number of rotated daemon log files retained.
+pub const DEFAULT_LOG_BACKUP_COUNT: u32 = 2;
+
 /// Runtime configuration shared by Localref binaries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalrefConfig {
@@ -46,6 +52,10 @@ pub struct LocalrefConfig {
     desktop_visible_columns: Vec<String>,
     /// Stored desktop detail panel width in logical pixels.
     desktop_detail_width: u32,
+    /// Stored maximum size of each daemon log file.
+    log_max_file_bytes: u64,
+    /// Stored number of rotated daemon log files retained.
+    log_backup_count: u32,
     /// Stored plugins dir.
     plugins_dir: PathBuf,
 }
@@ -64,6 +74,8 @@ struct ConfigFile {
     csc: Option<CscConfigFile>,
     /// Stored desktop.
     desktop: Option<DesktopConfigFile>,
+    /// Stored logging settings.
+    logging: Option<LoggingConfigFile>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -93,6 +105,15 @@ struct DesktopConfigFile {
     visible_columns: Option<Vec<String>>,
     /// Stored detail panel width in logical pixels.
     detail_width: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+/// Internal representation for daemon logging configuration.
+struct LoggingConfigFile {
+    /// Maximum size of each active or rotated log file.
+    max_file_bytes: Option<u64>,
+    /// Number of rotated files retained after the active log.
+    backup_count: Option<u32>,
 }
 
 impl LocalrefConfig {
@@ -143,13 +164,15 @@ impl LocalrefConfig {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "workspace_name = \"{workspace_name}\"\nlibrary_root = \"{library_root}\"\n\n[rest]\naddr = \"{}\"\nendpoint = \"{}\"\n\n[csc]\naddr = \"{}\"\n\n[desktop]\nstart_hidden = {}\nquiet_start = {}\nvisible_columns = [{visible_columns}]\ndetail_width = {}\n",
+            "workspace_name = \"{workspace_name}\"\nlibrary_root = \"{library_root}\"\n\n[rest]\naddr = \"{}\"\nendpoint = \"{}\"\n\n[csc]\naddr = \"{}\"\n\n[desktop]\nstart_hidden = {}\nquiet_start = {}\nvisible_columns = [{visible_columns}]\ndetail_width = {}\n\n[logging]\nmax_file_bytes = {}\nbackup_count = {}\n",
             self.rest_addr,
             self.rest_endpoint,
             self.csc_addr,
             self.desktop_start_hidden,
             self.desktop_quiet_start,
-            self.desktop_detail_width
+            self.desktop_detail_width,
+            self.log_max_file_bytes,
+            self.log_backup_count
         )
     }
 
@@ -336,6 +359,18 @@ impl LocalrefConfig {
         self.desktop_detail_width = width.clamp(340, 620);
     }
 
+    /// Return the maximum size of each daemon log file.
+    #[must_use]
+    pub fn log_max_file_bytes(&self) -> u64 {
+        self.log_max_file_bytes
+    }
+
+    /// Return the number of rotated daemon log files retained.
+    #[must_use]
+    pub fn log_backup_count(&self) -> u32 {
+        self.log_backup_count
+    }
+
     /// Return the directory where plugins are discovered.
     #[must_use]
     pub fn plugins_dir(&self) -> &Path {
@@ -359,6 +394,7 @@ impl LocalrefConfig {
         let rest = file.rest.unwrap_or_default();
         let csc = file.csc.unwrap_or_default();
         let desktop = file.desktop.unwrap_or_default();
+        let logging = file.logging.unwrap_or_default();
         let visible_columns = desktop.visible_columns.unwrap_or_else(|| {
             ["Author", "Venue", "Year", "Type"]
                 .into_iter()
@@ -376,6 +412,20 @@ impl LocalrefConfig {
             "csc.addr",
         )?;
         let plugins_dir = library_root.join(".localref").join("plugins");
+        let log_max_file_bytes =
+            logging.max_file_bytes.unwrap_or(DEFAULT_LOG_MAX_FILE_BYTES);
+        if log_max_file_bytes < 64 * 1024 {
+            return Err(
+                "logging.max_file_bytes must be at least 65536".to_string()
+            );
+        }
+        let log_backup_count =
+            logging.backup_count.unwrap_or(DEFAULT_LOG_BACKUP_COUNT);
+        if log_backup_count > 10 {
+            return Err(
+                "logging.backup_count must be between 0 and 10".to_string()
+            );
+        }
         let mut config = Self {
             source_path,
             workspace_name,
@@ -387,6 +437,8 @@ impl LocalrefConfig {
             desktop_quiet_start: desktop.quiet_start.unwrap_or(true),
             desktop_visible_columns: Vec::new(),
             desktop_detail_width: desktop.detail_width.unwrap_or(420),
+            log_max_file_bytes,
+            log_backup_count,
             plugins_dir,
         };
         config.set_desktop_visible_columns(visible_columns);
@@ -478,6 +530,8 @@ mod tests {
             ["Author", "Venue", "Year", "Type"]
         );
         assert_eq!(config.desktop_detail_width(), 420);
+        assert_eq!(config.log_max_file_bytes(), DEFAULT_LOG_MAX_FILE_BYTES);
+        assert_eq!(config.log_backup_count(), DEFAULT_LOG_BACKUP_COUNT);
         let written = std::fs::read_to_string(&temp).unwrap();
         assert!(written.contains("workspace_name = \"Localref\""));
         assert!(written.contains("library_root = "));
@@ -486,6 +540,9 @@ mod tests {
         assert!(written.contains("[desktop]"));
         assert!(written.contains("start_hidden = true"));
         assert!(written.contains("quiet_start = true"));
+        assert!(written.contains("[logging]"));
+        assert!(written.contains("max_file_bytes = 10485760"));
+        assert!(written.contains("backup_count = 2"));
 
         std::fs::remove_dir_all(temp.parent().unwrap()).unwrap();
     }
@@ -511,6 +568,10 @@ start_hidden = false
 quiet_start = false
 visible_columns = ["Author", "Categories", "Unknown"]
 detail_width = 580
+
+[logging]
+max_file_bytes = 20971520
+backup_count = 4
 "#,
         )
         .unwrap();
@@ -530,6 +591,8 @@ detail_width = 580
         assert!(!config.desktop_quiet_start());
         assert_eq!(config.desktop_visible_columns(), ["Author", "Categories"]);
         assert_eq!(config.desktop_detail_width(), 580);
+        assert_eq!(config.log_max_file_bytes(), 20 * 1024 * 1024);
+        assert_eq!(config.log_backup_count(), 4);
 
         std::fs::remove_file(temp).unwrap();
     }
@@ -543,6 +606,40 @@ detail_width = 580
 
         assert!(error.contains("rest.addr must be a socket address"));
 
+        std::fs::remove_file(temp).unwrap();
+    }
+
+    #[test]
+    fn invalid_logging_limits_fail_loudly() {
+        let temp = tempfile_path("localref-config-invalid-logging.toml");
+        std::fs::write(
+            &temp,
+            "[logging]\nmax_file_bytes = 1024\nbackup_count = 11\n",
+        )
+        .unwrap();
+
+        let error = LocalrefConfig::load_from_path(&temp).unwrap_err();
+
+        assert!(
+            error.contains("logging.max_file_bytes must be at least 65536")
+        );
+        std::fs::remove_file(temp).unwrap();
+    }
+
+    #[test]
+    fn excessive_log_backup_count_fails_loudly() {
+        let temp = tempfile_path("localref-config-invalid-log-backups.toml");
+        std::fs::write(
+            &temp,
+            "[logging]\nmax_file_bytes = 10485760\nbackup_count = 11\n",
+        )
+        .unwrap();
+
+        let error = LocalrefConfig::load_from_path(&temp).unwrap_err();
+
+        assert!(
+            error.contains("logging.backup_count must be between 0 and 10")
+        );
         std::fs::remove_file(temp).unwrap();
     }
 
