@@ -35,6 +35,7 @@ members = [
 	"crates/plugin-sdk",
 	"examples/plugins/bibtexer",
 	"examples/plugins/hooklog",
+	"examples/plugins/liteparse-rag",
 	"examples/plugins/mdnote",
 	"examples/plugins/s3sync",
 ]

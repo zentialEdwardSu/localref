@@ -299,6 +299,15 @@ def stage_plugin_files(
         if ui.is_file():
             pairs.append((ui, dest / "ui.toml"))
         pairs.append((executable, dest / f"{name}{suffix}"))
+        # `ort` links ONNX Runtime into the executable but DirectML remains a
+        # Windows runtime DLL. Stage it only for the native OCR plugin so users
+        # never need to install ONNX Runtime or DirectML themselves.
+        if name == "liteparse-rag" and sys.platform == "win32":
+            directml = target / "DirectML.dll"
+            if directml.is_file():
+                pairs.append((directml, dest / "DirectML.dll"))
+            else:
+                print(f"! DirectML runtime not built at {directml}", flush=True)
     return pairs, versions
 
 

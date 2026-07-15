@@ -13,6 +13,9 @@ cargo-lock/
 .vscode/
 # JetBrains IDEs (RustRover, CLion, etc.)
 __pycache__/
+.venv/
+.uv-cache/
+.model-work/
 output/
 docs/superpowers/
 

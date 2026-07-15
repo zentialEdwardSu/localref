@@ -1,0 +1,56 @@
+[[actions]]
+id = "process_for_rag"
+label = "Extract paper for RAG"
+target = "selection"
+timeout_secs = 3600
+
+[[pages]]
+id = "extract_selection"
+label = "Extract selected papers for RAG"
+route = "extract-selection"
+action = "process_for_rag"
+target = "selection"
+requires = ["selection"]
+timeout_secs = 3600
+
+[pages.submit]
+label = "Extract selected papers"
+
+[[pages.display]]
+id = "selection_count"
+kind = "status"
+text = "Ready to extract {selection.count} selected paper(s)."
+
+[[actions]]
+id = "process_active_for_rag"
+label = "Extract active paper for RAG"
+target = "active"
+timeout_secs = 3600
+
+[[pages]]
+id = "download_models"
+label = "Download OCR, layout, and formula models"
+route = "download-ocr-models"
+action = "download_models"
+target = "none"
+requires = ["library"]
+timeout_secs = 3600
+
+[pages.submit]
+label = "Download and verify models"
+confirm = { title = "Download OCR, layout, and formula models?", message = "Download the fixed PP-OCRv6 medium, PP-DocLayout-L, and PP-FormulaNet-S ONNX models. Extraction never downloads models automatically.", confirm_label = "Download models" }
+
+[[pages.display]]
+id = "download_note"
+kind = "status"
+text = "Downloads are manual only and include the 309 MB formula model plus the 123 MB layout model. Runtime extraction remains offline and does not require Python."
+
+[[pages.fields]]
+name = "proxy_address"
+label = "Proxy address (optional)"
+kind = "text"
+
+[[pages.fields]]
+name = "proxy_port"
+label = "Proxy port (optional)"
+kind = "number"

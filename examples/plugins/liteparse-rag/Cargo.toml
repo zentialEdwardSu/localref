@@ -1,0 +1,23 @@
+[package]
+name = "localref-plugin-liteparse-rag"
+version = "0.2.0"
+edition = "2024"
+description = "Extract Localref papers with LiteParse, PP-DocLayout-L, PP-OCRv6, and PP-FormulaNet-S"
+
+[[bin]]
+name = "liteparse-rag"
+path = "src/main.rs"
+
+[dependencies]
+localref-core = { path = "../../../crates/core" }
+localref-plugin-sdk = { path = "../../../crates/plugin-sdk" }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+liteparse = { git = "https://github.com/run-llama/liteparse.git", default-features = false }
+ndarray = "0.17"
+ort = { version = "=2.0.0-rc.12", features = ["copy-dylibs", "directml", "download-binaries", "ndarray"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+sha2 = "0.10"
+tokio = { workspace = true }

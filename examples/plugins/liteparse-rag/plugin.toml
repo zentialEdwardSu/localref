@@ -1,0 +1,33 @@
+name = "liteparse-rag"
+executable = "liteparse-rag"
+description = "Native LiteParse, PP-DocLayout-L, PP-OCRv6, and PP-FormulaNet-S ONNX extraction for LLM retrieval"
+
+[[hooks]]
+event = "item_imported"
+
+[[hooks]]
+event = "item_file_added"
+
+[[cron]]
+id = "process_queue"
+schedule = "0 * * * * *"
+timeout_secs = 3600
+
+[[extra_fields]]
+namespace = "liteparse_rag"
+key = "status"
+indexed = true
+
+[[extra_fields]]
+namespace = "liteparse_rag"
+key = "artifact_dir"
+indexed = false
+
+[[extra_fields]]
+namespace = "liteparse_rag"
+key = "source_sha256"
+indexed = true
+
+[[extra_fields]]
+namespace = "liteparse_rag"
+key = "error"
