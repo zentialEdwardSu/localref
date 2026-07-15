@@ -29,12 +29,12 @@ preview      = { action = "list_history", debounce_ms = 200, into = "history_pan
 [pages.submit]
 label = "Restore selected version"
 refresh_after_submit = true
-confirm = { title = "Restore historical version?", message = "Restore version {field.sequence}. This creates a new current version; existing history remains intact.", confirm_label = "Restore version" }
+confirm = { title = "Restore historical version?", message = "Restore commit {field.sequence}. This creates a new current version; existing history remains intact.", confirm_label = "Restore version" }
 
 [[pages.fields]]
 name     = "sequence"
-label    = "Roll back to version (sequence)"
-kind     = "number"
+label    = "Roll back to commit"
+kind     = "text"
 required = true
 
 [[pages.display]]
@@ -90,6 +90,11 @@ kind    = "select"
 options = ["keep_both", "keep_local", "keep_remote"]
 default = "keep_both"
 
+[[pages.fields]]
+name  = "remote_commit"
+label = "Remote commit (required for multi-head conflicts)"
+kind  = "text"
+
 [[pages.display]]
 id   = "conflict_pane"
 kind = "table"
@@ -102,6 +107,7 @@ columns = [
   { key = "detected", label = "Detected" },
   { key = "local_chunks", label = "Local" },
   { key = "remote_chunks", label = "Remote" },
+  { key = "remote_head", label = "Remote commit(s)" },
 ]
 
 [[pages.display]]
@@ -115,6 +121,8 @@ columns = [
   { key = "detected", label = "Detected" },
   { key = "local_chunks", label = "Local chunks" },
   { key = "remote_chunks", label = "Remote chunks" },
+  { key = "remote_head", label = "Remote commit(s)" },
+  { key = "conflict_type", label = "Conflict type" },
 ]
 
 # Global action: sync the entire library. A full-library sync can run for many

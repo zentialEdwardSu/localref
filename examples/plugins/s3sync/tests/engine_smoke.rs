@@ -1,135 +1,187 @@
-//! End-to-end smoke test: two engines over one shared object-store remote,
-//! exercising binary convergence and the `KeepBoth` conflict callback — the
-//! same shape rollforward's own `tests/sync.rs` uses, but through our
-//! `S3Remote` (over a `LocalFileSystem`) to prove the backend integrates.
-//!
-//! The `S3Remote` type lives in the binary crate (`src/`), so this integration
-//! test includes the module source directly rather than importing it.
+//! Rollforward v2 integration smoke tests through the S3 object-store adapter.
 
 #[path = "../src/s3_remote.rs"]
 mod s3_remote;
 
-use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
-use rollforward::types::{BinaryConflictPolicy, EngineNotificationListener};
-use rollforward::{RedbStore, RemoteStorage, SyncEngine};
+use object_store::local::LocalFileSystem;
+use rollforward::{
+    ApplyStatus, EngineEvent, EngineEventListenerV2, LocalApplyResult,
+    LocalMutation, LocalReplica, LocalResource, MutationPrecondition,
+    RedbRuntimeStore, ReplicaState, ResourceContent, ResourceKey,
+    ResourceKind, SyncRequest, SyncRuntime,
+};
 use s3_remote::S3Remote;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Handle;
 
-/// A listener that records conflict-copy requests and content updates.
 #[derive(Default)]
-struct TestListener {
-    /// Count of `on_conflict_copy_requested` calls.
-    conflicts: AtomicUsize,
-    /// File ids passed to `on_file_content_updated`.
-    updated: Mutex<Vec<String>>,
+struct MemoryReplica {
+    files: Mutex<BTreeMap<ResourceKey, (Vec<u8>, u64)>>,
 }
 
-impl EngineNotificationListener for TestListener {
-    fn on_file_content_updated(&self, file_id: String) {
-        self.updated.lock().unwrap().push(file_id);
-    }
-    fn on_conflict_copy_requested(&self, _file_id: String, _suggested: String) {
-        self.conflicts.fetch_add(1, Ordering::SeqCst);
+impl MemoryReplica {
+    fn put(&self, key: ResourceKey, data: &[u8]) {
+        let mut files = self.files.lock().unwrap();
+        let version = files.get(&key).map_or(1, |(_, version)| version + 1);
+        files.insert(key, (data.to_vec(), version));
     }
 }
 
-/// Build an `S3Remote` over a `LocalFileSystem` rooted at `dir`.
-fn remote(dir: &std::path::Path) -> Arc<S3Remote> {
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(dir).expect("local store"));
-    Arc::new(S3Remote::new(store, "lib", Handle::current()))
+impl LocalReplica for MemoryReplica {
+    fn list_resources(
+        &self,
+        scopes: Vec<String>,
+    ) -> Result<Vec<LocalResource>, rollforward::SyncError> {
+        Ok(self
+            .files
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(key, _)| {
+                scopes.is_empty() || scopes.contains(&key.scope_id)
+            })
+            .map(|(key, (data, version))| LocalResource {
+                key: key.clone(),
+                kind: ResourceKind::Binary,
+                state: ReplicaState::present(
+                    blake3::hash(data).to_hex().to_string(),
+                    data.len() as u64,
+                    version.to_string(),
+                ),
+            })
+            .collect())
+    }
+
+    fn read_resources(
+        &self,
+        keys: Vec<ResourceKey>,
+    ) -> Result<Vec<ResourceContent>, rollforward::SyncError> {
+        let files = self.files.lock().unwrap();
+        Ok(keys
+            .into_iter()
+            .filter_map(|key| {
+                files.get(&key).map(|(data, version)| ResourceContent {
+                    key,
+                    kind: ResourceKind::Binary,
+                    version_token: version.to_string(),
+                    data: data.clone(),
+                })
+            })
+            .collect())
+    }
+
+    fn apply_mutations(
+        &self,
+        mutations: Vec<LocalMutation>,
+    ) -> Result<Vec<LocalApplyResult>, rollforward::SyncError> {
+        let mut files = self.files.lock().unwrap();
+        Ok(mutations
+            .into_iter()
+            .map(|mutation| {
+                let key = match &mutation {
+                    LocalMutation::WritePresent { key, .. }
+                    | LocalMutation::ApplyDelete { key, .. }
+                    | LocalMutation::CreateCopy { key, .. } => key.clone(),
+                };
+                let precondition = match &mutation {
+                    LocalMutation::WritePresent { precondition, .. }
+                    | LocalMutation::ApplyDelete { precondition, .. } => {
+                        Some(precondition)
+                    }
+                    LocalMutation::CreateCopy { .. } => None,
+                };
+                let matches = precondition.map_or(
+                    !files.contains_key(&key),
+                    |condition| match condition {
+                        MutationPrecondition::Missing => {
+                            !files.contains_key(&key)
+                        }
+                        MutationPrecondition::Version { version_token } => {
+                            files.get(&key).is_some_and(|(_, version)| {
+                                version.to_string() == *version_token
+                            })
+                        }
+                    },
+                );
+                if !matches {
+                    return LocalApplyResult {
+                        key,
+                        status: ApplyStatus::PreconditionFailed,
+                        version_token: None,
+                        error: None,
+                    };
+                }
+                let version =
+                    files.get(&key).map_or(1, |(_, version)| version + 1);
+                match mutation {
+                    LocalMutation::WritePresent { data, .. }
+                    | LocalMutation::CreateCopy { data, .. } => {
+                        files.insert(key.clone(), (data, version));
+                    }
+                    LocalMutation::ApplyDelete { .. } => {
+                        files.remove(&key);
+                    }
+                }
+                LocalApplyResult {
+                    key,
+                    status: ApplyStatus::Applied,
+                    version_token: Some(version.to_string()),
+                    error: None,
+                }
+            })
+            .collect())
+    }
+}
+
+struct NoEvents;
+impl EngineEventListenerV2 for NoEvents {
+    fn on_events(&self, _: Vec<EngineEvent>) {}
+}
+
+fn runtime(
+    root: &std::path::Path,
+    client: &str,
+    remote: Arc<S3Remote>,
+    local: Arc<MemoryReplica>,
+) -> SyncRuntime {
+    SyncRuntime::with_backends(
+        client.into(),
+        Arc::new(
+            RedbRuntimeStore::open(root.join(format!("{client}.redb")))
+                .unwrap(),
+        ),
+        remote,
+        local,
+        Arc::new(NoEvents),
+    )
+    .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn two_clients_converge_on_binary() {
-    let remote_dir = tempfile::TempDir::new().unwrap();
-    let db_a = tempfile::TempDir::new().unwrap();
-    let db_b = tempfile::TempDir::new().unwrap();
-    let shared = remote(remote_dir.path());
-
-    let la = Arc::new(TestListener::default());
-    let lb = Arc::new(TestListener::default());
-    let engine_a = SyncEngine::with_backends(
-        "clientA",
-        Arc::new(RedbStore::open(db_a.path().join("a.redb")).unwrap()),
-        shared.clone(),
-        la.clone(),
-        BinaryConflictPolicy::KeepBoth,
+async fn v2_s3_adapter_converges_nested_binary() {
+    let root = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(root.path().join("remote")).unwrap();
+    let store: Arc<dyn ObjectStore> = Arc::new(
+        LocalFileSystem::new_with_prefix(root.path().join("remote")).unwrap(),
     );
-    let engine_b = SyncEngine::with_backends(
-        "clientB",
-        Arc::new(RedbStore::open(db_b.path().join("b.redb")).unwrap()),
-        shared.clone(),
-        lb.clone(),
-        BinaryConflictPolicy::KeepBoth,
-    );
+    let remote = Arc::new(S3Remote::new(store, "library", Handle::current()));
+    let key = ResourceKey::new("item", "nested/file.bin");
+    let first = Arc::new(MemoryReplica::default());
+    first.put(key.clone(), b"first");
+    runtime(root.path(), "a", remote.clone(), first)
+        .reconcile(SyncRequest { scopes: vec!["item".into()] })
+        .unwrap();
 
-    // A publishes v1; B syncs and sees the same manifest.
-    engine_a.modify_binary("doc.bin".into(), b"hello world".to_vec()).unwrap();
-    engine_b.sync("doc.bin".into()).unwrap();
+    let second = Arc::new(MemoryReplica::default());
+    let engine = runtime(root.path(), "b", remote, second.clone());
     assert_eq!(
-        engine_a.get_manifest("doc.bin".into()).unwrap(),
-        engine_b.get_manifest("doc.bin".into()).unwrap(),
-        "B should converge to A's content after sync"
+        engine
+            .reconcile(SyncRequest { scopes: vec!["item".into()] })
+            .unwrap()
+            .downloaded,
+        1
     );
-
-    // Reading B's converged binary back through the engine (pack index resolve +
-    // range read + per-chunk verify) yields A's bytes.
-    let content = engine_b.read_binary("doc.bin".into()).unwrap();
-    assert_eq!(content, b"hello world");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn divergent_binary_edit_triggers_conflict_copy() {
-    let remote_dir = tempfile::TempDir::new().unwrap();
-    let db_a = tempfile::TempDir::new().unwrap();
-    let db_b = tempfile::TempDir::new().unwrap();
-    let shared = remote(remote_dir.path());
-
-    let la = Arc::new(TestListener::default());
-    let lb = Arc::new(TestListener::default());
-    let engine_a = SyncEngine::with_backends(
-        "clientA",
-        Arc::new(RedbStore::open(db_a.path().join("a.redb")).unwrap()),
-        shared.clone(),
-        la.clone(),
-        BinaryConflictPolicy::KeepBoth,
-    );
-    let engine_b = SyncEngine::with_backends(
-        "clientB",
-        Arc::new(RedbStore::open(db_b.path().join("b.redb")).unwrap()),
-        shared.clone(),
-        lb.clone(),
-        BinaryConflictPolicy::KeepBoth,
-    );
-
-    // Shared common ancestor at seq 1.
-    engine_a.modify_binary("doc.bin".into(), b"base".to_vec()).unwrap();
-    engine_b.sync("doc.bin".into()).unwrap();
-
-    // Force a genuine fork: both publish a divergent snapshot at the same next
-    // sequence via the non-CAS put (mirrors rollforward's own fork injection).
-    // Under KeepBoth the kept side is the local manifest, so the injected remote
-    // side's chunks are never read back — placeholder hashes suffice to diverge.
-    let fork_seq = engine_a.head("doc.bin".into()) + 1;
-    let mk = |client: &str, hash: &str| rollforward::types::OpLogEntry {
-        sequence: fork_seq,
-        client_id: client.to_owned(),
-        timestamp: 0,
-        change_type: rollforward::types::ChangeType::BinarySnapshot {
-            chunk_hashes: vec![hash.to_owned()],
-        },
-    };
-    shared.put_oplog("doc.bin".into(), mk("clientA", "alphahash")).unwrap();
-    shared.put_oplog("doc.bin".into(), mk("clientB", "betahash")).unwrap();
-
-    // Syncing sees the forked tip and must request a keep-both copy.
-    engine_a.sync("doc.bin".into()).unwrap();
-    assert!(
-        la.conflicts.load(Ordering::SeqCst) >= 1,
-        "a divergent binary fork should trigger on_conflict_copy_requested"
-    );
+    assert_eq!(second.files.lock().unwrap()[&key].0, b"first");
 }

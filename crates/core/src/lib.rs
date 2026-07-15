@@ -56,16 +56,18 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 #[cfg(feature = "server")]
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "server")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "server")]
 use crate::error::{LocalrefError, Result};
+#[cfg(feature = "server")]
+use crate::manifest::CatManifest;
 #[cfg(feature = "server")]
 use crate::model::{
     Creator, ItemFilesDocument, LogKind, Metadata, MetadataDocument,
     MetadataFile, MetadataFiles, MetadataImport, MetadataState, MetadataTags,
 };
-#[cfg(feature = "server")]
-use crate::manifest::CatManifest;
 #[cfg(feature = "server")]
 use crate::platformfs::{LibraryFs, sanitize_ntfs_component};
 #[cfg(feature = "server")]
@@ -74,8 +76,8 @@ use crate::rules::RuleSet;
 use crate::scan::{AllEntryKind, CatEntryKind, scan_library};
 #[cfg(feature = "server")]
 use crate::storage::{
-    CategorySummary, ItemDocument, SearchHit, StorageDb, path_from_scan_target,
-    scan_cat_memberships,
+    CategorySummary, ItemDocument, SearchHit, StorageDb,
+    path_from_scan_target, scan_cat_memberships,
 };
 #[cfg(feature = "server")]
 use crate::types::{
@@ -822,9 +824,8 @@ impl LocalrefDaemon {
             let metadata_path = item_dir.join("metadata.toml");
             let current = std::fs::read_to_string(&metadata_path)
                 .map_err(|source| LocalrefError::io(&metadata_path, source))?;
-            let edited = Metadata::apply_extra_edit(
-                &current, namespace, key, value,
-            )?;
+            let edited =
+                Metadata::apply_extra_edit(&current, namespace, key, value)?;
             if edited != current {
                 LibraryFs::new(&self.library_root)
                     .atomic_write(&metadata_path, edited.as_bytes())?;
@@ -960,6 +961,16 @@ impl LocalrefDaemon {
         item_id: &str,
         file_path: impl Into<PathBuf>,
     ) -> Result<ItemDocument> {
+        self.add_file_to_item_at(item_id, file_path, None)
+    }
+
+    /// Copy a file into an item, optionally preserving an exact relative path.
+    pub fn add_file_to_item_at(
+        &self,
+        item_id: &str,
+        file_path: impl Into<PathBuf>,
+        relative_path: Option<PathBuf>,
+    ) -> Result<ItemDocument> {
         let file_path = self.absolute_library_path(file_path.into());
         let mut record = self.enqueue(DaemonTask::AddItemFile {
             item_id: item_id.to_string(),
@@ -974,8 +985,11 @@ impl LocalrefDaemon {
                     .get_item(item_id)?
                     .ok_or(LocalrefError::MissingField("item"))?;
                 let item_dir = self.library_root.join(&item.object_path);
-                ImportPipeline::new(&self.library_root)
-                    .add_file_to_item(&item_dir, &file_path)
+                ImportPipeline::new(&self.library_root).add_file_to_item_at(
+                    &item_dir,
+                    &file_path,
+                    relative_path.as_deref(),
+                )
             })
             .and_then(|_| {
                 self.storage.rebuild_from_all()?;
@@ -1001,6 +1015,66 @@ impl LocalrefDaemon {
                 Err(error)
             }
         }
+    }
+
+    /// Move one item-relative attachment into the Localref recovery area,
+    /// update metadata (promoting the first extra file when main is removed),
+    /// and rebuild the index.
+    pub fn archive_item_file(
+        &self,
+        item_id: &str,
+        relative_path: &Path,
+        namespace: &str,
+    ) -> Result<ItemDocument> {
+        validate_item_relative_path(relative_path)?;
+        let item = self
+            .storage
+            .get_item(item_id)?
+            .ok_or(LocalrefError::MissingField("item"))?;
+        let item_dir = self.library_root.join(&item.object_path);
+        let source = item_dir.join(relative_path);
+        if !source.is_file() {
+            return Err(LocalrefError::MissingField("item file"));
+        }
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis());
+        let target = self
+            .library_root
+            .join(".localref")
+            .join("trash")
+            .join(namespace)
+            .join(timestamp.to_string())
+            .join(sanitize_ntfs_component(item_id)?)
+            .join(relative_path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|source| LocalrefError::io(parent, source))?;
+        }
+        std::fs::rename(&source, &target)
+            .map_err(|error| LocalrefError::io(&source, error))?;
+
+        let metadata_path = item_dir.join("metadata.toml");
+        let text = std::fs::read_to_string(&metadata_path)
+            .map_err(|error| LocalrefError::io(&metadata_path, error))?;
+        let mut metadata = Metadata::from_toml_str(&text)?;
+        let relative = relative_path.to_string_lossy().replace('\\', "/");
+        metadata.files.extra.retain(|file| file.path != relative);
+        if metadata.files.main.as_deref() == Some(relative.as_str()) {
+            metadata.files.main =
+                metadata.files.extra.first().map(|file| file.path.clone());
+            if metadata.files.main.is_some() {
+                metadata.files.extra.remove(0);
+            }
+        }
+        LibraryFs::new(&self.library_root).atomic_write(
+            &metadata_path,
+            metadata.to_toml_string()?.as_bytes(),
+        )?;
+        self.storage.rebuild_from_all()?;
+        self.storage
+            .get_item(item_id)?
+            .ok_or(LocalrefError::MissingField("item"))
     }
 
     /// Write uploaded bytes into an existing indexed item directory.
@@ -1280,7 +1354,11 @@ impl LocalrefDaemon {
         let result = self.ensure_task_allowed(&record.task).and_then(|()| {
             let mut manifest = self.load_manifest()?;
             for item_id in item_ids {
-                self.file_item_into_category(item_id, category, &mut manifest)?;
+                self.file_item_into_category(
+                    item_id,
+                    category,
+                    &mut manifest,
+                )?;
             }
             manifest.save(&self.library_root)?;
             self.storage.rebuild_from_all()?;
@@ -1329,10 +1407,11 @@ impl LocalrefDaemon {
             &[category.as_str()],
             &[],
         )?;
-        let entry_name = item_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or(LocalrefError::MissingField("item directory name"))?;
+        let entry_name =
+            item_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(LocalrefError::MissingField("item directory name"))?;
         let removed = LibraryFs::new(&self.library_root)
             .remove_category_link(category, entry_name)?;
         manifest.remove(item_id, category.as_str());
@@ -1919,8 +1998,10 @@ impl LocalrefDaemon {
         // Load tombstones per item so we can honor deliberate removals.
         let mut tombstones: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for item in &items {
-            let metadata_path =
-                self.library_root.join(&item.object_path).join("metadata.toml");
+            let metadata_path = self
+                .library_root
+                .join(&item.object_path)
+                .join("metadata.toml");
             if let Ok(text) = std::fs::read_to_string(&metadata_path)
                 && let Ok(metadata) = Metadata::from_toml_str(&text)
             {
@@ -1989,7 +2070,8 @@ impl LocalrefDaemon {
                     })?;
                 let is_suppressed = item_tombstones
                     .is_some_and(|list| list.contains(disk_category));
-                if manifest.contains(&item.id, disk_category) || is_suppressed {
+                if manifest.contains(&item.id, disk_category) || is_suppressed
+                {
                     // The daemon projected this junction earlier and metadata no
                     // longer lists it → the user removed the category via
                     // metadata/UI/API. (Or the category is tombstoned.) Metadata
@@ -2184,13 +2266,14 @@ impl ImportPipeline {
 
         // No rule matched: fall back to the `unmatched` category so the item
         // is always reachable from Cat/ and never orphaned.
-        let categories = if categories.is_empty() {
-            vec![CategoryPath::new(UNMATCHED_CATEGORY).expect(
-                "UNMATCHED_CATEGORY must be a valid category path",
-            )]
-        } else {
-            categories
-        };
+        let categories =
+            if categories.is_empty() {
+                vec![CategoryPath::new(UNMATCHED_CATEGORY).expect(
+                    "UNMATCHED_CATEGORY must be a valid category path",
+                )]
+            } else {
+                categories
+            };
 
         let metadata_path = item_dir.join("metadata.toml");
         let mut metadata = metadata_from_import(
@@ -2461,6 +2544,17 @@ impl ImportPipeline {
         item_dir: &Path,
         file_path: &Path,
     ) -> Result<PathBuf> {
+        self.add_file_to_item_at(item_dir, file_path, None)
+    }
+
+    /// Copy one file into an item at an exact relative path. When no path is
+    /// supplied, retain the legacy flattened, uniquified filename behavior.
+    pub fn add_file_to_item_at(
+        &self,
+        item_dir: &Path,
+        file_path: &Path,
+        relative_path: Option<&Path>,
+    ) -> Result<PathBuf> {
         self.fs.ensure_layout()?;
         ensure_inside_all(self.fs.root(), item_dir)?;
         if !file_path.is_file() {
@@ -2470,14 +2564,29 @@ impl ImportPipeline {
             relative_to_root(self.fs.root(), item_dir),
             "add_file_to_item",
         )?;
-        let filename = file_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or(LocalrefError::MissingField("file name"))?;
-        let target = unique_item_file_path(
-            item_dir,
-            &sanitize_ntfs_component(filename)?,
-        );
+        let target = if let Some(relative_path) = relative_path {
+            validate_item_relative_path(relative_path)?;
+            let target = item_dir.join(relative_path);
+            if target.exists() {
+                return Err(LocalrefError::Unsupported(
+                    "item file target already exists",
+                ));
+            }
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|source| LocalrefError::io(parent, source))?;
+            }
+            target
+        } else {
+            let filename = file_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(LocalrefError::MissingField("file name"))?;
+            unique_item_file_path(
+                item_dir,
+                &sanitize_ntfs_component(filename)?,
+            )
+        };
         std::fs::copy(file_path, &target)
             .map_err(|source| LocalrefError::io(&target, source))?;
         self.append_file_to_metadata(item_dir, &target)?;
@@ -2598,8 +2707,9 @@ impl ImportPipeline {
         // metadata.toml is the source of truth for membership; record the
         // category there so a rebuild reflects it without the junction.
         let item_metadata_path = item_dir.join("metadata.toml");
-        let current = std::fs::read_to_string(&item_metadata_path)
-            .map_err(|source| LocalrefError::io(&item_metadata_path, source))?;
+        let current = std::fs::read_to_string(&item_metadata_path).map_err(
+            |source| LocalrefError::io(&item_metadata_path, source),
+        )?;
         let edited = Metadata::apply_category_edits(
             &current,
             &[category.as_str()],
@@ -2713,21 +2823,22 @@ impl ImportPipeline {
         let metadata_text = std::fs::read_to_string(&metadata_path)
             .map_err(|source| LocalrefError::io(&metadata_path, source))?;
         let mut metadata = Metadata::from_toml_str(&metadata_text)?;
-        let Some(filename) = path.file_name().and_then(|name| name.to_str())
-        else {
-            return Ok(());
-        };
+        let relative = path
+            .strip_prefix(item_dir)
+            .map_err(|_| LocalrefError::Unsupported("file outside item"))?
+            .to_string_lossy()
+            .replace('\\', "/");
 
         if metadata.files.main.is_none() {
-            metadata.files.main = Some(filename.to_string());
+            metadata.files.main = Some(relative.clone());
         } else if !metadata
             .files
             .extra
             .iter()
-            .any(|file| file.path == filename)
+            .any(|file| file.path == relative)
         {
             metadata.files.extra.push(MetadataFile {
-                path: filename.to_string(),
+                path: relative,
                 kind: "attachment".to_string(),
                 mime_type: None,
             });
@@ -2737,6 +2848,20 @@ impl ImportPipeline {
         self.fs.atomic_write(&metadata_path, &metadata_bytes)?;
         Ok(())
     }
+}
+
+#[cfg(feature = "server")]
+fn validate_item_relative_path(path: &Path) -> Result<()> {
+    use std::path::Component;
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || !path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(LocalrefError::Unsupported("invalid item file path"));
+    }
+    Ok(())
 }
 
 /// Internal helper for metadata from import.
@@ -3232,6 +3357,9 @@ mod year_tests {
         assert_eq!(year_from_zotero_date(&json!({ "date": "" })), None);
         assert_eq!(year_from_zotero_date(&json!({ "date": "n.d." })), None);
         assert_eq!(year_from_zotero_date(&json!({ "date": "99" })), None);
-        assert_eq!(year_from_zotero_date(&json!({ "date": "20210315" })), None);
+        assert_eq!(
+            year_from_zotero_date(&json!({ "date": "20210315" })),
+            None
+        );
     }
 }

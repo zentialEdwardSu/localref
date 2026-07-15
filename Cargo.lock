@@ -1855,6 +1855,7 @@ name = "localref-plugin-s3sync"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "blake3",
  "futures",
  "http",
  "localref-core",
@@ -2815,8 +2816,8 @@ dependencies = [
 
 [[package]]
 name = "rollforward"
-version = "0.1.0"
-source = "git+https://github.com/zentialEdwardSu/rollforward?rev=9483073f9847809a2c9b0360f4b51fefc0612794#9483073f9847809a2c9b0360f4b51fefc0612794"
+version = "0.2.0"
+source = "git+https://github.com/zentialEdwardSu/rollforward?rev=18a93eb#18a93ebb9ef05f632d93e337e285a6e9ed01251d"
 dependencies = [
  "blake3",
  "fastcdc",

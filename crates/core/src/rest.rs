@@ -70,6 +70,26 @@ pub struct ImportFolderRequest {
     pub path: PathBuf,
 }
 
+/// Request body for adding a file, optionally at an exact item-relative path.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct AddItemFileRequest {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub relative_path: Option<PathBuf>,
+}
+
+/// Request body for moving an attachment into a plugin recovery area.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct ArchiveItemFileRequest {
+    pub path: PathBuf,
+    #[serde(default = "default_archive_namespace")]
+    pub namespace: String,
+}
+
+fn default_archive_namespace() -> String {
+    "s3sync".to_owned()
+}
+
 /// Request body for opening one item-relative file path.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct OpenItemFileRequest {
@@ -143,7 +163,10 @@ pub fn router_with_daemon(daemon: LocalrefDaemon) -> Router {
         .route("/api/categories", post(create_category))
         .route("/api/items", get(list_items))
         .route("/api/items/{id}", get(get_item))
-        .route("/api/items/{id}/files", get(item_files).post(add_item_file))
+        .route(
+            "/api/items/{id}/files",
+            get(item_files).post(add_item_file).delete(archive_item_file),
+        )
         .route("/api/items/{id}/files/open", post(open_item_file))
         .route("/api/items/{id}/folder/open", post(open_item_folder))
         .route(
@@ -428,13 +451,31 @@ pub async fn open_item_file(
 pub async fn add_item_file(
     State(state): State<ApiState>,
     Path(id): Path<String>,
-    Json(request): Json<ImportFolderRequest>,
+    Json(request): Json<AddItemFileRequest>,
 ) -> Response {
-    match state.daemon.add_file_to_item(&id, request.path) {
+    match state.daemon.add_file_to_item_at(
+        &id,
+        request.path,
+        request.relative_path,
+    ) {
         Ok(item) => Json(item).into_response(),
-        Err(error) => {
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-        }
+        Err(error) => api_error(StatusCode::CONFLICT, error.to_string()),
+    }
+}
+
+/// Move an item attachment into the recoverable trash area.
+pub async fn archive_item_file(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(request): Json<ArchiveItemFileRequest>,
+) -> Response {
+    match state.daemon.archive_item_file(
+        &id,
+        &request.path,
+        &request.namespace,
+    ) {
+        Ok(item) => Json(item).into_response(),
+        Err(error) => api_error(StatusCode::BAD_REQUEST, error.to_string()),
     }
 }
 
@@ -1044,6 +1085,81 @@ title = "Drop Target"
         assert!(item_dir.join("appendix.pdf").is_file());
     }
 
+    #[tokio::test]
+    async fn exact_nested_add_and_archive_promote_main() {
+        let temp = tempfile::tempdir().unwrap();
+        let item_dir = temp.path().join("All").join("Sync Target");
+        std::fs::create_dir_all(&item_dir).unwrap();
+        std::fs::write(item_dir.join("paper.pdf"), b"main").unwrap();
+        std::fs::write(
+            item_dir.join("metadata.toml"),
+            r#"
+id = "lr:test:sync"
+type = "journalArticle"
+title = "Sync Target"
+
+[files]
+main = "paper.pdf"
+"#,
+        )
+        .unwrap();
+        let source = temp.path().join("remote.bin");
+        std::fs::write(&source, b"nested").unwrap();
+        let app = router_for_library(temp.path()).unwrap();
+        request_json(&app, "POST", "/api/daemon/scan").await;
+
+        request_json_body(
+            &app,
+            "POST",
+            "/api/items/lr:test:sync/files",
+            json!({"path": source, "relative_path": "figures/nested/plot.bin"}),
+        )
+        .await;
+        assert!(item_dir.join("figures/nested/plot.bin").is_file());
+
+        let item = request_json_body(
+            &app,
+            "DELETE",
+            "/api/items/lr:test:sync/files",
+            json!({"path": "paper.pdf", "namespace": "s3sync"}),
+        )
+        .await;
+        assert_eq!(item["main_file"], "figures/nested/plot.bin");
+        assert!(!item_dir.join("paper.pdf").exists());
+        assert!(temp.path().join(".localref/trash/s3sync").is_dir());
+    }
+
+    #[tokio::test]
+    async fn exact_add_rejects_traversal_and_existing_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let item_dir = temp.path().join("All").join("Safe Target");
+        std::fs::create_dir_all(&item_dir).unwrap();
+        std::fs::write(
+            item_dir.join("metadata.toml"),
+            "id = \"lr:test:safe\"\ntype = \"document\"\ntitle = \"Safe\"\n",
+        )
+        .unwrap();
+        std::fs::write(item_dir.join("exists.bin"), b"old").unwrap();
+        let source = temp.path().join("source.bin");
+        std::fs::write(&source, b"new").unwrap();
+        let app = router_for_library(temp.path()).unwrap();
+        request_json(&app, "POST", "/api/daemon/scan").await;
+        for relative_path in ["../escape.bin", "exists.bin"] {
+            let response = app.clone().oneshot(
+                Request::builder().method("POST")
+                    .uri("/api/items/lr:test:safe/files")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"path": source, "relative_path": relative_path}).to_string())).unwrap()
+            ).await.unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+        }
+        assert_eq!(
+            std::fs::read(item_dir.join("exists.bin")).unwrap(),
+            b"old"
+        );
+        assert!(!temp.path().join("escape.bin").exists());
+    }
+
     #[test]
     fn unmatched_connector_import_links_under_unmatched_category() {
         let temp = tempfile::tempdir().unwrap();
@@ -1529,7 +1645,9 @@ title = "Distinct"
         std::fs::create_dir_all(&item_dir).unwrap();
         std::fs::write(
             item_dir.join("metadata.toml"),
-            format!("id = \"{id}\"\ntype = \"document\"\ntitle = \"{title}\"\n"),
+            format!(
+                "id = \"{id}\"\ntype = \"document\"\ntitle = \"{title}\"\n"
+            ),
         )
         .unwrap();
         item_dir
@@ -1642,14 +1760,19 @@ title = "Distinct"
             "a category in metadata must survive a scan, not become uncategorized",
         );
         assert!(
-            temp.path().join("Cat").join("Wireless").join("RIS").join("Paper").exists(),
+            temp.path()
+                .join("Cat")
+                .join("Wireless")
+                .join("RIS")
+                .join("Paper")
+                .exists(),
             "the junction must be projected from metadata",
         );
     }
 
     #[test]
     fn relocating_the_library_reprojects_junctions_instead_of_wiping_categories()
-    {
+     {
         // NTFS Cat/ junctions do not survive a copy/restore/sync, but
         // metadata.toml and cat-manifest.toml do. A scan after a relocation
         // must NOT read the missing junctions as deliberate user deletions and
@@ -1800,7 +1923,12 @@ query = 'title:RIS'
         daemon.rebuild_index().unwrap();
 
         daemon
-            .set_item_extra("lr:test:extra", "bibtexer", "cite_key", Some("smith2020"))
+            .set_item_extra(
+                "lr:test:extra",
+                "bibtexer",
+                "cite_key",
+                Some("smith2020"),
+            )
             .unwrap();
 
         // Written into metadata.toml (source of truth) ...
@@ -1827,7 +1955,12 @@ query = 'title:RIS'
             )
             .unwrap();
         daemon
-            .set_item_extra("lr:test:idx", "bibtexer", "cite_key", Some("zoodle77"))
+            .set_item_extra(
+                "lr:test:idx",
+                "bibtexer",
+                "cite_key",
+                Some("zoodle77"),
+            )
             .unwrap();
         daemon
             .set_item_extra("lr:test:idx", "rating", "note", Some("wibblish"))
@@ -1851,7 +1984,12 @@ query = 'title:RIS'
             )
             .unwrap();
         daemon
-            .set_item_extra("lr:test:reidx", "bibtexer", "cite_key", Some("froon42"))
+            .set_item_extra(
+                "lr:test:reidx",
+                "bibtexer",
+                "cite_key",
+                Some("froon42"),
+            )
             .unwrap();
 
         daemon.rebuild_index().unwrap();

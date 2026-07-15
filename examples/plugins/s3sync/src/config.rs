@@ -19,7 +19,9 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Which storage backend to sync to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Backend {
     /// S3-compatible object storage (AWS, R2, MinIO).
@@ -27,6 +29,20 @@ pub enum Backend {
     S3,
     /// Generic HTTP/WebDAV server.
     Http,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogDetail {
+    Summary,
+    Files,
+    FilesAndPacks,
+}
+
+impl Default for LogDetail {
+    fn default() -> Self {
+        Self::FilesAndPacks
+    }
 }
 
 /// User-editable S3 sync configuration.
@@ -50,6 +66,22 @@ pub struct S3SyncConfig {
     /// Key prefix under which all sync objects live in the bucket.
     #[serde(default)]
     pub prefix: String,
+    /// Maximum number of items whose file transfers may run concurrently.
+    #[serde(default = "default_upload_concurrency")]
+    pub upload_concurrency: usize,
+    /// Maximum number of pack objects uploaded concurrently within one or more
+    /// files. This is the setting that improves a single large file's upload.
+    #[serde(default = "default_pack_upload_concurrency")]
+    pub pack_upload_concurrency: usize,
+    /// Number of recent versions retained per file; zero disables maintenance.
+    #[serde(default = "default_history_retention_versions")]
+    pub history_retention_versions: u64,
+    /// Days recoverable attachment archives are retained; zero keeps forever.
+    #[serde(default = "default_trash_retention_days")]
+    pub trash_retention_days: u64,
+    /// Structured log verbosity.
+    #[serde(default)]
+    pub log_detail: LogDetail,
     /// Optional HTTP(S) proxy for reaching the S3 endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyConfig>,
@@ -69,6 +101,25 @@ pub struct S3SyncConfig {
     /// Stable per-device client id (generated on first run).
     #[serde(default)]
     pub client_id: String,
+}
+
+/// A conservative default that still makes good use of typical network links.
+fn default_upload_concurrency() -> usize {
+    4
+}
+
+/// Keep the default modest: each in-flight pack is approximately 4 MiB and
+/// therefore consumes both memory and an outbound HTTP connection.
+fn default_pack_upload_concurrency() -> usize {
+    4
+}
+
+fn default_history_retention_versions() -> u64 {
+    50
+}
+
+fn default_trash_retention_days() -> u64 {
+    30
 }
 
 /// HTTP/WebDAV backend settings (`backend = "http"`).
@@ -93,7 +144,8 @@ impl HttpConfig {
         use base64::Engine as _;
         let user = self.username.as_deref().filter(|u| !u.is_empty())?;
         let pass = self.password.as_deref().unwrap_or("");
-        let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(format!("{user}:{pass}"));
         Some(format!("Basic {encoded}"))
     }
 }
@@ -120,8 +172,11 @@ impl ProxyConfig {
     /// Build the proxy URL for `object_store`. Returns an error if the assembled
     /// URL is invalid (bad scheme/host).
     pub fn to_url(&self) -> Result<String, String> {
-        let url = url::Url::parse(&format!("{}://{}:{}", self.scheme, self.host, self.port))
-            .map_err(|e| format!("invalid proxy host/port/scheme: {e}"))?;
+        let url = url::Url::parse(&format!(
+            "{}://{}:{}",
+            self.scheme, self.host, self.port
+        ))
+        .map_err(|e| format!("invalid proxy host/port/scheme: {e}"))?;
         Ok(url.into())
     }
 }
@@ -159,8 +214,8 @@ impl S3SyncConfig {
                 ));
             }
         };
-        let mut config: Self =
-            toml::from_str(&text).map_err(|e| format!("invalid s3sync config: {e}"))?;
+        let mut config: Self = toml::from_str(&text)
+            .map_err(|e| format!("invalid s3sync config: {e}"))?;
         match config.backend {
             Backend::S3 => {
                 if config.bucket.trim().is_empty() {
@@ -172,8 +227,10 @@ impl S3SyncConfig {
                 }
             }
             Backend::Http => {
-                let url_ok =
-                    config.http.as_ref().is_some_and(|h| !h.url.trim().is_empty());
+                let url_ok = config
+                    .http
+                    .as_ref()
+                    .is_some_and(|h| !h.url.trim().is_empty());
                 if !url_ok {
                     return Err(format!(
                         "s3sync config at {} uses backend `http` but `[http].url` is \
@@ -182,6 +239,20 @@ impl S3SyncConfig {
                     ));
                 }
             }
+        }
+        if !(1..=64).contains(&config.upload_concurrency) {
+            return Err(format!(
+                "s3sync config at {} has invalid `upload_concurrency` {}; expected 1..=64",
+                path.display(),
+                config.upload_concurrency
+            ));
+        }
+        if !(1..=32).contains(&config.pack_upload_concurrency) {
+            return Err(format!(
+                "s3sync config at {} has invalid `pack_upload_concurrency` {}; expected 1..=32",
+                path.display(),
+                config.pack_upload_concurrency
+            ));
         }
         // Backfill a client id on first load and persist it.
         if config.client_id.trim().is_empty() {
@@ -194,9 +265,11 @@ impl S3SyncConfig {
     /// Persist the config back to disk as TOML.
     pub fn save(&self, library_root: &Path) -> Result<(), String> {
         let dir = plugin_dir(library_root);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("create {}: {e}", dir.display()))?;
         let text = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(config_path(library_root), text).map_err(|e| e.to_string())
+        std::fs::write(config_path(library_root), text)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -245,6 +318,23 @@ allow_http = false
 # Key prefix under which all sync objects live.
 prefix = \"\"
 
+# Maximum number of items uploaded concurrently. Files within one item retain
+# their order, while separate items can transfer on different worker threads.
+upload_concurrency = 4
+
+# Maximum number of ~4 MiB pack objects uploaded concurrently. Increase this
+# for high-latency S3/R2 links; 4-8 is a good starting range.
+pack_upload_concurrency = 4
+
+# Keep the newest N oplog versions for rollback. Set to 0 to disable truncate/GC.
+history_retention_versions = 50
+
+# Recoverable attachment trash retention. Set to 0 to retain forever.
+trash_retention_days = 30
+
+# summary | files | files_and_packs
+log_detail = \"files_and_packs\"
+
 # Optional proxy for reaching the backend. Remove this section to connect
 # directly. `scheme` defaults to \"http\". Proxy authentication is not supported.
 # [proxy]
@@ -260,8 +350,10 @@ client_id = \"\"
 /// plugin state directory if needed.
 fn write_template(library_root: &Path) -> Result<(), String> {
     let dir = plugin_dir(library_root);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    std::fs::write(config_path(library_root), CONFIG_TEMPLATE).map_err(|e| e.to_string())
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("create {}: {e}", dir.display()))?;
+    std::fs::write(config_path(library_root), CONFIG_TEMPLATE)
+        .map_err(|e| e.to_string())
 }
 
 /// Generate a stable-ish client id from the hostname plus a time salt. Uniqueness
@@ -275,7 +367,8 @@ fn generate_client_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let sanitized: String = host.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let sanitized: String =
+        host.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     format!("{sanitized}-{salt:x}")
 }
 
@@ -284,7 +377,11 @@ mod tests {
     use super::*;
 
     fn proxy(scheme: &str) -> ProxyConfig {
-        ProxyConfig { host: "127.0.0.1".to_owned(), port: 7890, scheme: scheme.to_owned() }
+        ProxyConfig {
+            host: "127.0.0.1".to_owned(),
+            port: 7890,
+            scheme: scheme.to_owned(),
+        }
     }
 
     fn http(user: Option<&str>, pass: Option<&str>) -> HttpConfig {
@@ -300,13 +397,19 @@ mod tests {
         // Proxy auth was dropped; the URL is a plain scheme://host:port.
         assert_eq!(proxy("http").to_url().unwrap(), "http://127.0.0.1:7890/");
         // Non-special schemes (socks5) get no trailing-slash normalization.
-        assert_eq!(proxy("socks5").to_url().unwrap(), "socks5://127.0.0.1:7890");
+        assert_eq!(
+            proxy("socks5").to_url().unwrap(),
+            "socks5://127.0.0.1:7890"
+        );
     }
 
     #[test]
     fn auth_header_encodes_basic_credentials() {
         // base64("alice:s3cr3t") — Basic auth is what WebDAV servers expect.
-        assert_eq!(http(Some("alice"), Some("s3cr3t")).auth_header().unwrap(), "Basic YWxpY2U6czNjcjN0");
+        assert_eq!(
+            http(Some("alice"), Some("s3cr3t")).auth_header().unwrap(),
+            "Basic YWxpY2U6czNjcjN0"
+        );
     }
 
     #[test]
@@ -321,12 +424,29 @@ mod tests {
         // An older config without a `backend` key must keep working as s3.
         let cfg: S3SyncConfig = toml::from_str("bucket = \"b\"").unwrap();
         assert_eq!(cfg.backend, Backend::S3);
+        assert_eq!(cfg.upload_concurrency, 4);
+        assert_eq!(cfg.pack_upload_concurrency, 4);
+        assert_eq!(cfg.history_retention_versions, 50);
+        assert_eq!(cfg.trash_retention_days, 30);
+        assert_eq!(cfg.log_detail, LogDetail::FilesAndPacks);
+    }
+
+    #[test]
+    fn upload_concurrency_can_be_configured() {
+        let cfg: S3SyncConfig =
+            toml::from_str(
+                "bucket = \"b\"\nupload_concurrency = 12\npack_upload_concurrency = 8",
+            )
+            .unwrap();
+        assert_eq!(cfg.upload_concurrency, 12);
+        assert_eq!(cfg.pack_upload_concurrency, 8);
     }
 
     #[test]
     fn backend_parses_http_lowercase() {
         let cfg: S3SyncConfig =
-            toml::from_str("backend = \"http\"\n[http]\nurl = \"https://x\"").unwrap();
+            toml::from_str("backend = \"http\"\n[http]\nurl = \"https://x\"")
+                .unwrap();
         assert_eq!(cfg.backend, Backend::Http);
         assert_eq!(cfg.http.unwrap().url, "https://x");
     }

@@ -166,6 +166,25 @@ impl LocalrefClient {
         Self::decode(resp).await
     }
 
+    async fn delete_json<
+        B: serde::Serialize,
+        T: serde::de::DeserializeOwned,
+    >(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, ClientError> {
+        let url = format!("{}{path}", self.endpoint);
+        let resp = self
+            .http
+            .delete(&url)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ClientError::Transport(e.to_string()))?;
+        Self::decode(resp).await
+    }
+
     /// POST a JSON body to a path, accepting a no-content response.
     ///
     /// Returns the HTTP status on any 2xx, plus `503 Service Unavailable` so
@@ -282,6 +301,34 @@ impl LocalrefClient {
         self.post_json(
             &format!("/api/items/{}/files", encode_segment(item_id)),
             &serde_json::json!({ "path": path }),
+        )
+        .await
+    }
+
+    /// Add an existing local file at an exact item-relative path.
+    pub async fn add_file_at(
+        &self,
+        item_id: &str,
+        path: &str,
+        relative_path: &str,
+    ) -> Result<ItemDocument, ClientError> {
+        self.post_json(
+            &format!("/api/items/{}/files", encode_segment(item_id)),
+            &serde_json::json!({ "path": path, "relative_path": relative_path }),
+        )
+        .await
+    }
+
+    /// Move an attachment into a recoverable plugin trash area.
+    pub async fn archive_file(
+        &self,
+        item_id: &str,
+        relative_path: &str,
+        namespace: &str,
+    ) -> Result<ItemDocument, ClientError> {
+        self.delete_json(
+            &format!("/api/items/{}/files", encode_segment(item_id)),
+            &serde_json::json!({ "path": relative_path, "namespace": namespace }),
         )
         .await
     }
